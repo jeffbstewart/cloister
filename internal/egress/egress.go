@@ -243,7 +243,18 @@ func asHTTPURL(s string) (*url.URL, bool) {
 	return u, true
 }
 
-// startOfUTCDay is the daily-cap window boundary.
+// startOfUTCDay is the daily-cap window boundary.  The cap deliberately
+// rolls at UTC midnight rather than the process timezone's:
+//
+//   - UTC has no DST, so every window is exactly 24 hours; a local-midnight
+//     window is 23 or 25 hours twice a year, and "2:30am" happens twice on
+//     one of those days.
+//   - It matches every other timestamp in the system (audit records, cell
+//     status), so the ledger, the audit trail, and the cap all agree on
+//     which day an event belongs to.
+//   - The cap is a spend/exfiltration bound per day-window, not a
+//     scheduling feature — whose midnight it rolls at doesn't change the
+//     bound, so the deterministic boundary wins.
 func startOfUTCDay(t time.Time) time.Time {
 	u := t.UTC()
 	return time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
