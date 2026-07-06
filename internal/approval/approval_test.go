@@ -1,6 +1,13 @@
 package approval
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jeffbstewart/cloister/internal/runid"
+)
 
 func TestResolved(t *testing.T) {
 	cases := []struct {
@@ -17,5 +24,43 @@ func TestResolved(t *testing.T) {
 		if got := c.d.Resolved(); got != c.want {
 			t.Errorf("Decision(%q).Resolved() = %v, want %v", c.d, got, c.want)
 		}
+	}
+}
+
+// TestRecordJSON: times are time.Time in memory; an undecided op omits
+// decidedAt on the wire (omitzero) and round-trips intact.
+func TestRecordJSON(t *testing.T) {
+	id, err := runid.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := time.Date(2026, 7, 6, 15, 4, 5, 0, time.UTC)
+	pending := Record{OpID: id, Tool: "apply_diff", Path: "src/main.go", CreatedAt: created, Decision: Pending}
+
+	b, err := json.Marshal(pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "decidedAt") {
+		t.Errorf("undecided record must omit decidedAt: %s", b)
+	}
+
+	var back Record
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatal(err)
+	}
+	if back != pending {
+		t.Errorf("round trip: %+v != %+v", back, pending)
+	}
+
+	decided := pending
+	decided.Decision = Approved
+	decided.DecidedAt = created.Add(90 * time.Second)
+	b, err = json.Marshal(decided)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "decidedAt") {
+		t.Errorf("decided record must carry decidedAt: %s", b)
 	}
 }
