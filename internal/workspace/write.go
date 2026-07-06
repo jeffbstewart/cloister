@@ -50,6 +50,8 @@ func WriteAtomic(p Path, data []byte, perm os.FileMode) (err error) {
 		}
 	}()
 
+	// io.Writer's contract: Write returns a non-nil error whenever it writes
+	// fewer than len(data) bytes, so a partial write cannot pass silently.
 	if _, err = tmp.Write(data); err != nil {
 		tmp.Close()
 		return fmt.Errorf("workspace: write temp: %w", err)

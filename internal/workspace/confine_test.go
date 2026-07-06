@@ -100,3 +100,28 @@ func TestOpenRejectsRelativeRoot(t *testing.T) {
 		t.Error("Open accepted a relative root")
 	}
 }
+
+// TestOpenValidatesRoot: the root must exist and be a real directory — a
+// missing path, a plain file, and a symlink-to-directory are all rejected.
+func TestOpenValidatesRoot(t *testing.T) {
+	if _, err := Open(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Error("Open accepted a nonexistent root")
+	}
+
+	file := filepath.Join(t.TempDir(), "afile")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(file); err == nil {
+		t.Error("Open accepted a plain file as root")
+	}
+
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("cannot create symlinks in this environment (%v); rejection logic is OS-agnostic and covered on platforms that can", err)
+	}
+	if _, err := Open(link); err == nil {
+		t.Error("Open accepted a symlink-to-directory as root")
+	}
+}

@@ -43,9 +43,25 @@ func ApplyDiff(old []byte, diff string) ([]byte, error) {
 
 // --- file shape: split into lines while remembering EOL style + trailing NL ---
 
+// lineTermination is a file's dominant end-of-line style.
+type lineTermination uint8
+
+const (
+	terminationLF   lineTermination = iota // "\n"
+	terminationCRLF                        // "\r\n"
+)
+
+// eol returns the terminator string for this style.
+func (t lineTermination) eol() string {
+	if t == terminationCRLF {
+		return "\r\n"
+	}
+	return "\n"
+}
+
 type fileShape struct {
 	lines           []string
-	crlf            bool // dominant EOL is CRLF
+	termination     lineTermination
 	trailingNewline bool
 }
 
@@ -62,7 +78,11 @@ func splitFile(b []byte) fileShape {
 	if trailing {
 		lines = lines[:len(lines)-1] // drop the empty element after the final newline
 	}
-	return fileShape{lines: lines, crlf: crlf > lf, trailingNewline: trailing}
+	termination := terminationLF
+	if crlf > lf {
+		termination = terminationCRLF
+	}
+	return fileShape{lines: lines, termination: termination, trailingNewline: trailing}
 }
 
 // join reassembles lines in the file's original EOL style, preserving the
@@ -71,10 +91,7 @@ func (fs fileShape) join(lines []string) []byte {
 	if len(lines) == 0 {
 		return nil
 	}
-	eol := "\n"
-	if fs.crlf {
-		eol = "\r\n"
-	}
+	eol := fs.termination.eol()
 	out := strings.Join(lines, eol)
 	if fs.trailingNewline {
 		out += eol
@@ -87,31 +104,31 @@ func (fs fileShape) join(lines []string) []byte {
 type diffKind uint8
 
 const (
-	dctx diffKind = iota // ' ' context
-	ddel                 // '-' removed
-	dadd                 // '+' added
-	dnl                  // '\' no-newline marker (parsed, then ignored in v1)
+	diffContext   diffKind = iota // ' ' context
+	diffRemoved                   // '-' removed
+	diffAdded                     // '+' added
+	diffNoNewline                 // '\' no-newline marker (parsed, then ignored in v1)
 )
 
-type dline struct {
+type diffLine struct {
 	kind diffKind
 	text string
 }
 
 type hunk struct {
-	lines []dline
+	lines []diffLine
 }
 
 // blocks returns the old side (context + removed) and new side (context + added).
 func (h hunk) blocks() (oldB, newB []string) {
 	for _, dl := range h.lines {
 		switch dl.kind {
-		case dctx:
+		case diffContext:
 			oldB = append(oldB, dl.text)
 			newB = append(newB, dl.text)
-		case ddel:
+		case diffRemoved:
 			oldB = append(oldB, dl.text)
-		case dadd:
+		case diffAdded:
 			newB = append(newB, dl.text)
 		}
 	}
@@ -124,7 +141,7 @@ func parseHunks(diff string) ([]hunk, error) {
 		raw = raw[:n-1]
 	}
 	var hunks []hunk
-	var cur []dline
+	var cur []diffLine
 	inHunk := false
 	fileHeaders := 0
 	flush := func() {
@@ -158,10 +175,10 @@ func parseHunks(diff string) ([]hunk, error) {
 			if !ok {
 				return nil, fmt.Errorf("%w: bad hunk line prefix: %q", ErrMalformedDiff, line)
 			}
-			if k == dnl {
+			if k == diffNoNewline {
 				continue // v1: trailing-newline is preserved from the file, not the marker
 			}
-			cur = append(cur, dline{k, text})
+			cur = append(cur, diffLine{k, text})
 		}
 	}
 	flush()
@@ -188,17 +205,17 @@ func isExtHeader(line string) bool {
 // any other prefix-less line is malformed (strict on prefixes).
 func classifyBodyLine(line string) (diffKind, string, bool) {
 	if line == "" {
-		return dctx, "", true
+		return diffContext, "", true
 	}
 	switch line[0] {
 	case ' ':
-		return dctx, line[1:], true
+		return diffContext, line[1:], true
 	case '-':
-		return ddel, line[1:], true
+		return diffRemoved, line[1:], true
 	case '+':
-		return dadd, line[1:], true
+		return diffAdded, line[1:], true
 	case '\\':
-		return dnl, "", true
+		return diffNoNewline, "", true
 	}
 	return 0, "", false
 }
@@ -253,12 +270,12 @@ func writeExact(region []string, h hunk) []string {
 	fi := 0
 	for _, dl := range h.lines {
 		switch dl.kind {
-		case dctx:
+		case diffContext:
 			out = append(out, region[fi])
 			fi++
-		case ddel:
+		case diffRemoved:
 			fi++
-		case dadd:
+		case diffAdded:
 			out = append(out, dl.text)
 		}
 	}

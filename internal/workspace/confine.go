@@ -36,18 +36,34 @@ func (p Path) String() string { return p.abs }
 func (p Path) IsZero() bool { return p.abs == "" }
 
 // Root is a confined workspace: the sole directory tree the scribe may touch.
-// The root itself is trusted configuration; only agent-supplied paths beneath it
-// are validated.
+// The root's location is trusted configuration, but Open still verifies it is
+// an existing real directory; only agent-supplied paths beneath it get the
+// full per-component validation.
 type Root struct {
 	dir string // cleaned absolute path of the workspace root
 }
 
-// Open returns a Root for an absolute directory path.
+// Open returns a Root for an absolute directory path.  The path must exist and
+// be a real directory — a root that is itself a symlink (or any reparse point)
+// is rejected, for the same reason Resolve rejects symlink components: the
+// confinement boundary must be a fixed filesystem location, not a redirection
+// someone can repoint.
 func Open(dir string) (*Root, error) {
 	if !filepath.IsAbs(dir) {
 		return nil, fmt.Errorf("workspace: root %q must be absolute", dir)
 	}
-	return &Root{dir: filepath.Clean(dir)}, nil
+	dir = filepath.Clean(dir)
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return nil, fmt.Errorf("workspace: root %q: %w", dir, err)
+	}
+	if fi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+		return nil, fmt.Errorf("workspace: root %q is a symlink or reparse point", dir)
+	}
+	if !fi.IsDir() {
+		return nil, fmt.Errorf("workspace: root %q is not a directory", dir)
+	}
+	return &Root{dir: dir}, nil
 }
 
 // Dir returns the workspace root.

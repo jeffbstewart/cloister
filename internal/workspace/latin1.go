@@ -2,11 +2,15 @@ package workspace
 
 import "unicode/utf8"
 
-// Latin-1 view for the permit_non_utf8 edit path.
-// Decoding maps each byte to the code point of the same value — a
-// lossless byte↔code-point bijection — so an already-malformed file (the em-dash
-// bug: a lone Windows-1252 0x97) becomes an addressable string the diff/replace
-// engine can match and edit.  It is always approval-gated.
+// Latin-1 view for the permit_non_utf8 edit path.  Why this exists: ordinary
+// (unapproved) edit operations are restricted to valid UTF-8, so a file that
+// already contains invalid bytes could never be repaired through that door —
+// the engine could not even represent its content.  This view is the repair
+// mechanism, and it is only reachable with operator approval (the
+// permit_non_utf8 flag is approval-gated).  Decoding maps each byte to the
+// code point of the same value — a lossless byte↔code-point bijection — so an
+// already-malformed file (the em-dash bug: a lone Windows-1252 0x97) becomes
+// an addressable string the diff/replace engine can match and edit.
 
 // Latin1Decode views raw bytes as Latin-1: byte b → rune(b).  Any file, valid
 // UTF-8 or not, round-trips losslessly through Decode→BytesFromView untouched.
