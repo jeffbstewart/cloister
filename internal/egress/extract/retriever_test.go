@@ -12,11 +12,12 @@ import (
 )
 
 func TestKagiRetrieverPostsAndReturnsMarkdown(t *testing.T) {
-	var gotMethod, gotPath, gotAuth string
+	var gotMethod, gotPath, gotAuth, gotRaw string
 	var gotBody extractRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod, gotPath, gotAuth = r.Method, r.URL.Path, r.Header.Get("Authorization")
 		b, _ := io.ReadAll(r.Body)
+		gotRaw = string(b)
 		json.Unmarshal(b, &gotBody)
 		// format:markdown returns the extracted markdown DIRECTLY (not JSON).
 		w.Write([]byte("## Extraction Results\n\n### URL: https://a.example/1\n\n# A\nbody"))
@@ -39,6 +40,13 @@ func TestKagiRetrieverPostsAndReturnsMarkdown(t *testing.T) {
 	}
 	if len(gotBody.Pages) != 1 || gotBody.Pages[0].URL != "https://a.example/1" {
 		t.Errorf("request pages = %+v", gotBody.Pages)
+	}
+	// A time.Duration in memory, floating-point seconds (one decimal) on the wire.
+	if gotBody.Timeout != timeoutSeconds(20*time.Second) {
+		t.Errorf("timeout round-trip = %v, want 20s", time.Duration(gotBody.Timeout))
+	}
+	if !strings.Contains(gotRaw, `"timeout":20.0`) {
+		t.Errorf("wire body = %s, want \"timeout\":20.0", gotRaw)
 	}
 	if !strings.Contains(ext.Markdown, "# A\nbody") {
 		t.Errorf("markdown = %q, want it to contain the page body", ext.Markdown)

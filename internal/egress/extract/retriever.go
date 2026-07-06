@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -71,7 +72,7 @@ type kagiRetriever struct {
 	key      string
 	hc       *http.Client
 	maxBytes int64
-	timeout  time.Duration // Kagi's server-side fetch budget (wire "timeout" in seconds)
+	timeout  time.Duration // Kagi's server-side fetch budget
 	path     string        // "/api/v1/extract"
 }
 
@@ -86,10 +87,28 @@ type extractPage struct {
 	URL string `json:"url"`
 }
 
+// timeoutSeconds is a time.Duration in memory that serializes as Kagi's wire
+// format for the "timeout" field: floating-point seconds, one decimal of
+// precision.
+type timeoutSeconds time.Duration
+
+func (t timeoutSeconds) MarshalJSON() ([]byte, error) {
+	return []byte(strconv.FormatFloat(time.Duration(t).Seconds(), 'f', 1, 64)), nil
+}
+
+func (t *timeoutSeconds) UnmarshalJSON(b []byte) error {
+	sec, err := strconv.ParseFloat(string(b), 64)
+	if err != nil {
+		return err
+	}
+	*t = timeoutSeconds(time.Duration(sec * float64(time.Second)))
+	return nil
+}
+
 type extractRequest struct {
-	Pages   []extractPage `json:"pages"`
-	Format  extractFormat `json:"format,omitempty"`
-	Timeout float64       `json:"timeout,omitempty"` // seconds
+	Pages   []extractPage  `json:"pages"`
+	Format  extractFormat  `json:"format,omitempty"`
+	Timeout timeoutSeconds `json:"timeout,omitempty"`
 }
 
 func (k *kagiRetriever) Fetch(ctx context.Context, targetURL string) (Extracted, error) {
@@ -98,7 +117,7 @@ func (k *kagiRetriever) Fetch(ctx context.Context, targetURL string) (Extracted,
 	reqBody, err := json.Marshal(extractRequest{
 		Pages:   []extractPage{{URL: targetURL}},
 		Format:  formatMarkdown,
-		Timeout: k.timeout.Seconds(),
+		Timeout: timeoutSeconds(k.timeout),
 	})
 	if err != nil {
 		return Extracted{}, err
