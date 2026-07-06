@@ -33,12 +33,13 @@ type ID struct {
 var idRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 // New returns a fresh ID. Collision resistance comes from 74 bits of
-// crypto/rand entropy per millisecond tick; it panics only if the OS
-// entropy source is unusable.
-func New() ID {
+// crypto/rand entropy per millisecond tick. The error path exists for
+// platforms whose entropy source is unusable; since Go 1.24 crypto/rand
+// documents that Read never fails, so in practice the error is always nil.
+func New() (ID, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		panic(fmt.Sprintf("runid: entropy source failed: %v", err))
+		return ID{}, fmt.Errorf("runid: entropy source failed: %w", err)
 	}
 	ms := uint64(time.Now().UnixMilli())
 	b[0] = byte(ms >> 40)
@@ -49,7 +50,7 @@ func New() ID {
 	b[5] = byte(ms)
 	b[6] = (b[6] & 0x0f) | 0x70 // version 7
 	b[8] = (b[8] & 0x3f) | 0x80 // RFC 9562 variant
-	return ID{s: fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])}
+	return ID{s: fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])}, nil
 }
 
 // Parse validates an untrusted string (e.g. a get_log argument) and returns

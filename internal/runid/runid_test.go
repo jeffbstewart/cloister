@@ -8,9 +8,18 @@ import (
 
 const fixture = "0197f2e6-8f2a-7c3b-9d4e-1a2b3c4d5e6f"
 
+func mustNew(t *testing.T) ID {
+	t.Helper()
+	id, err := New()
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+	return id
+}
+
 func TestNewProducesValidIDs(t *testing.T) {
 	for i := 0; i < 100; i++ {
-		id := New()
+		id := mustNew(t)
 		if _, err := Parse(id.String()); err != nil {
 			t.Fatalf("New() produced an ID its own Parse rejects: %v", err)
 		}
@@ -21,7 +30,7 @@ func TestNewIsCollisionless(t *testing.T) {
 	const n = 100_000
 	seen := make(map[ID]bool, n)
 	for i := 0; i < n; i++ {
-		id := New()
+		id := mustNew(t)
 		if seen[id] {
 			t.Fatalf("collision after %d ids: %s", i, id)
 		}
@@ -33,7 +42,7 @@ func TestNewIsCollisionless(t *testing.T) {
 // shell metacharacters, spaces, or path separators.
 func TestShellSafeAlphabet(t *testing.T) {
 	for i := 0; i < 1000; i++ {
-		id := New().String()
+		id := mustNew(t).String()
 		if len(id) != 36 {
 			t.Fatalf("length %d, want 36: %q", len(id), id)
 		}
@@ -48,9 +57,9 @@ func TestShellSafeAlphabet(t *testing.T) {
 // TestSortableByTime: UUIDv7's leading timestamp makes later ids compare
 // greater as plain strings.
 func TestSortableByTime(t *testing.T) {
-	a := New()
+	a := mustNew(t)
 	time.Sleep(5 * time.Millisecond)
-	b := New()
+	b := mustNew(t)
 	if !(a.String() < b.String()) {
 		t.Errorf("ids not time-ordered: %s !< %s", a, b)
 	}
@@ -64,7 +73,7 @@ func TestZeroValue(t *testing.T) {
 	if zero.String() != "" {
 		t.Errorf("zero String() = %q, want empty", zero.String())
 	}
-	if New().IsZero() {
+	if mustNew(t).IsZero() {
 		t.Error("New() must never be zero")
 	}
 }
@@ -108,7 +117,7 @@ func TestShard(t *testing.T) {
 }
 
 func TestJSONRoundTrip(t *testing.T) {
-	orig := New()
+	orig := mustNew(t)
 	b, err := json.Marshal(orig)
 	if err != nil {
 		t.Fatal(err)
