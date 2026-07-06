@@ -46,6 +46,9 @@ PAT_APIKEY='\b(sk-[a-zA-Z0-9]{20,}|Bearer [a-zA-Z0-9._-]{20,}|BSA[a-zA-Z0-9_-]{1
 # Catches Kagi/Brave keys and state tokens regardless of their shape.
 PAT_CRED_ASSIGN='(TOKEN|API_KEY|APIKEY|SECRET|PASSWORD|PASSWD)[A-Za-z0-9_]*["'\'']?\s*[:=]\s*["'\'']?[A-Za-z0-9+/_-]{16,}'
 
+# The legacy private module domain must never appear in this repo.
+PAT_LEGACY='stewart''\.net'
+
 # ---------- helpers ----------
 
 violations=0
@@ -199,6 +202,7 @@ check_pattern "UUID" "$PAT_UUID"
 check_pattern "Long hex string (possible key/token)" "$PAT_HEX"
 check_pattern "API key shape" "$PAT_APIKEY"
 check_pattern "Credential assignment" "$PAT_CRED_ASSIGN"
+check_pattern "Legacy private domain" "$PAT_LEGACY"
 
 # Personal patterns (gitignored, per-developer)
 PERSONAL_PATTERNS="$SCRIPT_DIR/presubmit-personal-patterns.txt"

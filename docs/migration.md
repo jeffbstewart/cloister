@@ -1,14 +1,13 @@
 # SVN → GitHub migration
 
-Cloister is migrating from a private Subversion repository (module
-`stewart.net/agent-builder`) into this repo, restructured as it lands. The
-repo root becomes the Go module; containers, config, and docs get their own
-homes. Each change lands as a PR, reviewed in the GitHub code-review UI —
+Cloister is migrating from a private Subversion repository into this repo,
+restructured as it lands. The repo root becomes the Go module; containers,
+config, and docs get their own homes. Each change lands as a PR, reviewed in the GitHub code-review UI —
 much of this code is being read closely for the first time, so expect
 substantive review on each package.
 
 Per-PR flow: branch off `main` → migrate + clean the package (rewrite imports
-`stewart.net/agent-builder/` → `github.com/jeffbstewart/cloister/`,
+from the legacy private module path to `github.com/jeffbstewart/cloister/`,
 `go mod tidy`) → push → open PR → review → address comments → merge → next.
 
 ## Target layout
