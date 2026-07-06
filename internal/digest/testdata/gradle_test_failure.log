@@ -2,14 +2,14 @@
 > Task :compileTestKotlin
 > Task :test
 
-TranscodeMatcherServiceTest > matchesRemasteredEdition() FAILED
+WidgetMatcherServiceTest > matchesAllWidgets() FAILED
     org.opentest4j.AssertionFailedError: expected: <3> but was: <2>
         at app//org.junit.jupiter.api.AssertionUtils.fail(AssertionUtils.java:55)
-        at app//com.example.mediamanager.TranscodeMatcherServiceTest.matchesRemasteredEdition(TranscodeMatcherServiceTest.kt:87)
+        at app//com.example.sampleapp.WidgetMatcherServiceTest.matchesAllWidgets(WidgetMatcherServiceTest.kt:87)
 
-TranscodeMatcherServiceTest > ignoresSampleFiles() FAILED
+WidgetMatcherServiceTest > ignoresSampleFiles() FAILED
     org.opentest4j.AssertionFailedError: expected: <true> but was: <false>
-        at app//com.example.mediamanager.TranscodeMatcherServiceTest.ignoresSampleFiles(TranscodeMatcherServiceTest.kt:104)
+        at app//com.example.sampleapp.WidgetMatcherServiceTest.ignoresSampleFiles(WidgetMatcherServiceTest.kt:104)
 
 142 tests completed, 2 failed
 

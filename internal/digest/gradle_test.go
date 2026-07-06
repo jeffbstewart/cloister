@@ -22,12 +22,12 @@ func TestGradle(t *testing.T) {
 				FailedTasks: []string{":compileKotlin"},
 				CompileErrors: []CompileError{
 					{
-						File:    "src/main/kotlin/com/example/mediamanager/TranscodeMatcherService.kt",
+						File:    "src/main/kotlin/com/example/sampleapp/WidgetMatcherService.kt",
 						Line:    42,
 						Message: "unresolved reference: barr",
 					},
 					{
-						File:    "src/main/kotlin/com/example/mediamanager/TranscodeMatcherService.kt",
+						File:    "src/main/kotlin/com/example/sampleapp/WidgetMatcherService.kt",
 						Line:    57,
 						Message: "type mismatch: inferred type is String but Int was expected",
 					},
@@ -40,12 +40,12 @@ func TestGradle(t *testing.T) {
 				FailedTasks: []string{":compileKotlin", ":compileJava"},
 				CompileErrors: []CompileError{
 					{
-						File:    "src/main/kotlin/com/example/mediamanager/LibraryScanner.kt",
+						File:    "src/main/kotlin/com/example/sampleapp/InputScanner.kt",
 						Line:    18,
 						Message: "expecting member declaration",
 					},
 					{
-						File:    "src/main/java/com/example/mediamanager/LegacyProbe.java",
+						File:    "src/main/java/com/example/sampleapp/LegacyProbe.java",
 						Line:    17,
 						Message: "cannot find symbol",
 					},
@@ -58,12 +58,12 @@ func TestGradle(t *testing.T) {
 				FailedTasks: []string{":test"},
 				FailedTests: []FailedTest{
 					{
-						Class:   "TranscodeMatcherServiceTest",
-						Test:    "matchesRemasteredEdition",
+						Class:   "WidgetMatcherServiceTest",
+						Test:    "matchesAllWidgets",
 						Message: "org.opentest4j.AssertionFailedError: expected: <3> but was: <2>",
 					},
 					{
-						Class:   "TranscodeMatcherServiceTest",
+						Class:   "WidgetMatcherServiceTest",
 						Test:    "ignoresSampleFiles",
 						Message: "org.opentest4j.AssertionFailedError: expected: <true> but was: <false>",
 					},

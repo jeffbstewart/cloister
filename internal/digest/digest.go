@@ -50,7 +50,11 @@ type Digest struct {
 	ExitCode int      `json:"exitCode"`
 	// Duration is a real duration in memory and a readable string on the
 	// wire ("1.5s"), reusing audit's serialization.
-	Duration      audit.Duration `json:"duration"`
+	Duration audit.Duration `json:"duration"`
+	// Error is the runner's failure description.  A string, not a Go error:
+	// Digest is a wire type — error values do not survive a JSON round-trip,
+	// and the consumer is the agent reading text, not Go code branching on
+	// error identity.
 	Error         string         `json:"error,omitempty"`
 	FailedTasks   []string       `json:"failedTasks,omitempty"`
 	CompileErrors []CompileError `json:"compileErrors,omitempty"`

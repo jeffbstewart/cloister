@@ -10,7 +10,7 @@ var (
 	goTestFail = regexp.MustCompile(`^(\s*)--- FAIL: (\S+) `)
 	// ./matcher.go:12:6: undefined: barr   (column optional)
 	goCompileErr = regexp.MustCompile(`^(\S+\.go):(\d+)(?::\d+)?: (.+)$`)
-	// FAIL	example.com/mediamanager/matcher	0.041s
+	// FAIL	example.com/sampleapp/matcher	0.041s
 	goPkgFail = regexp.MustCompile(`^FAIL\s+(\S+)`)
 )
 

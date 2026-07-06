@@ -1,5 +1,5 @@
-# example.com/mediamanager/matcher [example.com/mediamanager/matcher.test]
+# example.com/sampleapp/matcher [example.com/sampleapp/matcher.test]
 ./matcher.go:12:6: undefined: barr
 ./matcher.go:29:14: cannot use score (variable of type string) as int value in return statement
-FAIL	example.com/mediamanager/matcher [build failed]
+FAIL	example.com/sampleapp/matcher [build failed]
 FAIL

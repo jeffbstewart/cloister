@@ -18,22 +18,22 @@ func TestGoTest(t *testing.T) {
 		{
 			file: "golang_fail.log",
 			want: Findings{
-				FailedTasks: []string{"example.com/mediamanager/matcher"},
+				FailedTasks: []string{"example.com/sampleapp/matcher"},
 				FailedTests: []FailedTest{
 					{
-						Test:    "TestMatchesRemasteredEdition",
+						Test:    "TestMatchesAllWidgets",
 						Message: "matcher_test.go:42: expected 3 matches, got 2",
 					},
 					{
 						Test:    "TestIgnoresSampleFiles",
-						Message: "matcher_test.go:61: sample.mkv should be ignored, matched anyway",
+						Message: "matcher_test.go:61: sample.tmp should be ignored, matched anyway",
 					},
 					{
 						Test:    "TestScoring",
 						Message: "scoring_test.go:33: bonus not applied",
 					},
 					{
-						Test:    "TestScoring/remaster_bonus",
+						Test:    "TestScoring/priority_bonus",
 						Message: "scoring_test.go:33: bonus not applied",
 					},
 				},
@@ -43,7 +43,7 @@ func TestGoTest(t *testing.T) {
 		{
 			file: "golang_compile_error.log",
 			want: Findings{
-				FailedTasks: []string{"example.com/mediamanager/matcher"},
+				FailedTasks: []string{"example.com/sampleapp/matcher"},
 				CompileErrors: []CompileError{
 					{
 						File:    "matcher.go",

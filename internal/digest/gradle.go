@@ -17,7 +17,7 @@ var (
 	gradleTaskFail = regexp.MustCompile(`^> Task (:\S+) FAILED$`)
 	// Execution failed for task ':test'.
 	gradleExecFail = regexp.MustCompile(`^Execution failed for task '(:[^']+)'\.?$`)
-	// TranscodeMatcherServiceTest > matchesRemasteredEdition() FAILED
+	// WidgetMatcherServiceTest > matchesAllWidgets() FAILED
 	gradleTestFail = regexp.MustCompile(`^(\S+) > (.+) FAILED$`)
 	// 142 tests completed, 2 failed
 	gradleTestCount = regexp.MustCompile(`^(\d+) tests? completed, (\d+) failed`)

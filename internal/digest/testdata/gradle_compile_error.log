@@ -1,7 +1,7 @@
 > Task :checkKotlinGradlePluginConfigurationErrors
 > Task :compileKotlin FAILED
-e: file:///workspace/src/main/kotlin/com/example/mediamanager/TranscodeMatcherService.kt:42:31 unresolved reference: barr
-e: file:///workspace/src/main/kotlin/com/example/mediamanager/TranscodeMatcherService.kt:57:9 type mismatch: inferred type is String but Int was expected
+e: file:///workspace/src/main/kotlin/com/example/sampleapp/WidgetMatcherService.kt:42:31 unresolved reference: barr
+e: file:///workspace/src/main/kotlin/com/example/sampleapp/WidgetMatcherService.kt:57:9 type mismatch: inferred type is String but Int was expected
 
 FAILURE: Build failed with an exception.
 

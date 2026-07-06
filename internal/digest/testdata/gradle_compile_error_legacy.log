@@ -1,7 +1,7 @@
 > Task :compileKotlin FAILED
-e: /workspace/src/main/kotlin/com/example/mediamanager/LibraryScanner.kt: (18, 5): expecting member declaration
+e: /workspace/src/main/kotlin/com/example/sampleapp/InputScanner.kt: (18, 5): expecting member declaration
 > Task :compileJava FAILED
-/workspace/src/main/java/com/example/mediamanager/LegacyProbe.java:17: error: cannot find symbol
+/workspace/src/main/java/com/example/sampleapp/LegacyProbe.java:17: error: cannot find symbol
         Probe p = new Probee();
                       ^
   symbol:   class Probee
