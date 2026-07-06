@@ -2,7 +2,7 @@
 // runner, digest, audit, and MCP layers.
 //
 // An ID wraps a version-7 UUID (RFC 9562): 48 bits of unix-millisecond
-// timestamp followed by 74 random bits from crypto/rand. That keeps the
+// timestamp followed by 74 random bits from crypto/rand.  That keeps the
 // properties a run identifier needs — sortable (time-prefixed), meaningless,
 // collision-free — and the canonical form uses only [0-9a-f-]: no shell
 // metacharacters, no spaces, no path separators, so an ID is safe to embed
@@ -21,19 +21,19 @@ import (
 	"time"
 )
 
-// ID is a run identifier. The zero value means "no run" and is never
+// ID is a run identifier.  The zero value means "no run" and is never
 // produced by New or Parse.
 type ID struct {
 	s string
 }
 
 // idRE accepts exactly canonical lowercase UUIDv7 (version nibble 7,
-// RFC 9562 variant). The strict alphabet is the shell-safety and
+// RFC 9562 variant).  The strict alphabet is the shell-safety and
 // path-traversal guarantee for untrusted input.
 var idRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 // New returns a fresh ID. Collision resistance comes from 74 bits of
-// crypto/rand entropy per millisecond tick. The error path exists for
+// crypto/rand entropy per millisecond tick.  The error path exists for
 // platforms whose entropy source is unusable; since Go 1.24 crypto/rand
 // documents that Read never fails, so in practice the error is always nil.
 func New() (ID, error) {
@@ -69,9 +69,9 @@ func (id ID) String() string { return id.s }
 func (id ID) IsZero() bool { return id.s == "" }
 
 // Shard returns the last two hex characters of the canonical form — a uniform
-// 256-way bucket key. A UUIDv7 keeps its millisecond timestamp in the LEADING
+// 256-way bucket key.  A UUIDv7 keeps its millisecond timestamp in the LEADING
 // bytes, so any content store must shard on the random TAIL, never a prefix, or
-// everything hot-buckets for decades. The zero ID shards to "00".
+// everything hot-buckets for decades.  The zero ID shards to "00".
 func (id ID) Shard() string {
 	if id.s == "" {
 		return "00"
