@@ -7,3 +7,5 @@ go 1.25.0
 // github.com/google/jsonschema-go is imported directly only to declare tool
 // input schemas). Anything beyond that needs a documented justification.
 // Requirements are added by `go mod tidy` as packages migrate in.
+
+require gopkg.in/yaml.v3 v3.0.1
