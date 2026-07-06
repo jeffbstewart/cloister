@@ -1,7 +1,8 @@
 // Package manifest loads and validates the per-project agent-harness.yaml
-// contract.  The manifest is the ENTIRE action menu: run
-// arrays are exec argv (never a shell string), and agent-suppliable params
-// are validated against anchored RE2 patterns — rejected, never sanitized.
+// contract.  The project owner places the file at the root of the project's
+// workspace (DefaultPath); it is the ENTIRE action menu: run arrays are exec
+// argv (never a shell string), and agent-suppliable params are validated
+// against anchored RE2 patterns — rejected, never sanitized.
 package manifest
 
 import (
@@ -37,18 +38,18 @@ var (
 )
 
 // reservedNames are tool names an action may not shadow: the built-ins on
-// this server today, plus the names the roadmap claims for the
-// workspace write path and the internet gateway.  Reserving them now means a
-// manifest written today cannot collide with (or spoof) those tools later.
+// this server, plus the names the scribe (workspace write path) and the
+// scholar (web research) use.  Reserving them means a manifest cannot
+// collide with — or spoof — those tools.
 var reservedNames = map[string]bool{
 	// built-in on this server
 	"get_log":      true,
 	"harness_info": true,
-	// roadmap: workspace file read/write path
+	// scribe: workspace file read/write path
 	"read_file":   true,
 	"write_file":  true,
 	"apply_patch": true,
-	// roadmap: internet gateway (web retrieval + search)
+	// scholar: web retrieval + search
 	"fetch":      true,
 	"search":     true,
 	"web_fetch":  true,
