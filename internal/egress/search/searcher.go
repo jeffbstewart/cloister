@@ -186,6 +186,11 @@ func NewBraveSearcher(base, key string, hc *http.Client, maxBytes int64) Searche
 
 func (b *braveSearcher) Name() string { return string(policy.EngineBrave) }
 
+// Search implements Searcher via Brave's web-search API.
+//
+// CAUTION: the Brave path has never been exercised against the real API —
+// only against stubs of its documented response shape — and likely contains
+// errors.  Validate it end-to-end before relying on engine: brave.
 func (b *braveSearcher) Search(ctx context.Context, query string, count int) ([]Hit, error) {
 	start := time.Now()
 	log.Printf("egress: brave search %q (count %d)", clip(query, 150), clampCount(count))
