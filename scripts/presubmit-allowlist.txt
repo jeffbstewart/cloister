@@ -14,3 +14,7 @@ file:go.sum
 
 # Four-part version numbers in prose/configs look like IPs to the scanner —
 # add specific safe versions here as needed.
+
+# Synthetic UUID fixture in internal/runid tests (and its uppercase variant).
+1a2b3c4d5e6f
+1A2B3C4D5E6F
