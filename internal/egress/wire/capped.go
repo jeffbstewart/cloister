@@ -9,14 +9,17 @@ import (
 	"strings"
 )
 
-// GetBytes performs one GET through the guarded client; see doCapped for the
-// response contract.
+// GetBytes performs one GET through the guarded client and returns the
+// response body, capped at maxBytes (ErrResponseTooBig beyond).  A non-2xx
+// status is an error that includes a snippet of the upstream body — which,
+// for a provider 4xx/5xx, may echo our auth header — so every caller must
+// run the error through the scrubber before surfacing it.
 func GetBytes(ctx context.Context, hc *http.Client, rawURL string, header http.Header, maxBytes int64) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	setHeader(req, header)
+	applyHeadersToRequest(req, header)
 	return doCapped(hc, req, maxBytes)
 }
 
@@ -28,11 +31,11 @@ func PostJSON(ctx context.Context, hc *http.Client, rawURL string, header http.H
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	setHeader(req, header)
+	applyHeadersToRequest(req, header)
 	return doCapped(hc, req, maxBytes)
 }
 
-func setHeader(req *http.Request, header http.Header) {
+func applyHeadersToRequest(req *http.Request, header http.Header) {
 	for k, vs := range header {
 		for _, v := range vs {
 			req.Header.Add(k, v)
@@ -40,11 +43,8 @@ func setHeader(req *http.Request, header http.Header) {
 	}
 }
 
-// doCapped runs the request and returns the response body, capped at maxBytes.  A
-// non-2xx status is an error that INCLUDES a snippet of the upstream body —
-// which, for a provider 4xx/5xx, may echo our auth header — so every caller runs
-// the result through the scrubber before it leaves the egress subsystem.  An
-// over-cap body is ErrResponseTooBig.
+// doCapped runs the request and enforces the response contract documented on
+// GetBytes and PostJSON.
 func doCapped(hc *http.Client, req *http.Request, maxBytes int64) ([]byte, error) {
 	resp, err := hc.Do(req)
 	if err != nil {
