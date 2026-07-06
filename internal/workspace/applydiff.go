@@ -103,11 +103,12 @@ func (fs fileShape) join(lines []string) []byte {
 
 type diffKind uint8
 
+// The comment on each kind is the hunk-body line prefix it comes from.
 const (
-	diffContext   diffKind = iota // ' ' context
-	diffRemoved                   // '-' removed
-	diffAdded                     // '+' added
-	diffNoNewline                 // '\' no-newline marker (parsed, then ignored in v1)
+	diffContext   diffKind = iota // ' '
+	diffRemoved                   // '-'
+	diffAdded                     // '+'
+	diffNoNewline                 // '\' (parsed, then ignored in v1)
 )
 
 type diffLine struct {
