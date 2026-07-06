@@ -1,0 +1,5 @@
+# example.com/sampleapp/matcher [example.com/sampleapp/matcher.test]
+./matcher.go:12:6: undefined: barr
+./matcher.go:29:14: cannot use score (variable of type string) as int value in return statement
+FAIL	example.com/sampleapp/matcher [build failed]
+FAIL

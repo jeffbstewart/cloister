@@ -1,0 +1,8 @@
+> Task :checkKotlinGradlePluginConfigurationErrors
+> Task :compileKotlin
+> Task :processResources
+> Task :compileTestKotlin
+> Task :test
+
+BUILD SUCCESSFUL in 58s
+5 actionable tasks: 5 executed
