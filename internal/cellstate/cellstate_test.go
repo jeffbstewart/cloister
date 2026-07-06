@@ -11,7 +11,10 @@ import (
 
 func TestWriteReadRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "status.json")
-	id := runid.New()
+	id, err := runid.New()
+	if err != nil {
+		t.Fatal(err)
+	}
 	in := Status{
 		Busy:   true,
 		Active: &ActiveRun{RunID: id, Action: "test", StartedAt: time.Now().UTC()},
