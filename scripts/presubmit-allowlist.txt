@@ -1,0 +1,16 @@
+# presubmit-allowlist.txt — known-safe values the presubmit scanner skips.
+#
+#   substring          lines containing this substring are not flagged
+#   file:pattern       files whose path contains this substring are skipped entirely
+#
+# Keep entries specific: allowlist the exact safe literal, not a broad pattern.
+
+# go.sum is nothing but module hashes.
+file:go.sum
+
+# Loopback and documentation addresses.
+127.0.0.1
+0.0.0.0
+
+# Four-part version numbers in prose/configs look like IPs to the scanner —
+# add specific safe versions here as needed.

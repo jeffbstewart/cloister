@@ -24,8 +24,11 @@ profile.cov
 go.work
 go.work.sum
 
-# env file
+# Secrets — must never be committed (presubmit also blocks these)
 .env
+*.key
+*.pem
+secrets/
 
 # Editor/IDE
 # .idea/

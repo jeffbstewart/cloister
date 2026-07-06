@@ -1,0 +1,74 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: go build ./...
+
+      # go test / go vet / go-licenses fail on a module with no packages,
+      # so they are guarded until the first package migrates in (PR 2).
+      - name: Test
+        run: |
+          if [ -n "$(git ls-files '*.go')" ]; then
+            go test ./...
+          else
+            echo "no Go packages yet — skipping"
+          fi
+
+      - name: gofmt
+        run: |
+          dirty=$(gofmt -l .)
+          if [ -n "$dirty" ]; then
+            echo "gofmt needed on:"
+            echo "$dirty"
+            exit 1
+          fi
+
+      - name: Vet
+        run: |
+          if [ -n "$(git ls-files '*.go')" ]; then
+            go vet ./...
+          else
+            echo "no Go packages yet — skipping"
+          fi
+
+      - name: License check (deny copyleft)
+        run: |
+          if [ -n "$(git ls-files '*.go')" ]; then
+            go install github.com/google/go-licenses@latest
+            go-licenses check ./... --disallowed_types=forbidden,restricted
+            # restricted already covers the GPL family; belt-and-suspenders
+            # for GPLv2-only, which must never appear:
+            if go-licenses report ./... 2>/dev/null | grep -E 'GPL-2\.0-only'; then
+              echo "GPL-2.0-only dependency found"
+              exit 1
+            fi
+          else
+            echo "no Go packages yet — skipping"
+          fi
+
+      # Same scan the local pre-commit hook runs, applied server-side to the
+      # whole PR diff so a bypassed hook can't slip secrets through.
+      - name: Secret scan (PR diff)
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch origin "${{ github.base_ref }}"
+          git diff "origin/${{ github.base_ref }}...HEAD" | ./scripts/presubmit-check.sh
+
+      # Once docker/ai-workers.yaml migrates in (PR 22), add:
+      #   go run ./cmd/compose-lint docker/ai-workers.yaml

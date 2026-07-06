@@ -1,0 +1,11 @@
+.env
+*.key
+*.pem
+secrets/
+dist/
+build/
+*.log
+LICENSE
+NOTICE
+THIRD_PARTY_NOTICES
+go.sum

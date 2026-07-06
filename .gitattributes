@@ -1,0 +1,4 @@
+# Repo-wide line-ending policy: every text file is LF, in the repo and in
+# the working tree, on every platform. Git auto-detects binaries; add
+# explicit `binary` entries here if one is ever misdetected.
+* text=auto eol=lf

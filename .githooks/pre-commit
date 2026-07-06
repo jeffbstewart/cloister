@@ -1,0 +1,2 @@
+#!/bin/sh
+git diff --cached | ./scripts/presubmit-check.sh
