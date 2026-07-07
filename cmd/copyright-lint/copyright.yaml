@@ -1,0 +1,47 @@
+# Copyright 2026 Jeffrey B. Stewart
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Copyright-header policy, embedded into copyright-lint (go:embed) and
+# enforced by the pre-commit hook and CI.  Every tracked file needs a
+# header unless excluded here; the owner's headers must show the submission
+# year on any file a change touches ("YYYY" or "YYYY-YYYY"); any other
+# holder's copyright is rejected unless its path matches a third_party
+# pattern.
+#
+# Patterns are anchored, "/"-separated globs; "**" spans directories
+# ("*.md" matches only at the root — use "**/*.md" for any depth).
+
+owner: Jeffrey B. Stewart
+
+exclude:
+  # Prose and records: not source, no headers.
+  - "**/*.md"
+  - "LICENSE"
+  - "NOTICE"
+  - "THIRD_PARTY_NOTICES"
+  # Generated / tool-owned metadata.
+  - "go.mod"
+  - "go.sum"
+  # Fixtures must stay byte-exact for the code under test.
+  - "**/testdata/**"
+  # Dotfiles and plumbing with no meaningful authorship.
+  - "**/.gitignore"
+  - "**/.aiignore"
+  - ".gitattributes"
+  - "scripts/presubmit-allowlist.txt"
+
+# Paths allowed to carry another holder's copyright (vendored code).  Such
+# files satisfy the presence check with any copyright line and are never
+# year-checked.  Empty today: nothing vendored.
+third_party: []
