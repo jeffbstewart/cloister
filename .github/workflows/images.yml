@@ -1,0 +1,107 @@
+name: images
+
+# The authoritative image pipeline: on every push to main and on version
+# tags, cross-compile the static agent-builder binary, then build and push
+# the builder and agent images to GHCR.  Tags carry the binary as a GitHub
+# Release asset.  This retires the private-registry batch build scripts.
+#
+# Distribution note: the builder image redistributes Amazon Corretto
+# (GPLv2 with the Classpath Exception); see THIRD_PARTY_NOTICES for the
+# corresponding-source pointer that obligation rides on.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: write # attach the release binary (tags only)
+  packages: write # push images to GHCR
+
+env:
+  BUILDER_IMAGE: ghcr.io/jeffbstewart/cloister-builder
+  AGENT_IMAGE: ghcr.io/jeffbstewart/cloister-agent
+  # Pins the qwen-code base (and therefore the CLI version inside the agent
+  # image).  Bump deliberately; the Dockerfile default matches.
+  QWEN_VERSION: "0.19.4"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # Every published artifact carries the same version: the semver tag
+      # when this run is a tag, else the short commit SHA.
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build the static agent-builder binary
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath \
+            -ldflags "-s -w -X main.version=${{ steps.ver.outputs.version }}" \
+            -o docker/builder/agent-builder ./cmd/agent-builder
+
+      # Buildx now so the platform list below is the only thing to touch
+      # when arm64 joins (a Mac-hosted scholar, a D20 cell).
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image tags
+        id: tags
+        run: |
+          V="${{ steps.ver.outputs.version }}"
+          BUILDER="${BUILDER_IMAGE}:${V}"
+          AGENT="${AGENT_IMAGE}:${V}"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] || [ "${GITHUB_REF_NAME}" = "main" ]; then
+            BUILDER="${BUILDER},${BUILDER_IMAGE}:latest"
+            AGENT="${AGENT},${AGENT_IMAGE}:latest"
+          fi
+          echo "builder=${BUILDER}" >> "$GITHUB_OUTPUT"
+          echo "agent=${AGENT}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push the builder image
+        uses: docker/build-push-action@v6
+        with:
+          context: docker/builder
+          push: true
+          platforms: linux/amd64 # add linux/arm64 here when needed
+          tags: ${{ steps.tags.outputs.builder }}
+
+      - name: Build and push the agent image
+        uses: docker/build-push-action@v6
+        with:
+          context: docker/agent
+          push: true
+          platforms: linux/amd64 # add linux/arm64 here when needed
+          build-args: |
+            QWEN_VERSION=${{ env.QWEN_VERSION }}
+          tags: ${{ steps.tags.outputs.agent }}
+
+      # Tags get a GitHub Release carrying the static binary, so a cell can
+      # run the sidecar without pulling an image at all.
+      - name: Create the release with the binary attached
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp docker/builder/agent-builder agent-builder-linux-amd64
+          gh release create "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            "agent-builder-linux-amd64#agent-builder ${GITHUB_REF_NAME} (linux/amd64, static)"
