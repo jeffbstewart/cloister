@@ -32,6 +32,7 @@ flowchart LR
     status["status<br/>alpine/socat"]
     krelay["kagi-relay<br/>alpine/socat :8443"]
     librarian["librarian :9400<br/>PLANNED"]
+    archivist["archivist :9600<br/>PLANNED"]
   end
 
   subgraph infra["Shared inference stack (one per machine)"]
@@ -40,6 +41,7 @@ flowchart LR
   end
 
   kagi["kagi.com<br/>search + extract APIs"]
+  gh["github.com<br/>code + PR APIs, PLANNED"]
   mac["deep-think node<br/>LAN, PLANNED"]
 
   agent -- "buildnet · MCP" --> builder
@@ -67,9 +69,13 @@ flowchart LR
   librarian -. "infernet (planned)" .-> infer
   librarian -. "statenet (planned)" .-> state
   librarian -. "infernet_big (planned)" .-> mac
+  agent -. "buildnet · MCP (planned)" .-> archivist
+  ws -. "rw (planned)" .-> archivist
+  archivist -. "statenet (planned)" .-> state
+  archivist -. "gitegress · pinned relays (planned)" .-> gh
 
   classDef planned stroke-dasharray: 6 4;
-  class librarian,mac planned
+  class librarian,archivist,gh,mac planned
 ```
 
 Solid arrows are network edges (labeled with the compose network that
@@ -165,6 +171,12 @@ Dashed in the diagram; designed, not yet built (see
 - **deep-think node** (`infernet_big`) — an off-host inference engine for
   heavy comprehension ops; the librarian pushes shield-filtered content to
   it per query, and degrades to local `infer` when absent.
+- **archivist** (`:9600`, see [archivist.md](archivist.md)) — the cell's
+  sole version-control authority: sole toucher of `.git` (confinement
+  blocks it for everyone else), VCS-agnostic local verbs plus
+  audited-ungated GitHub PR authorship as a bot identity, reaching
+  `github.com`/`api.github.com` only through pinned blind relays.  The
+  GitHub-side permission recipe is [GITHUB_SETUP.md](GITHUB_SETUP.md).
 
 ## The common hardening profile
 
