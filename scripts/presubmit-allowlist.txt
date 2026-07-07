@@ -28,3 +28,7 @@ file:go.sum
 169.254.1.1
 8.8.8.8
 1.1.1.1
+
+# RFC 5737 TEST-NET-1 (guaranteed unroutable) — the scholar self-check test
+# probes it to prove a failed dial is treated as containment.
+192.0.2.1
