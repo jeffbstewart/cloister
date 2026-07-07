@@ -40,18 +40,21 @@
 #   SCHOLAR_POLICY host path of the read-only egress policy yaml (engine + deny list)
 #   BRAVE_API_KEY  only if the policy sets search.engine: brave (else leave unset)
 #
-# The agent registers the builder, scribe, AND scholar MCP servers in
-# /home/node/.qwen/settings.json (persisted in the qwen_home volume), plus a
-# coreTools allowlist that excludes the built-in file mutators (source writes MUST
-# go through the scribe) and the built-in web tools (web access MUST go through the
-# scholar). Project-agnostic service URLs:
+# The agent registers the builder, scribe, scholar, AND librarian MCP servers
+# in /home/node/.qwen/settings.json (persisted in the qwen_home volume), plus a
+# coreTools allowlist that excludes the built-in file mutators AND readers
+# (source writes MUST go through the scribe; source reads MUST go through the
+# librarian — the agent holds no workspace mount at all) and the built-in web
+# tools (web access MUST go through the scholar). Project-agnostic service URLs:
 #   { "mcpServers": {
-#       "builder": { "httpUrl": "http://builder:9200/mcp", "timeout": 2400000 },
-#       "scribe":  { "httpUrl": "http://scribe:9300/mcp",  "timeout": 2400000 },
-#       "scholar": { "httpUrl": "http://scholar:9500/mcp", "timeout": 2400000 } } }
+#       "builder":   { "httpUrl": "http://builder:9200/mcp",   "timeout": 2400000 },
+#       "scribe":    { "httpUrl": "http://scribe:9300/mcp",    "timeout": 2400000 },
+#       "scholar":   { "httpUrl": "http://scholar:9500/mcp",   "timeout": 2400000 },
+#       "librarian": { "httpUrl": "http://librarian:9400/mcp", "timeout": 2400000 } } }
 #
 # Least-privilege network map (every edge is a network hop or token-gated API):
-#   agent   ── infernet ────> infer         agent   ── buildnet ─────> builder + scribe (MCP)
+#   agent   ── infernet ────> infer         agent   ── buildnet ─────> builder + scribe + librarian (MCP)
+#   librarian ─ statenet ───> state (denial audit); ro workspace — the agent's ONLY source view
 #   agent   ── researchnet ─> scholar (MCP)  scholar ── infernet ────> infer (model)
 #   builder ── statenet ───> state (sink)    scribe  ── statenet ─────> state (audit + diffs)
 #   scholar ── scholarstate > state (audit)  scholar ── kagiegress ──> kagi-relay ── egress ─> kagi.com
@@ -62,8 +65,10 @@
 # to kagi.com. Neither the state service, scribe, nor scholar holds open egress.
 
 # Single-source workspace mount. The builder and scribe hold it rw (build outputs
-# / audited source writes); the agent is :ro so ALL source writes route through
-# the scribe (audited, gated). One host path, three mounts, one source of truth.
+# / audited source writes); the librarian holds it :ro and serves ALL source
+# reads (shield-filtered, docs/librarian.md); the agent holds NO workspace mount
+# at all — its cwd is a tmpfs stub, and both halves of source I/O are mediated:
+# writes via the scribe, reads via the librarian.
 x-workspace: &workspace "${WORKSPACE:?set WORKSPACE to the host path of the project repo}:/workspace"
 x-workspace-ro: &workspace-ro "${WORKSPACE}:/workspace:ro"
 
@@ -83,12 +88,16 @@ services:
       - OPENAI_MODEL=${OPENAI_MODEL:?set OPENAI_MODEL, the model the agent drives}
       # - BUILDER_MCP_URL=http://builder:9200/mcp   # default; override only for a nonstandard builder
     volumes:
-      - *workspace-ro                    # :ro — the agent cannot write source; edits route via the scribe
+      # Deliberately NO workspace mount: reads go through the librarian
+      # (shield-filtered), writes through the scribe (audited, gated).
       - qwen_home:/home/node/.qwen       # persistent settings/history, node-owned
     working_dir: /workspace
     read_only: true
     tmpfs:
       - /tmp
+      - /workspace:uid=1000,gid=1000,mode=0700   # cwd stub: holds the image-baked
+                                                 # QWEN.md the entrypoint copies in;
+                                                 # never reaches the project
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     pids_limit: 512
@@ -162,6 +171,35 @@ services:
     networks:
       - buildnet                         # reachable by the agent (inbound MCP)
       - statenet                         # reach state (audit + diff store); internal -> no egress
+
+  librarian:
+    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${BUILDER_IMAGE}
+    container_name: ${PROJECT}-librarian
+    user: "1000:1000"
+    restart: unless-stopped
+    # Same binary, librarian mode: the read side of the cell — mechanical read
+    # tools on :9400 served from an in-memory, shield-filtered model of the
+    # workspace (docs/librarian.md).  Read DENIALS (only) are audited to state.
+    command: ["-worker-mode", "librarian", "-addr", ":9400", "-workspace", "/workspace"]
+    environment:
+      - STATE_URL=http://state:9201
+      - STATE_TOKEN=${STATE_TOKEN}
+    volumes:
+      - *workspace-ro                    # ro: the sole workspace view on the agent's side of the cell
+    working_dir: /workspace
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 1g                        # in-memory model budget (256 MiB default) + headroom
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/agent-builder", "-healthcheck", "-addr", ":9400"]
+      interval: 30s
+    networks:
+      - buildnet                         # reachable by the agent (inbound MCP)
+      - statenet                         # denial audits to state; internal -> no egress
 
   state:
     image: ${REGISTRY:-ghcr.io/jeffbstewart}/${BUILDER_IMAGE}

@@ -43,11 +43,11 @@ func main() {
 		os.Exit(2)
 	}
 	if len(violations) > 0 {
-		fmt.Fprintf(os.Stderr, "compose-lint: %s FAILS scholar containment:\n", path)
+		fmt.Fprintf(os.Stderr, "compose-lint: %s FAILS cell containment:\n", path)
 		for _, x := range violations {
 			fmt.Fprintln(os.Stderr, "  -", x)
 		}
 		os.Exit(1)
 	}
-	fmt.Printf("compose-lint: %s OK — scholar contained, egress pinned to kagi.com\n", path)
+	fmt.Printf("compose-lint: %s OK — scholar contained, egress pinned to kagi.com, agent mount-free, librarian read-only\n", path)
 }

@@ -52,6 +52,13 @@ RUN set -eux; \
 # managed `builder` entry, preserving other settings/servers/history.
 COPY --chown=node:node qwen-mcp-init.mjs /usr/local/bin/qwen-mcp-init.mjs
 
+# The project-agnostic system prompt, materialized into the tmpfs cwd by the
+# entrypoint (a local copy — no service-order dependency).  qwen-code
+# auto-loads QWEN.md from the working directory; project-SPECIFIC guidance
+# stays in the workspace, read via the librarian per this prompt's own
+# instructions.
+COPY --chown=node:node QWEN.md /usr/local/share/cloister/QWEN.md
+
 USER node
 ENV HOME=/home/node
 

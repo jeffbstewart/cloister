@@ -45,13 +45,14 @@ func TestCommittedCellStackIsContained(t *testing.T) {
 }
 
 func TestCatchesViolations(t *testing.T) {
-	base := func(scholarNets, scholarVols, relayCmd, extra string) string {
+	base := func(scholarNets, scholarVols, relayCmd, agentVols, librarianYaml, extra string) string {
 		return `
 networks:
   researchnet: { internal: true }
   scholarstate: { internal: true }
   kagiegress: { internal: true }
   statenet: { internal: true }
+  buildnet: { internal: true }
   egress: {}
 services:
   scholar:
@@ -60,17 +61,28 @@ services:
   kagi-relay:
     command: ` + relayCmd + `
     networks: [kagiegress, egress]
-` + extra
+  agent:
+    networks: [buildnet]
+    volumes: ` + agentVols + `
+` + librarianYaml + extra
 	}
 	clean := `[researchnet, scholarstate, kagiegress]`
 	noVols := `[]`
+	agentClean := `["qwen_home:/home/node/.qwen"]`
 	kagiCmd := `["TCP-LISTEN:8443,fork,reuseaddr", "TCP:kagi.com:443"]`
+	librarianClean := `  librarian:
+    networks: [buildnet, statenet]
+    volumes: ["/host:/workspace:ro"]
+`
+	cleanCompose := func() string {
+		return base(clean, noVols, kagiCmd, agentClean, librarianClean, "")
+	}
 
 	cases := map[string]string{
-		"scholar on egress":        base(`[researchnet, kagiegress, egress]`, noVols, kagiCmd, ""),
-		"scholar on statenet":      base(`[researchnet, statenet, kagiegress]`, noVols, kagiCmd, ""),
-		"scholar mounts workspace": base(clean, `["/host:/workspace:ro"]`, kagiCmd, ""),
-		"relay not pinned to kagi": base(clean, noVols, `["TCP-LISTEN:8443", "TCP:evil.example:443"]`, ""),
+		"scholar on egress":        base(`[researchnet, kagiegress, egress]`, noVols, kagiCmd, agentClean, librarianClean, ""),
+		"scholar on statenet":      base(`[researchnet, statenet, kagiegress]`, noVols, kagiCmd, agentClean, librarianClean, ""),
+		"scholar mounts workspace": base(clean, `["/host:/workspace:ro"]`, kagiCmd, agentClean, librarianClean, ""),
+		"relay not pinned to kagi": base(clean, noVols, `["TCP-LISTEN:8443", "TCP:evil.example:443"]`, agentClean, librarianClean, ""),
 		"scholar net not internal": `
 networks:
   researchnet: { internal: true }
@@ -80,8 +92,19 @@ networks:
 services:
   scholar: { networks: [researchnet, scholarstate, kagiegress] }
   kagi-relay: { command: ["TCP:kagi.com:443"], networks: [kagiegress, egress] }`,
-		"second egress holder": base(clean, noVols, kagiCmd, `  sneaky:
+		"second egress holder": base(clean, noVols, kagiCmd, agentClean, librarianClean, `  sneaky:
     networks: [egress]`),
+		// The read-path invariants (docs/librarian.md).
+		"no librarian": base(clean, noVols, kagiCmd, agentClean, "", ""),
+		"librarian workspace not ro": base(clean, noVols, kagiCmd, agentClean, `  librarian:
+    networks: [buildnet, statenet]
+    volumes: ["/host:/workspace"]
+`, ""),
+		"librarian holds egress-capable net": base(clean, noVols, kagiCmd, agentClean, `  librarian:
+    networks: [buildnet, statenet, frontend]
+    volumes: ["/host:/workspace:ro"]
+`, ""),
+		"agent mounts workspace": base(clean, noVols, kagiCmd, `["/host:/workspace:ro"]`, librarianClean, ""),
 	}
 	for name, yaml := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -96,7 +119,7 @@ services:
 	}
 
 	// And the clean shape passes.
-	if v, err := Check([]byte(base(clean, noVols, kagiCmd, ""))); err != nil || len(v) != 0 {
+	if v, err := Check([]byte(cleanCompose())); err != nil || len(v) != 0 {
 		t.Errorf("clean compose flagged: %v (err %v)", v, err)
 	}
 }

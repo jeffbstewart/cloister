@@ -35,8 +35,8 @@ secrets/
 docker/builder/agent-builder
 
 # Editor/IDE
-# .idea/
-# .vscode/
+.idea/
+.vscode/
 
 # Local content:
 notingithub

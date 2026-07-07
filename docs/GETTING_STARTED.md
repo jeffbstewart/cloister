@@ -80,8 +80,12 @@ In the project repository:
 - **`agent-harness.yaml`** at the root — the manifest of build/test actions
   the builder may run (the agent's entire action menu; see
   [DESIGN.md](DESIGN.md#the-manifest-contract)).
-- **`QWEN.md`** at the root — the agent's working instructions.  Copy
-  [example-qwen.md](example-qwen.md) and edit the project-specific parts.
+- **`QWEN.md`** at the root — PROJECT-SPECIFIC guidance for the agent
+  (layout, conventions, definition of done).  Copy
+  [example-qwen.md](example-qwen.md) and fill it in; the agent reads it
+  through the librarian at session start.  The harness mechanics
+  (tools, containment rules) are baked into the agent image and need no
+  per-project copy.
 
 Outside the project repository (host paths, never committed):
 

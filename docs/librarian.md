@@ -1,9 +1,11 @@
 # The librarian — reader-mode design
 
-Status: **design, not yet implemented**.  This records the decisions from the
-2026-07-07 design review so the implementation PRs have a fixed target.  When
-the librarian lands, DESIGN.md absorbs the rationale and this file becomes
-the reference for the tool surface.
+Status: **phases 0–4 implemented** (the spike, internal/shield,
+internal/repo, internal/watch, the worker + mechanical tools, and the
+cell cutover — the agent holds no workspace mount).  **Phase 5 — the
+comprehension ops and engine-routed inference — remains design**, now
+absorbed into the agency's class config (docs/agency.md).  This file
+records the decisions from the 2026-07-07 design review.
 
 ## Problem
 
