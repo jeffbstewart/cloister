@@ -33,39 +33,17 @@
 //	librarian      the read side of the cell: mechanical read tools on
 //	               :9400 served from an in-memory, shield-filtered model
 //	               of the workspace; denials (only) audited to state.
+//
+// This file is only the front door: flags and the mode dispatch.  Each
+// worker's bootstrap lives in its own file (builder.go, scribe.go,
+// scholar.go, statesvc.go, librarian.go); shared serving plumbing in
+// serve.go.
 package main
 
 import (
-	"context"
-	"errors"
 	"flag"
-	"fmt"
-	"io"
 	"log"
-	"net"
-	"net/http"
 	"os"
-	"os/signal"
-	"path/filepath"
-	"strings"
-	"syscall"
-	"time"
-	_ "time/tzdata" // embed zone data so TZ=<zone> localizes status pages in any base image
-
-	"github.com/jeffbstewart/cloister/internal/egress"
-	"github.com/jeffbstewart/cloister/internal/egress/policy"
-	"github.com/jeffbstewart/cloister/internal/egress/wire"
-	"github.com/jeffbstewart/cloister/internal/librarian"
-	"github.com/jeffbstewart/cloister/internal/manifest"
-	"github.com/jeffbstewart/cloister/internal/mcpserver"
-	"github.com/jeffbstewart/cloister/internal/repo"
-	"github.com/jeffbstewart/cloister/internal/runid"
-	"github.com/jeffbstewart/cloister/internal/runner"
-	"github.com/jeffbstewart/cloister/internal/scholar"
-	"github.com/jeffbstewart/cloister/internal/scribe"
-	"github.com/jeffbstewart/cloister/internal/status/sink"
-	"github.com/jeffbstewart/cloister/internal/watch"
-	"github.com/jeffbstewart/cloister/internal/workspace"
 )
 
 // version is stamped at build time via -ldflags "-X main.version=...".
@@ -121,279 +99,30 @@ func main() {
 
 	switch workerMode(*mode) {
 	case modeBuilder:
-		runBuilder(*addr, *workspace, *spoolDir, *stateURL, *toolchainFile)
+		runBuilder(builderOptions{
+			Addr: *addr, Workspace: *workspace, SpoolDir: *spoolDir,
+			StateURL: *stateURL, ToolchainFile: *toolchainFile,
+		})
 	case modeStateService:
-		runStateService(*addr, *stateDir)
+		runStateService(stateOptions{Addr: *addr, StateDir: *stateDir})
 	case modeScribe:
-		runScribe(*addr, *workspace, *stateURL, *scribeStageDir, *scribeApprovals)
+		runScribe(scribeOptions{
+			Addr: *addr, Workspace: *workspace, StateURL: *stateURL,
+			StageDir: *scribeStageDir, Approvals: *scribeApprovals,
+		})
 	case modeScholar:
-		runScholar(*addr, *scholarPolicy, *burnDir, *stateURL, *answerGate)
+		runScholar(scholarOptions{
+			Addr: *addr, PolicyPath: *scholarPolicy, BurnDir: *burnDir,
+			StateURL: *stateURL, AnswerGate: *answerGate,
+		})
 	case modeLibrarian:
-		runLibrarian(*addr, *workspace, *stateURL, *repoBudgetMB, *repoMaxFileMB)
+		runLibrarian(librarianOptions{
+			Addr: *addr, Workspace: *workspace, StateURL: *stateURL,
+			BudgetMB: *repoBudgetMB, MaxFileMB: *repoMaxFileMB,
+		})
 	case "":
 		log.Fatalf("-worker-mode is required: %s", workerModes)
 	default:
 		log.Fatalf("unknown -worker-mode %q: want %s", *mode, workerModes)
 	}
-}
-
-func runScholar(addr, policyPath, burnDir, stateURL string, answerGate bool) {
-	// The fail-closed egress self-check runs FIRST: if the scholar can
-	// reach the arbitrary internet, it must not start.
-	if err := scholar.AssertNoPublicEgress(); err != nil {
-		log.Fatalf("scholar: %v", err)
-	}
-	log.Printf("scholar: egress self-check passed — no arbitrary internet route (relay=%s)", os.Getenv("KAGI_RELAY_ADDR"))
-
-	token := os.Getenv("STATE_TOKEN")
-	if stateURL == "" || token == "" {
-		log.Fatalf("scholar needs STATE_URL and STATE_TOKEN: it audits every search/extract to the state service")
-	}
-	baseURL := envOr("OPENAI_BASE_URL", "")
-	model := os.Getenv("OPENAI_MODEL")
-	if baseURL == "" || model == "" {
-		log.Fatalf("scholar needs OPENAI_BASE_URL and OPENAI_MODEL")
-	}
-
-	p, err := policy.LoadPolicy(policyPath)
-	if err != nil {
-		log.Fatalf("scholar: %v", err)
-	}
-	kagiKey, braveKey := os.Getenv("KAGI_API_KEY"), os.Getenv("BRAVE_API_KEY")
-	searcher, retriever, err := egress.NewProviders(egress.ProviderOptions{
-		Policy:     p,
-		KagiKey:    kagiKey,
-		KagiRelay:  os.Getenv("KAGI_RELAY_ADDR"),
-		BraveKey:   braveKey,
-		BraveRelay: os.Getenv("BRAVE_RELAY_ADDR"),
-	})
-	if err != nil {
-		log.Fatalf("scholar: %v", err)
-	}
-	now := time.Now()
-	searchLedger, err := egress.OpenLedger(filepath.Join(burnDir, "search"), 48*time.Hour, now)
-	if err != nil {
-		log.Fatalf("scholar: %v", err)
-	}
-	extractLedger, err := egress.OpenLedger(filepath.Join(burnDir, "extract"), 48*time.Hour, now)
-	if err != nil {
-		log.Fatalf("scholar: %v", err)
-	}
-	sub, err := egress.NewSubsystem(egress.Config{
-		Policy:        p,
-		Searcher:      searcher,
-		Retriever:     retriever,
-		SearchLedger:  searchLedger,
-		ExtractLedger: extractLedger,
-		Scrubber:      wire.NewScrubber(kagiKey, braveKey),
-	})
-	if err != nil {
-		log.Fatalf("scholar: %v", err)
-	}
-
-	stateClient := sink.NewClient(stateURL, token) // one client: audit + approvals + transcripts
-	srv := scholar.New(scholar.Config{
-		Version: version,
-		Egress:  sub,
-		Model: scholar.NewModelClient(scholar.ModelOptions{
-			BaseURL: baseURL,
-			Model:   model,
-			Key:     os.Getenv("OPENAI_API_KEY"),
-		}),
-		Audit:       stateClient,
-		Approvals:   stateClient,
-		Transcripts: stateClient,
-		AnswerGate:  answerGate,
-		Caps:        scholar.DefaultCaps(),
-	})
-	serveHTTP(&http.Server{Addr: addr, Handler: srv.Handler()},
-		fmt.Sprintf("scholar (research → model %s @ %s, engine %s)", model, baseURL, sub.Engine()))
-}
-
-func runScribe(addr, workspaceDir, stateURL, stageDir string, approvals bool) {
-	token := os.Getenv("STATE_TOKEN")
-	if stateURL == "" || token == "" {
-		log.Fatalf("scribe needs STATE_URL and STATE_TOKEN: it audits every mutation to the state service")
-	}
-	root, err := workspace.Open(workspaceDir)
-	if err != nil {
-		log.Fatalf("scribe: %v", err)
-	}
-	// One client satisfies Auditor, DiffStore, and ApprovalClient.
-	client := sink.NewClient(stateURL, token)
-	cfg := scribe.Config{
-		Version:  version,
-		Root:     root,
-		Audit:    client,
-		Diffs:    client,
-		StageDir: stageDir,
-	}
-	if approvals {
-		cfg.Approvals = client // hold gated writes pending approval (resolved on the /approvals page)
-	}
-	srv := scribe.New(cfg)
-	srv.Recover() // resume any approvals staged before a restart (no-op when approvals are off)
-	serveHTTP(&http.Server{Addr: addr, Handler: srv.Handler()},
-		fmt.Sprintf("scribe (workspace %s → state %s)", workspaceDir, stateURL))
-}
-
-func runLibrarian(addr, workspaceDir, stateURL string, budgetMB, maxFileMB int) {
-	token := os.Getenv("STATE_TOKEN")
-	if stateURL == "" || token == "" {
-		log.Fatalf("librarian needs STATE_URL and STATE_TOKEN: it audits read denials to the state service")
-	}
-	rep, err := repo.New(workspaceDir, repo.Config{
-		Budget:      int64(budgetMB) << 20,
-		MaxFileSize: int64(maxFileMB) << 20,
-	})
-	if err != nil {
-		log.Fatalf("librarian: %v", err) // fail loud: the over-budget message names the offenders
-	}
-
-	// Watcher-primary freshness (the spike verdict): container writers
-	// arrive as events; the minute rescan bounds host-edit staleness and
-	// is the whole story on platforms without a watcher.
-	w, err := watch.New(workspaceDir, rep.Watchable, rep.Invalidate, func() {
-		if err := rep.Rescan(); err != nil {
-			log.Printf("librarian: overflow rescan: %v", err)
-		}
-	})
-	switch {
-	case errors.Is(err, watch.ErrUnsupported):
-		log.Printf("librarian: no filesystem watcher on this platform; rescan-only freshness")
-	case err != nil:
-		log.Fatalf("librarian: start watcher: %v", err)
-	default:
-		defer w.Close()
-	}
-	go func() {
-		tick := time.NewTicker(time.Minute)
-		defer tick.Stop()
-		for range tick.C {
-			if err := rep.Rescan(); err != nil {
-				log.Printf("librarian: rescan: %v", err)
-			}
-		}
-	}()
-
-	srv := librarian.New(librarian.Config{
-		Version: version,
-		Repo:    rep,
-		Audit:   sink.NewClient(stateURL, token),
-	})
-	spent, budget := rep.Resident()
-	serveHTTP(&http.Server{Addr: addr, Handler: srv.Handler()},
-		fmt.Sprintf("librarian (workspace %s, %d/%d MiB resident → state %s)",
-			workspaceDir, spent>>20, budget>>20, stateURL))
-}
-
-func runStateService(addr, stateDir string) {
-	token := os.Getenv("STATE_TOKEN")
-	srv, err := sink.New(sink.Config{
-		StateDir: stateDir,
-		Token:    token,
-		Version:  version,
-	})
-	if err != nil {
-		log.Fatalf("state service: %v", err)
-	}
-	defer srv.Close()
-	serveHTTP(&http.Server{Addr: addr, Handler: srv.Handler()},
-		fmt.Sprintf("state service (state %s)", stateDir))
-}
-
-func runBuilder(addr, workspace, spoolDir, stateURL, toolchainFile string) {
-	tc, err := os.ReadFile(toolchainFile)
-	if err != nil {
-		log.Fatalf("read toolchain id: %v", err)
-	}
-	toolchainID := strings.TrimSpace(string(tc))
-	if toolchainID == "" {
-		log.Fatalf("empty toolchain id in %s", toolchainFile)
-	}
-
-	token := os.Getenv("STATE_TOKEN")
-	if stateURL == "" || token == "" {
-		log.Fatalf("builder needs STATE_URL and STATE_TOKEN: the state service owns durable logs/audit/status")
-	}
-	if err := os.MkdirAll(spoolDir, 0o755); err != nil {
-		log.Fatalf("create spool %s: %v", spoolDir, err)
-	}
-
-	stateSink := sinkAdapter{sink.NewClient(stateURL, token)}
-	srv := mcpserver.New(mcpserver.Config{
-		Version:      version,
-		ToolchainID:  toolchainID,
-		Workspace:    workspace,
-		ManifestPath: filepath.Join(workspace, manifest.DefaultPath),
-		LogsDir:      spoolDir,
-		Runner: &runner.Runner{
-			LogsDir:     spoolDir,
-			ToolchainID: toolchainID,
-			Sink:        stateSink,
-		},
-		Audit:      stateSink.Client, // *sink.Client satisfies mcpserver.Auditor
-		LogFetcher: stateSink.Client, // ...and mcpserver.LogFetcher
-	})
-	serveHTTP(&http.Server{Addr: addr, Handler: srv.Handler()},
-		fmt.Sprintf("mcp (toolchain %s → state %s)", toolchainID, stateURL))
-}
-
-// sinkAdapter adapts *sink.Client to runner.Sink: the embedded client
-// supplies Reupload/Finalize/PutStatus directly; only StartRun needs the
-// interface return type (io.WriteCloser instead of the concrete *LogStream).
-type sinkAdapter struct{ *sink.Client }
-
-func (s sinkAdapter) StartRun(id runid.ID) io.WriteCloser { return s.Client.StartRun(id) }
-
-// serveHTTP runs the server until SIGTERM/SIGINT, then drains connections.
-func serveHTTP(httpSrv *http.Server, what string) {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	errCh := make(chan error, 1)
-	go func() { errCh <- httpSrv.ListenAndServe() }()
-	log.Printf("agent-builder %s serving %s at %s", version, what, httpSrv.Addr)
-
-	select {
-	case err := <-errCh:
-		log.Fatalf("serve: %v", err)
-	case <-ctx.Done():
-		log.Print("signal received; shutting down")
-		shCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = httpSrv.Shutdown(shCtx)
-	}
-}
-
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
-// probeHealthz hits the running server's /healthz from inside the
-// container, so the image needs no curl/wget for its HEALTHCHECK.
-func probeHealthz(addr string) int {
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	if host == "" || host == "0.0.0.0" || host == "::" {
-		host = "127.0.0.1"
-	}
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get("http://" + net.JoinHostPort(host, port) + "/healthz")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(os.Stderr, "healthz: %s\n", resp.Status)
-		return 1
-	}
-	return 0
 }
