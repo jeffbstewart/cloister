@@ -17,7 +17,9 @@
 # structural safety requirements. Deploy one cell per project; attach to the
 # shared infra stack's `infernet` (docker/inference.yaml) to reach `infer`.
 #
-# Stack env vars (Portainer):
+# Stack env vars (Portainer).  Required vars carry a ${VAR:?message} guard at
+# their first use, so a missing one fails the deploy naming the variable —
+# not with docker's bare "invalid reference format".
 #   PROJECT        short project id, e.g. myproject
 #   WORKSPACE      host path of the project repo, e.g. c:/projects/myproject
 #                  ── THE single source of truth for the workspace: defined once
@@ -62,13 +64,13 @@
 # Single-source workspace mount. The builder and scribe hold it rw (build outputs
 # / audited source writes); the agent is :ro so ALL source writes route through
 # the scribe (audited, gated). One host path, three mounts, one source of truth.
-x-workspace: &workspace "${WORKSPACE}:/workspace"
+x-workspace: &workspace "${WORKSPACE:?set WORKSPACE to the host path of the project repo}:/workspace"
 x-workspace-ro: &workspace-ro "${WORKSPACE}:/workspace:ro"
 
 services:
   agent:
-    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${AGENT_IMAGE}
-    container_name: ${PROJECT}-agent
+    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${AGENT_IMAGE:?set AGENT_IMAGE, e.g. cloister-agent:latest}
+    container_name: ${PROJECT:?set PROJECT, the short project id}-agent
     user: "1000:1000"
     restart: unless-stopped
     # No entrypoint override: the image entrypoint registers the builder MCP
@@ -78,7 +80,7 @@ services:
     environment:
       - OPENAI_BASE_URL=http://infer:11434/v1
       - OPENAI_API_KEY=ignored-for-local-use
-      - OPENAI_MODEL=${OPENAI_MODEL}
+      - OPENAI_MODEL=${OPENAI_MODEL:?set OPENAI_MODEL, the model the agent drives}
       # - BUILDER_MCP_URL=http://builder:9200/mcp   # default; override only for a nonstandard builder
     volumes:
       - *workspace-ro                    # :ro — the agent cannot write source; edits route via the scribe
@@ -97,14 +99,14 @@ services:
       - researchnet                      # reach the scholar MCP (research)
 
   builder:
-    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${BUILDER_IMAGE}
+    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${BUILDER_IMAGE:?set BUILDER_IMAGE, e.g. cloister-builder:latest}
     container_name: ${PROJECT}-builder
     user: "1000:1000"
     restart: unless-stopped
     command: ["-worker-mode", "builder"]
     environment:
       - STATE_URL=http://state:9201
-      - STATE_TOKEN=${STATE_TOKEN}
+      - STATE_TOKEN=${STATE_TOKEN:?set STATE_TOKEN, the shared worker-to-state secret}
       - GRADLE_USER_HOME=/gradle-home
     volumes:
       - *workspace                       # rw: SAME host dir as the agent; build outputs
@@ -227,11 +229,11 @@ services:
       - OPENAI_BASE_URL=http://infer:11434/v1
       - OPENAI_API_KEY=ignored-for-local-use
       - OPENAI_MODEL=${OPENAI_MODEL}
-      - KAGI_API_KEY=${KAGI_API_KEY}
+      - KAGI_API_KEY=${KAGI_API_KEY:?set KAGI_API_KEY, the scholar search/extract token}
       - BRAVE_API_KEY=${BRAVE_API_KEY:-}       # only if the policy sets search.engine: brave
       - KAGI_RELAY_ADDR=kagi-relay:8443        # dialed instead of kagi.com; TLS SNI stays kagi.com
     volumes:
-      - ${SCHOLAR_POLICY}:/etc/scholar/policy.yaml:ro   # read-only egress policy
+      - ${SCHOLAR_POLICY:?set SCHOLAR_POLICY to the host path of the egress policy yaml}:/etc/scholar/policy.yaml:ro   # read-only egress policy
       - scholar_burn:/burn                              # tiny writable burn ledger: timestamps only
     read_only: true
     tmpfs:
