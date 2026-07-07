@@ -150,6 +150,16 @@ func IsIgnoreFile(rel string) bool {
 	return base == GitignoreName || base == AiignoreName
 }
 
+// Glob reports whether a slash-separated relative path matches an
+// anchored glob in this package's segment syntax: path.Match within a
+// segment, "**" spanning any number of segments ("*.go" matches at the
+// root only — "**/*.go" matches at any depth).  Exported for the
+// librarian's listing and search filters, so the whole cell speaks one
+// glob dialect.
+func Glob(pattern, p string) bool {
+	return matchSegs(strings.Split(pattern, "/"), strings.Split(p, "/"))
+}
+
 // --- gitignore-syntax matching engine ---
 
 // ignoreFile is one ignore file's raw content plus the directory (root-
