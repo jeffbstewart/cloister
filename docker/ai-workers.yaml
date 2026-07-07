@@ -1,11 +1,11 @@
 # ── Per-project cell stack ──────────────────────────────────────────────────
-# One coding agent + its builder + state service + status relay, all scoped to
-# ONE project. Deploy one cell per project; attach to the shared infra stack's
-# `infernet` (compose.yaml) to reach `infer`.
+# One coding agent, all its workers, and a set of networks that enforce the
+# structural safety requirements. Deploy one cell per project; attach to the
+# shared infra stack's `infernet` (docker/inference.yaml) to reach `infer`.
 #
 # Stack env vars (Portainer):
-#   PROJECT        short project id, e.g. mediamanager
-#   WORKSPACE      host path of the project repo, e.g. c:/programming/github/MediaManager
+#   PROJECT        short project id, e.g. myproject
+#   WORKSPACE      host path of the project repo, e.g. c:/projects/myproject
 #                  ── THE single source of truth for the workspace: defined once
 #                     here, mounted into both agent and builder below.
 #   AGENT_IMAGE    e.g. qwen-agent:0.19.4
@@ -169,6 +169,9 @@ services:
       - statepub                         # reachable by the status relay only
 
   status:
+    # The operator's web-based audit and approval endpoint: publishes the state
+    # service's status pages (dashboard, audit tail, run logs, diffs) and the
+    # /approvals page to localhost, via a relay that parses nothing.
     image: alpine/socat:1.8.0.3
     container_name: ${PROJECT}-status
     restart: unless-stopped
