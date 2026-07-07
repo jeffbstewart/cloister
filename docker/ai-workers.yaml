@@ -22,7 +22,10 @@
 #   WORKSPACE      host path of the project repo, e.g. c:/projects/myproject
 #                  ── THE single source of truth for the workspace: defined once
 #                     here, mounted into both agent and builder below.
-#   AGENT_IMAGE    e.g. cloister-agent:latest (published by images.yml)
+#   AGENT_IMAGE    the jailed qwen-code image (THE "qwen image" — there is no
+#                  separately named one).  Published by images.yml with the
+#                  qwen version leading the tag: pin e.g.
+#                  cloister-agent:0.19.4-sha-<commit>, or track :latest
 #   BUILDER_IMAGE  e.g. cloister-builder:latest (the jdk25-gradle toolchain;
 #                  a future second toolchain will need per-toolchain image
 #                  names or toolchain-prefixed tags — one name holds one)

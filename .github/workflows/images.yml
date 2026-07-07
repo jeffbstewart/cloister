@@ -77,12 +77,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The agent tag leads with the qwen-code version it jails
+      # (0.19.4-sha-abc… / 0.19.4-1.0.0), the successor of the retired
+      # qwen-agent:<version>-r<rev> scheme: the commit part plays the old
+      # recipe-revision role, so any recipe change yields a fresh tag and a
+      # pinned pull can never go stale.  Deliberately NO bare :0.19.4
+      # rolling tag — that would reintroduce the ambiguity the rev killed.
       - name: Image tags
         id: tags
         run: |
           V="${{ steps.ver.outputs.version }}"
           BUILDER="${BUILDER_IMAGE}:${V}"
-          AGENT="${AGENT_IMAGE}:${V}"
+          AGENT="${AGENT_IMAGE}:${QWEN_VERSION}-${V}"
           if [ "${GITHUB_REF_TYPE}" = "tag" ] || [ "${GITHUB_REF_NAME}" = "main" ]; then
             BUILDER="${BUILDER},${BUILDER_IMAGE}:latest"
             AGENT="${AGENT},${AGENT_IMAGE}:latest"
