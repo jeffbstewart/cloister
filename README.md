@@ -18,31 +18,22 @@ prompt text as advice, never as enforcement.  The full rationale is in
 
 One cell per project.  The coding agent (qwen-code) holds a read-only
 workspace and can reach exactly three MCP services, each a single audited
-authority:
+authority: the **builder** (build/test actions from the manifest), the
+**scribe** (the sole writer of workspace source), and the **scholar**
+(`research(query)`, the only web path); the model itself comes from a
+shared GPU inference stack.  No internal network routes to the internet or
+the host, and the one container holding egress is a blind relay hard-wired
+to `kagi.com:443`.
 
-```
- agent ── infernet ─────► infer        (the model; shared GPU stack)
- agent ── buildnet ─────► builder :9200  build/test actions from the manifest
- agent ── buildnet ─────► scribe  :9300  the SOLE writer of workspace source
- agent ── researchnet ──► scholar :9500  research(query) — the only web path
+The operator watches everything at `127.0.0.1:${STATUS_PORT}` — the cell's
+entire host-visible surface: live queue state, the audit trail (every
+action, mutation, search, and extract, including rejected ones), full run
+logs, stored diffs, and the approvals page where gated operations wait for
+a human decision.
 
- builder/scribe ── statenet ─────► state :9201   append-only logs/audit/status
- scholar ──────── scholarstate ──► state          (no route to builder/scribe)
- scholar ──────── kagiegress ────► kagi-relay ── egress ──► kagi.com:443
- state ────────── statepub ──────► status relay ──► 127.0.0.1:${STATUS_PORT}
-```
-
-Every `*net` is `internal: true` — no route to the internet or the host.  The
-only container holding an `egress` network is the kagi-relay, a blind socat
-pipe hard-wired to `kagi.com:443`; even a fully compromised scholar can reach
-nothing else, and it refuses to start if a boot-time probe finds any other
-route.  All containers run non-root with `cap_drop: ALL`,
-`no-new-privileges`, read-only root filesystems, and pid/memory limits.
-
-The operator watches everything at `127.0.0.1:${STATUS_PORT}`: live queue
-state, the audit trail (every action, mutation, search, and extract —
-including rejected ones), full run logs, stored diffs, and the approvals
-page where gated operations wait for a human decision.
+The full runtime map — every container, network, mount, port, and the
+invariants with their enforcers — is in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Quick start
 
@@ -80,6 +71,7 @@ they bundle.
     go vet ./...
     go-licenses check ./... # deny copyleft
     go run ./cmd/compose-lint docker/ai-workers.yaml
+    go run ./cmd/copyright-lint
 
 CI runs all of the above on every PR, plus a secret scan; a pre-commit hook
 (`git config core.hooksPath .githooks`) runs the same scan locally.
