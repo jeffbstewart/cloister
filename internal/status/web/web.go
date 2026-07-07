@@ -1,7 +1,9 @@
-// Package web serves the human-facing observability pages for a
-// builder cell: live queue state, the audit trail, and full run logs.  It
-// reads ONLY from the builder's /state volume (mounted read-only) — it has
-// no MCP surface and no route to the builder, and it belongs on a
+// Package web serves the human-facing observability pages for a cell — the
+// oversight surface for every worker in it: live queue state, the audit
+// trail (builder commands, scribe mutations, scholar searches and research),
+// full run logs, stored mutation diffs, and the pending-approvals banner.
+// It reads ONLY from the cell's /state volume (mounted read-only) — it has
+// no MCP surface and no route to any worker, and it belongs on a
 // host-published network the agent cannot reach.
 //
 // Log and param content is agent-influenced, so logs are served as
