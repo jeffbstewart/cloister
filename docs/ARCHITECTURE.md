@@ -176,9 +176,11 @@ Dashed in the diagram; designed, not yet built (see
   filtered workspace model.  Holds workspace **ro**, `buildnet` (inbound
   MCP), `infernet`, `statenet`.  When it lands, the agent's workspace
   mount is removed entirely.
-- **deep-think node** (`infernet_big`) — an off-host inference engine for
-  heavy comprehension ops; the librarian pushes shield-filtered content to
-  it per query, and degrades to local `infer` when absent.
+- **deep-think node** (`infernet_big`, see [deepthink.md](deepthink.md)) —
+  an off-host inference engine for heavy comprehension ops: a natively
+  jailed macOS ollama (seatbelt + PF, no outbound, blind LAN relay)
+  behind the agency's presence-aware fallback chains; requests degrade to
+  local `infer` when the machine is away.
 - **archivist** (`:9600`, see [archivist.md](archivist.md)) — the cell's
   sole version-control authority: sole toucher of `.git` (confinement
   blocks it for everyone else), VCS-agnostic local verbs plus
