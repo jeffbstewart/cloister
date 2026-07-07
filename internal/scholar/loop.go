@@ -121,7 +121,7 @@ func (s *Server) research(ctx context.Context, opID runid.ID, query string) (res
 	ctx, cancel := context.WithTimeout(ctx, c.WallClock)
 	defer cancel()
 
-	messages := []Message{{Role: "system", Content: systemPrompt}, {Role: "user", Content: query}}
+	messages := []Message{{Role: "system", Content: systemPrompt(time.Now())}, {Role: "user", Content: query}}
 	rc.messages = &messages
 	var searches, extracts, tokens, searchNudges int
 

@@ -8,8 +8,9 @@ import (
 )
 
 // promptVersion identifies the baked system prompt a transcript ran under.
-// Bump it when prompt.go changes materially.
-const promptVersion = "scholar-prompt-2"
+// Bump it when prompt.go changes materially.  The series restarted at 1 with
+// the source-control migration; SVN-era transcripts count from the old one.
+const promptVersion = "scholar-prompt-1"
 
 // transcript accumulates a URLs-ONLY record of one research call:
 // the prompt version, the query, each tool CALL (its query/URL), result METADATA

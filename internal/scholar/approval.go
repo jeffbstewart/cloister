@@ -43,47 +43,38 @@ func (s *Server) gate(ctx context.Context, tool, path string, timeout time.Durat
 		return approval.Rejected
 	}
 	log.Printf("scholar: %s op=%s awaiting operator decision at /approvals (timeout %s)", tool, id, timeout)
-	deadline := time.Now().Add(timeout)
+	// The gate deadline rides the context, alongside the caller's own
+	// cancellation: one clock, one select.  We never need to distinguish
+	// "gate timed out" from "caller vanished" — both withdraw the pending
+	// record and return Timeout.
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	for {
-		if ctx.Err() != nil || time.Now().After(deadline) {
+		if ctx.Err() != nil {
 			log.Printf("scholar: %s op=%s withdrawn (timeout or caller gone)", tool, id)
-			s.withdraw(id) // caller gone, or our timeout — pull the pending record
+			s.withdraw(id) // pull the pending record; nobody is waiting on it
 			return approval.Timeout
 		}
 		rec, err := s.cfg.Approvals.PollDecision(id)
 		if err != nil {
 			log.Printf("scholar: poll approval %s: %v", id, err)
-			if !s.pause(ctx, deadline, 2*time.Second) {
-				s.withdraw(id)
-				return approval.Timeout
-			}
+			s.pause(ctx, 2*time.Second)
 			continue
 		}
 		if rec.Decision.Resolved() {
 			log.Printf("scholar: %s op=%s decided: %s", tool, id, rec.Decision)
 			return rec.Decision
 		}
-		if !s.pause(ctx, deadline, 300*time.Millisecond) {
-			s.withdraw(id)
-			return approval.Timeout
-		}
+		s.pause(ctx, 300*time.Millisecond)
 	}
 }
 
-// pause waits up to d (clamped to the deadline), returning true to keep polling
-// or false if the context is done or the deadline has passed.
-func (s *Server) pause(ctx context.Context, deadline time.Time, d time.Duration) bool {
-	if rem := time.Until(deadline); d > rem {
-		d = rem
-	}
-	if d <= 0 {
-		return false
-	}
+// pause waits up to d, returning early if ctx is done (caller cancelled or
+// the gate deadline passed); the loop's top-of-body ctx check acts on it.
+func (s *Server) pause(ctx context.Context, d time.Duration) {
 	select {
 	case <-ctx.Done():
-		return false
 	case <-time.After(d):
-		return true
 	}
 }
 
