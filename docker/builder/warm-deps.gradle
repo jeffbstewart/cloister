@@ -1,0 +1,35 @@
+// Platform-provided dependency warmer. Staged into the builder at airlock time
+// by update-gradle-deps.bat (docker cp from the host repo — NOT the
+// agent-writable workspace). Resolves every resolvable configuration in every
+// project so offline build / test / coverage all find their artifacts in one
+// pass: main + test compile/runtime classpaths, the JaCoCo agent + report
+// libraries, annotation processors, KSP, etc.
+//
+// This is PURE dependency resolution: it downloads the JARs and runs no
+// compile, test, or report task and loads no test classes. That makes it both
+// more complete than a test run (it reaches JaCoCo tooling a test alone would
+// not) and safer than `--test-dry-run` (which loaded test classes during
+// discovery).
+allprojects { proj ->
+    proj.tasks.register("warmAllDeps") {
+        // Capture each resolvable configuration's lazy artifact set at
+        // configuration time, keyed by name. Reference `proj` explicitly: a
+        // bare `configurations` inside this task closure resolves against the
+        // task, not the project ("unknown property 'configurations' for task").
+        // `incoming.files` is lazy here — nothing resolves until the action.
+        def resolvable = proj.configurations
+            .matching { it.canBeResolved }
+            .collect { [name: it.name, artifacts: it.incoming.files] }
+        doLast {
+            resolvable.each { entry ->
+                try {
+                    entry.artifacts.files   // force resolution + artifact download
+                } catch (Exception e) {
+                    // A configuration that cannot resolve in isolation must not
+                    // fail the whole warm-up; note it and move on.
+                    logger.lifecycle("warmAllDeps: skipped ${entry.name} (${e.message})")
+                }
+            }
+        }
+    }
+}

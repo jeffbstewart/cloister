@@ -30,6 +30,10 @@ go.work.sum
 *.pem
 secrets/
 
+# The static Linux binary images.yml cross-compiles into the builder image's
+# build context — a build artifact, never committed.
+docker/builder/agent-builder
+
 # Editor/IDE
 # .idea/
 # .vscode/

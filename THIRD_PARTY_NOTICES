@@ -1,0 +1,66 @@
+Third-party notices for Cloister
+================================
+
+Cloister itself is licensed under the Apache License, Version 2.0 (see
+LICENSE).  This file records the third-party software Cloister depends on,
+in two distinct categories with different distribution consequences.
+
+
+1. Go modules compiled into the agent-builder and compose-lint binaries
+-----------------------------------------------------------------------
+
+Generated with `go-licenses report ./...`; regenerate when go.mod changes.
+
+  github.com/google/jsonschema-go        MIT
+    https://github.com/google/jsonschema-go/blob/v0.4.3/LICENSE
+  github.com/modelcontextprotocol/go-sdk Apache-2.0
+    https://github.com/modelcontextprotocol/go-sdk/blob/v1.6.1/LICENSE
+  github.com/segmentio/asm               MIT
+    https://github.com/segmentio/asm/blob/v1.1.3/LICENSE
+  github.com/segmentio/encoding          MIT
+    https://github.com/segmentio/encoding/blob/v0.5.4/LICENSE
+  github.com/yosida95/uritemplate/v3     BSD-3-Clause
+    https://github.com/yosida95/uritemplate/blob/v3.0.2/LICENSE
+  golang.org/x/oauth2                    BSD-3-Clause
+    https://cs.opensource.google/go/x/oauth2/+/v0.35.0:LICENSE
+  golang.org/x/sys                       BSD-3-Clause
+    https://cs.opensource.google/go/x/sys/+/v0.41.0:LICENSE
+  gopkg.in/yaml.v3                       MIT and Apache-2.0
+    https://github.com/go-yaml/yaml/blob/v3.0.1/LICENSE
+
+CI enforces this ledger's health: `go-licenses check ./...` fails the build
+on any copyleft ("restricted"/"forbidden") Go dependency.
+
+
+2. Software bundled into the published container images
+--------------------------------------------------------
+
+The Go license scan does not see container contents; this section is the
+manual ledger for the images Cloister publishes to GHCR.  Base images that
+deployments merely PULL from their upstream registries (ollama/ollama,
+alpine/socat) are not redistributed by this project and are not listed.
+
+ghcr.io/jeffbstewart/cloister-agent
+  Bundles qwen-code and its Node.js runtime, from the base image
+  ghcr.io/qwenlm/qwen-code.
+    qwen-code — Apache License 2.0
+      https://github.com/QwenLM/qwen-code/blob/main/LICENSE
+    Node.js — MIT (with bundled-component licenses)
+      https://github.com/nodejs/node/blob/main/LICENSE
+  The base image's own license and notice files are retained unmodified
+  inside the published image.
+
+ghcr.io/jeffbstewart/cloister-builder
+  Bundles Amazon Corretto 25 (a distribution of OpenJDK), from the base
+  image amazoncorretto:25.
+    Amazon Corretto / OpenJDK — GNU General Public License, version 2,
+    with the Classpath Exception (GPLv2+CE)
+      https://github.com/corretto/corretto-25/blob/develop/LICENSE
+  Distributing this image redistributes Corretto.  Per GPLv2, the complete
+  corresponding source for Amazon Corretto 25 is available from Amazon at:
+      https://github.com/corretto/corretto-25
+  The Corretto image's license files are retained unmodified inside the
+  published image.  The agent-builder binary in this image is a separate,
+  independently licensed (Apache-2.0) work that is merely aggregated
+  alongside the JDK on the same image (GPLv2 section 2, "mere
+  aggregation"); it does not link against the JDK.

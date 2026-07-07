@@ -70,5 +70,7 @@ jobs:
           git fetch origin "${{ github.base_ref }}"
           git diff "origin/${{ github.base_ref }}...HEAD" | ./scripts/presubmit-check.sh
 
-      # Once docker/ai-workers.yaml migrates in (PR 22), add:
-      #   go run ./cmd/compose-lint docker/ai-workers.yaml
+      # The committed cell topology must satisfy the scholar containment
+      # invariants on every PR.
+      - name: Compose lint (scholar containment)
+        run: go run ./cmd/compose-lint docker/ai-workers.yaml

@@ -14,6 +14,7 @@ file:go.sum
 
 # Four-part version numbers in prose/configs look like IPs to the scanner —
 # add specific safe versions here as needed.
+alpine/socat:1.8.0.3
 
 # Synthetic UUID fixture in internal/runid tests (and its uppercase variant).
 1a2b3c4d5e6f
@@ -35,3 +36,7 @@ file:go.sum
 
 # Synthetic bearer token in status/sink's tests.
 test-token-abc123
+
+# Placeholder the local inference path requires (ollama ignores the key, but
+# the OpenAI client wants one set) — not a credential.
+OPENAI_API_KEY=ignored-for-local-use
