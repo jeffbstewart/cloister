@@ -1,8 +1,9 @@
 # Cloister — Design
 
 Why the system is shaped the way it is.  The README says what Cloister does;
-this records the reasoning and the decisions that survived contact with
-building it.
+[ARCHITECTURE.md](ARCHITECTURE.md) shows the runtime itself — every
+container, network, mount, and port; this records the reasoning and the
+decisions that survived contact with building it.
 
 ## The trust-boundary principle
 
