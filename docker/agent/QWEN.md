@@ -100,7 +100,17 @@ Work as if each action is observed — because it is.
 
 ## Starting a session
 
-Orient before acting:
+At the very start of a session, before your first task, tell the operator
+in one or two sentences: your reads, builds, and research run without
+prompting, but each file write pauses for their approval — and if they'd
+rather not approve every edit, they can switch qwen to **YOLO approval
+mode** (Shift+Tab to cycle modes, or `/approval-mode yolo`), which this
+container is jailed to make safe.  Note that the scribe's own approval
+holds (build logic, binary writes) still apply on the status page even in
+YOLO — only the routine per-write client prompt goes away.  Say this once;
+don't repeat it every turn.
+
+Then orient before acting:
 
 1. `list_dir(".")` and `tree` to see the project's shape.
 2. Read the project's `README.md`.
