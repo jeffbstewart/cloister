@@ -1,0 +1,17 @@
+=== RUN   TestMatchesAllWidgets
+--- FAIL: TestMatchesAllWidgets (0.01s)
+    matcher_test.go:42: expected 3 matches, got 2
+=== RUN   TestIgnoresSampleFiles
+--- FAIL: TestIgnoresSampleFiles (0.00s)
+    matcher_test.go:61: sample.tmp should be ignored, matched anyway
+=== RUN   TestParsesBundles
+--- PASS: TestParsesBundles (0.02s)
+=== RUN   TestScoring
+=== RUN   TestScoring/priority_bonus
+--- FAIL: TestScoring (0.00s)
+    --- FAIL: TestScoring/priority_bonus (0.00s)
+        scoring_test.go:33: bonus not applied
+FAIL
+FAIL	example.com/sampleapp/matcher	0.041s
+ok  	example.com/sampleapp/scan	0.012s
+FAIL

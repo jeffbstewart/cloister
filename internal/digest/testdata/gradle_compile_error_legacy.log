@@ -1,0 +1,17 @@
+> Task :compileKotlin FAILED
+e: /workspace/src/main/kotlin/com/example/sampleapp/InputScanner.kt: (18, 5): expecting member declaration
+> Task :compileJava FAILED
+/workspace/src/main/java/com/example/sampleapp/LegacyProbe.java:17: error: cannot find symbol
+        Probe p = new Probee();
+                      ^
+  symbol:   class Probee
+  location: class LegacyProbe
+1 error
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':compileJava'.
+> Compilation failed; see the compiler error output for details.
+
+BUILD FAILED in 9s

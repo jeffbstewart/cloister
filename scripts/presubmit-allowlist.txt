@@ -18,3 +18,20 @@ file:go.sum
 # Synthetic UUID fixture in internal/runid tests (and its uppercase variant).
 1a2b3c4d5e6f
 1A2B3C4D5E6F
+
+# Canonical RFC-1918 / link-local / public-DNS literals used as test fixtures
+# in internal/egress/policy's IsInternalHost tests.  Exact addresses only —
+# these are textbook examples, not anything from a real deployment.
+10.0.0.5
+192.168.1.1
+172.16.0.1
+169.254.1.1
+8.8.8.8
+1.1.1.1
+
+# RFC 5737 TEST-NET-1 (guaranteed unroutable) — the scholar self-check test
+# probes it to prove a failed dial is treated as containment.
+192.0.2.1
+
+# Synthetic bearer token in status/sink's tests.
+test-token-abc123
