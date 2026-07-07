@@ -48,7 +48,10 @@ services:
 
     # --- filesystem: weights read-only; writable state in tmpfs ----------
     volumes:
-      - "c:/ai_models:/models:ro"        # pre-staged weights (host path, read-only)
+      # Pre-staged weights (read-only): the hardened stack has no egress to
+      # pull them.  MODELS_DIR is the host directory holding ollama's model
+      # store; see docs/GETTING_STARTED.md for staging it.
+      - "${MODELS_DIR:-c:/ai_models}:/models:ro"
 
     read_only: true                      # root filesystem read-only (defense in depth)
     tmpfs:

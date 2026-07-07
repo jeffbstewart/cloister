@@ -9,7 +9,7 @@ mode of one Go binary, wired into per-project "cells" (docker/ai-workers.yaml).
 - `cmd/agent-builder` — the one binary (builder | -scribe | -scholar | -state-service).
 - `internal/*` — the packages. `cmd/compose-lint` — topology drift guard.
 - `docker/` — Dockerfiles + compose. `etc/` — config templates. `docs/` — design.
-  `scripts/` — ops helpers.
+  `bin/` — operator tools. `scripts/` — repo plumbing.
 
 ## Build & verify (from repo root)
     go build ./...
