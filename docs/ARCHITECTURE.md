@@ -33,6 +33,7 @@ flowchart LR
     krelay["kagi-relay<br/>alpine/socat :8443"]
     librarian["librarian :9400<br/>PLANNED"]
     archivist["archivist :9600<br/>PLANNED"]
+    corrector["corrector :9700<br/>PLANNED"]
   end
 
   subgraph infra["Shared inference stack (one per machine)"]
@@ -73,9 +74,13 @@ flowchart LR
   ws -. "rw (planned)" .-> archivist
   archivist -. "statenet (planned)" .-> state
   archivist -. "gitegress · pinned relays (planned)" .-> gh
+  corrector -. "buildnet · reads (planned)" .-> librarian
+  corrector -. "buildnet · diffs + comments (planned)" .-> archivist
+  corrector -. "infernet (planned)" .-> infer
+  corrector -. "statenet (planned)" .-> state
 
   classDef planned stroke-dasharray: 6 4;
-  class librarian,archivist,gh,mac planned
+  class librarian,archivist,corrector,gh,mac planned
 ```
 
 Solid arrows are network edges (labeled with the compose network that
@@ -177,6 +182,10 @@ Dashed in the diagram; designed, not yet built (see
   audited-ungated GitHub PR authorship as a bot identity, reaching
   `github.com`/`api.github.com` only through pinned blind relays.  The
   GitHub-side permission recipe is [GITHUB_SETUP.md](GITHUB_SETUP.md).
+- **corrector** (`:9700`, see [corrector.md](corrector.md)) — the
+  reviewer: no mounts, no credential; composes librarian reads, archivist
+  diffs/comments, and engine-routed inference into a ten-lens, grounded,
+  advice-never-gate review of any PR or the agent's pending work.
 
 ## The common hardening profile
 
