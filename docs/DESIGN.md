@@ -193,4 +193,5 @@ disconnects afterward.
 - The Brave search path has never been exercised against the real API (the
   code says so at its entry point).
 - The agent image's read-only workspace mount does not enforce `.aiignore`;
-  interposing a reader that respects it is future work.
+  interposing a reader that respects it is future work — designed as the
+  librarian worker (docs/librarian.md), not yet implemented.
