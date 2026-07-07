@@ -97,10 +97,21 @@ try {
     cfg.mcpServers && typeof cfg.mcpServers === 'object' && !Array.isArray(cfg.mcpServers)
       ? cfg.mcpServers
       : {};
-  cfg.mcpServers.builder = { httpUrl: builderUrl, timeout };
+  // `trust: true` bypasses qwen's client-side tool-approval DIALOG for a
+  // server — never its server-side gates. Trusted: the read-only librarian
+  // (shield + denial audit), the builder (manifest-declared argv in a
+  // no-egress jail), and the scholar (its own query + answer human gates,
+  // far stronger than a tool-name prompt). The scribe is left UNtrusted so
+  // ordinary edits still surface a client prompt; an operator who would
+  // rather not approve each write switches qwen to YOLO approval mode (the
+  // jail is built to be safe under it) — the baked prompt tells them so.
+  // Trusting the scribe would still preserve its server-side approval HOLDS
+  // (build-logic/binary writes wait on /approvals regardless), so leaving it
+  // untrusted is a UX choice, not a containment one.
+  cfg.mcpServers.builder = { httpUrl: builderUrl, timeout, trust: true };
   cfg.mcpServers.scribe = { httpUrl: scribeUrl, timeout: scribeTimeout };
-  cfg.mcpServers.scholar = { httpUrl: scholarUrl, timeout: scholarTimeout };
-  cfg.mcpServers.librarian = { httpUrl: librarianUrl, timeout };
+  cfg.mcpServers.scholar = { httpUrl: scholarUrl, timeout: scholarTimeout, trust: true };
+  cfg.mcpServers.librarian = { httpUrl: librarianUrl, timeout, trust: true };
 
   // Platform-managed security control: authoritatively set the allowlist so the
   // built-in mutators stay disabled regardless of prior settings. qwen-code nests
@@ -121,7 +132,8 @@ try {
   writeFileSync(path, JSON.stringify(cfg, null, 2) + '\n');
   console.error(
     `qwen-mcp-init: registered builder -> ${builderUrl}, scribe -> ${scribeUrl}, ` +
-      `scholar -> ${scholarUrl}, librarian -> ${librarianUrl}; ` +
+      `scholar -> ${scholarUrl}, librarian -> ${librarianUrl} ` +
+      `(builder/scholar/librarian trusted; scribe prompts unless YOLO); ` +
       `tools.core allowlist = ${coreTools.length} tools (mutators + readers + shell + web excluded); ` +
       `skills = ${allowedSkills.join(', ')}`,
   );
