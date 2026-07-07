@@ -1,0 +1,278 @@
+# ── Per-project cell stack ──────────────────────────────────────────────────
+# One coding agent + its builder + state service + status relay, all scoped to
+# ONE project. Deploy one cell per project; attach to the shared infra stack's
+# `infernet` (compose.yaml) to reach `infer`.
+#
+# Stack env vars (Portainer):
+#   PROJECT        short project id, e.g. mediamanager
+#   WORKSPACE      host path of the project repo, e.g. c:/programming/github/MediaManager
+#                  ── THE single source of truth for the workspace: defined once
+#                     here, mounted into both agent and builder below.
+#   AGENT_IMAGE    e.g. qwen-agent:0.19.4
+#   BUILDER_IMAGE  e.g. builder-jdk25-gradle:0.2.0
+#   OPENAI_MODEL   a tag installed in infer, e.g. qwen3-coder:30b
+#   STATE_TOKEN    shared builder<->state secret; per project, e.g. [guid]::NewGuid().ToString("N")
+#   STATUS_PORT    host localhost port for the status pages (unique per project)
+#   TZ             status-page timezone, e.g. America/New_York (default UTC)
+#   KAGI_API_KEY   scholar's search/extract API token (Kagi). Set the account's
+#                  custom billing limit LOW as a spend backstop.
+#   SCHOLAR_POLICY host path of the read-only egress policy yaml (engine + deny list)
+#   BRAVE_API_KEY  only if the policy sets search.engine: brave (else leave unset)
+#
+# The agent registers the builder, scribe, AND scholar MCP servers in
+# /home/node/.qwen/settings.json (persisted in the qwen_home volume), plus a
+# coreTools allowlist that excludes the built-in file mutators (source writes MUST
+# go through the scribe) and the built-in web tools (web access MUST go through the
+# scholar). Project-agnostic service URLs:
+#   { "mcpServers": {
+#       "builder": { "httpUrl": "http://builder:9200/mcp", "timeout": 2400000 },
+#       "scribe":  { "httpUrl": "http://scribe:9300/mcp",  "timeout": 2400000 },
+#       "scholar": { "httpUrl": "http://scholar:9500/mcp", "timeout": 2400000 } } }
+#
+# Least-privilege network map (every edge is a network hop or token-gated API):
+#   agent   ── infernet ────> infer         agent   ── buildnet ─────> builder + scribe (MCP)
+#   agent   ── researchnet ─> scholar (MCP)  scholar ── infernet ────> infer (model)
+#   builder ── statenet ───> state (sink)    scribe  ── statenet ─────> state (audit + diffs)
+#   scholar ── scholarstate > state (audit)  scholar ── kagiegress ──> kagi-relay ── egress ─> kagi.com
+#   state   ── statepub ───> status relay    status  ── frontend ────> host publish
+# So: infer never shares a net with builder/scribe; the agent cannot reach state;
+# the scholar handles untrusted web content and has NO route to builder/scribe/
+# workspace and NO `egress` net — only the kagi-relay touches the internet, pinned
+# to kagi.com. Neither the state service, scribe, nor scholar holds open egress.
+
+# Single-source workspace mount. The builder and scribe hold it rw (build outputs
+# / audited source writes); the agent is :ro so ALL source writes route through
+# the scribe (audited, gated). One host path, three mounts, one source of truth.
+x-workspace: &workspace "${WORKSPACE}:/workspace"
+x-workspace-ro: &workspace-ro "${WORKSPACE}:/workspace:ro"
+
+services:
+  agent:
+    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${AGENT_IMAGE}
+    container_name: ${PROJECT}-agent
+    user: "1000:1000"
+    restart: unless-stopped
+    # No entrypoint override: the image entrypoint registers the builder MCP
+    # server, then execs this command. `sleep infinity` keeps the container
+    # alive so you can `docker exec ... qwen` into an interactive session.
+    command: ["sleep", "infinity"]
+    environment:
+      - OPENAI_BASE_URL=http://infer:11434/v1
+      - OPENAI_API_KEY=ignored-for-local-use
+      - OPENAI_MODEL=${OPENAI_MODEL}
+      # - BUILDER_MCP_URL=http://builder:9200/mcp   # default; override only for a nonstandard builder
+    volumes:
+      - *workspace-ro                    # :ro — the agent cannot write source; edits route via the scribe
+      - qwen_home:/home/node/.qwen       # persistent settings/history, node-owned
+    working_dir: /workspace
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 512
+    mem_limit: 2g
+    networks:
+      - infernet                         # reach infer (shared infra stack)
+      - buildnet                         # reach the builder MCP; NOT infer's peers
+      - researchnet                      # reach the scholar MCP (research)
+
+  builder:
+    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${BUILDER_IMAGE}
+    container_name: ${PROJECT}-builder
+    user: "1000:1000"
+    restart: unless-stopped
+    command: ["-worker-mode", "builder"]
+    environment:
+      - STATE_URL=http://state:9201
+      - STATE_TOKEN=${STATE_TOKEN}
+      - GRADLE_USER_HOME=/gradle-home
+    volumes:
+      - *workspace                       # rw: SAME host dir as the agent; build outputs
+      - gradle:/gradle-home              # per caches[] in agent-harness.yaml
+      # NOTE: deliberately NO /state mount — durable logs/audit are the state service's.
+    working_dir: /workspace
+    read_only: true
+    tmpfs:
+      - /tmp:size=2g
+      # tmpfs ownership comes from the mount option, NOT the image chown (a
+      # tmpfs is mounted fresh, root-owned, shadowing the image dir). uid/gid
+      # 1000 so the non-root builder can write its log spool.
+      - /spool:size=512m,uid=1000,gid=1000,mode=0700
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 1024
+    mem_limit: 8g
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/agent-builder", "-healthcheck", "-addr", ":9200"]
+      interval: 30s
+    networks:
+      - buildnet                         # reachable by agent (inbound MCP)
+      - statenet                         # reach state (outbound sink); no egress
+
+  scribe:
+    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${BUILDER_IMAGE}
+    container_name: ${PROJECT}-scribe
+    user: "1000:1000"
+    restart: unless-stopped
+    # Same binary, scribe mode: the sole audited writer of /workspace, serving
+    # confined write ops as MCP tools on :9300 and auditing to the state service.
+    # -scribe-approvals: build-logic / binary / non-UTF-8 writes are held
+    # PENDING human approval on the status page instead of refused.
+    command: ["-worker-mode", "scribe", "-addr", ":9300", "-workspace", "/workspace", "-scribe-approvals"]
+    environment:
+      - STATE_URL=http://state:9201
+      - STATE_TOKEN=${STATE_TOKEN}
+    volumes:
+      - *workspace                       # rw: the scribe is the SOLE audited writer of source
+      - scribe_state:/scribe-state       # rw: durable staging for approval-gated changes
+      # No /state mount (audits go over statenet); no /spool (diffs upload directly).
+    working_dir: /workspace
+    read_only: true
+    tmpfs:
+      - /tmp                             # atomic writes land in /workspace; /tmp is runtime scratch
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 512
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/agent-builder", "-healthcheck", "-addr", ":9300"]
+      interval: 30s
+    networks:
+      - buildnet                         # reachable by the agent (inbound MCP)
+      - statenet                         # reach state (audit + diff store); internal -> no egress
+
+  state:
+    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${BUILDER_IMAGE}
+    container_name: ${PROJECT}-state
+    user: "1000:1000"
+    restart: unless-stopped
+    command: ["-worker-mode", "state-service", "-addr", ":9201", "-state-dir", "/state"]
+    environment:
+      - STATE_TOKEN=${STATE_TOKEN}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - state:/state                     # rw: the SOLE owner of durable logs/audit/status
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/agent-builder", "-healthcheck", "-addr", ":9201"]
+      interval: 30s
+    networks:
+      - statenet                         # reachable by builder/scribe; internal -> no egress
+      - scholarstate                     # reachable by the scholar (audit/approvals/transcripts)
+      - statepub                         # reachable by the status relay only
+
+  status:
+    image: alpine/socat:1.8.0.3
+    container_name: ${PROJECT}-status
+    restart: unless-stopped
+    user: "65534:65534"                  # nobody
+    command: ["TCP-LISTEN:9201,fork,reuseaddr", "TCP:state:9201"]
+    ports:
+      - "127.0.0.1:${STATUS_PORT:-9201}:9201"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 64
+    mem_limit: 64m
+    networks:
+      - statepub                         # reach state
+      - frontend                         # publish to host; parses nothing
+
+  scholar:
+    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${BUILDER_IMAGE}
+    container_name: ${PROJECT}-scholar
+    user: "1000:1000"
+    restart: unless-stopped
+    # Same binary, scholar mode: a quarantined research service. Serves ONE MCP
+    # tool research(query) on :9500 and internally drives a model (over the infer
+    # OpenAI API) with a FIXED three-tool menu (web_search / extract_url_as_markdown
+    # / respond) whose only egress is Kagi via the kagi-relay. It handles UNTRUSTED
+    # web content, so it holds no /workspace mount, no route to builder/scribe, and
+    # no `egress` network — its sole internet path is the relay. On boot it
+    # TCP-probes public IPs and refuses to start if any connect (fail-closed
+    # self-check).
+    command: ["-worker-mode", "scholar", "-addr", ":9500", "-policy", "/etc/scholar/policy.yaml"]
+    environment:
+      - STATE_URL=http://state:9201
+      - STATE_TOKEN=${STATE_TOKEN}
+      - OPENAI_BASE_URL=http://infer:11434/v1
+      - OPENAI_API_KEY=ignored-for-local-use
+      - OPENAI_MODEL=${OPENAI_MODEL}
+      - KAGI_API_KEY=${KAGI_API_KEY}
+      - BRAVE_API_KEY=${BRAVE_API_KEY:-}       # only if the policy sets search.engine: brave
+      - KAGI_RELAY_ADDR=kagi-relay:8443        # dialed instead of kagi.com; TLS SNI stays kagi.com
+    volumes:
+      - ${SCHOLAR_POLICY}:/etc/scholar/policy.yaml:ro   # read-only egress policy
+      - scholar_burn:/burn                              # tiny writable burn ledger: timestamps only
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/agent-builder", "-healthcheck", "-addr", ":9500"]
+      interval: 30s
+    networks:
+      - researchnet                      # reachable by the agent ONLY (inbound MCP)
+      - infernet                         # reach the model (infer); internal -> no internet
+      - scholarstate                     # reach state (audit + approvals + transcripts).
+                                         # NOT statenet: keeps the scholar off builder/scribe
+      - kagiegress                       # to the kagi-relay ONLY (internal; no internet)
+
+  kagi-relay:
+    image: alpine/socat:1.8.0.3          # same image as the status relay
+    container_name: ${PROJECT}-kagi-relay
+    user: "65534:65534"                  # nobody
+    restart: unless-stopped
+    # The ONLY container holding the `egress` network. Hard-wired to Kagi: the
+    # scholar dials kagi-relay:8443, socat forwards raw TCP to kagi.com:443. TLS
+    # stays end-to-end (the relay pipes ciphertext); `fork` re-resolves per
+    # connection so Kagi CDN rotation is handled.
+    command: ["TCP-LISTEN:8443,fork,reuseaddr", "TCP:kagi.com:443"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 64
+    mem_limit: 64m
+    networks:
+      - kagiegress                       # reachable by the scholar
+      - egress                           # the ONLY container touching the internet
+
+networks:
+  infernet:
+    external: true                       # shared infra stack's inference net
+    name: infernet
+  buildnet:
+    internal: true                       # agent <-> builder
+  statenet:
+    internal: true                       # builder/scribe <-> state
+  scholarstate:
+    internal: true                       # scholar <-> state ONLY (not builder/scribe)
+  statepub:
+    internal: true                       # state <-> relay
+  researchnet:
+    internal: true                       # agent <-> scholar
+  kagiegress:
+    internal: true                       # scholar <-> kagi-relay (no internet)
+  egress: {}                             # kagi-relay -> internet (ONLY the relay holds this)
+  frontend: {}                           # relay's host-publish path
+
+volumes:
+  qwen_home:
+  gradle:
+    name: ${PROJECT}_gradle
+  state:
+    name: ${PROJECT}_builder_state
+  scribe_state:
+    name: ${PROJECT}_scribe_state
+  scholar_burn:
+    name: ${PROJECT}_scholar_burn

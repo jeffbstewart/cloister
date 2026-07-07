@@ -1,0 +1,85 @@
+# Scholar egress policy — TEMPLATE.
+#
+# Copy to the host path named by ${SCHOLAR_POLICY} and mounted read-only at
+# /etc/scholar/policy.yaml. EVERY field below is REQUIRED: the scholar refuses
+# to start (fail-closed) if any is missing, zero, or unknown. There are no
+# code-side defaults — your leash must be explicit. `pathPrefix` on a deny entry
+# is the one optional field.
+
+search:
+  engine: kagi           # kagi (default) | brave. The selected engine's key
+                         # (KAGI_API_KEY / BRAVE_API_KEY) must be set, and a
+                         # brave cell needs a second relay to api.search.brave.com.
+  dailyCap: 200          # search queries per UTC day. Not "0 = unlimited" — set
+                         # a real number. Enforced against the restart-surviving
+                         # burn ledger
+  denySearchEnginePages: true   # activate the code-maintained SERP deny set
+                         # (Google + ~180 ccTLDs on /search, Bing, DuckDuckGo,
+                         # Yahoo/Yandex/Baidu, Brave Search, etc.) so you don't
+                         # hand-list them below. Defense-in-depth — see the note
+                         # in the deny section on why redirects still slip past.
+
+extract:
+  dailyCap: 100          # page extracts per UTC day (a separate, pricier SKU).
+  deny:                  # THE extract gate. Hosts we will never ask Kagi to
+                         # fetch — an attempted extract is refused + logged +
+                         # audited (rejected_denied). At least one entry required.
+                         # "*." matches subdomains only; add an apex separately.
+                         # Grow this from experience: any host a research loop
+                         # could abuse as an exfil drop or a write-then-read
+                         # covert-memory scratchpad belongs here.
+
+    # Paste / dump drops (arbitrary attacker-readable content):
+    - host: pastebin.com
+    - host: "*.pastebin.com"
+    - host: paste.ee
+    - host: dpaste.com
+    - host: dpaste.org
+    - host: "*.hastebin.com"
+    - host: hastebin.com
+    - host: rentry.co
+    - host: controlc.com
+    - host: ghostbin.com
+
+    # Request-capture / reflection (echo a GET back to the sender = exfil + memory):
+    - host: webhook.site
+    - host: "*.requestbin.com"
+    - host: requestbin.net
+    - host: "*.requestcatcher.com"
+    - host: "*.pipedream.net"
+    - host: beeceptor.com
+    - host: "*.free.beeceptor.com"
+
+    # Out-of-band / pentest interaction services (canonical covert channels):
+    - host: "*.oast.fun"
+    - host: "*.oast.live"
+    - host: "*.oast.pro"
+    - host: "*.oast.site"
+    - host: "*.oast.online"
+    - host: "*.interact.sh"
+    - host: "*.burpcollaborator.net"
+    - host: "*.canarytokens.com"
+
+    # Ad-hoc tunnels (attacker-controlled origin behind a throwaway name):
+    - host: "*.ngrok.io"
+    - host: "*.ngrok-free.app"
+    - host: "*.trycloudflare.com"
+    - host: "*.loca.lt"
+    - host: "*.serveo.net"
+    - host: "*.telebit.io"
+
+    # Search-engine result pages (Google + ccTLDs, Bing, DuckDuckGo, Yahoo,
+    # Yandex, Baidu, Brave Search, …) are handled by the built-in
+    # `search.denySearchEnginePages: true` toggle above — no need to hand-list
+    # them here. A SERP URL is a ?q=<secret> exfil channel with
+    # attacker-influenceable content; the toggle is defense-in-depth (Kagi
+    # follows redirects we can't re-check, so a redirect into search slips a
+    # host-based deny anyway — the real gate is the raw-URL operator
+    # approval). Add any of your own here, e.g. an internal wiki's search path:
+    # - host: wiki.example.com
+    #   pathPrefix: /search
+
+limits:
+  maxResponseBytes: 2097152   # 2 MiB — cap on an upstream response (Kagi/Brave).
+  timeout: 30s                # per-request timeout to the provider (a duration
+                              # string: "30s", "1m30s", … — the unit is explicit).

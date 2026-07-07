@@ -1,0 +1,70 @@
+# ── Shared infrastructure stack ─────────────────────────────────────────────
+# The GPU inference node and its localhost bridge. LONG-LIVED: deploy once and
+# leave up (model reloads are expensive). It knows nothing about any project.
+#
+# Per-project cells (cell-stack.yaml) attach to the `infernet` network this
+# stack publishes, to reach `infer`. Deploy this first.
+
+services:
+  infer:
+    image: ollama/ollama:0.24.0          # pin a version; avoid :latest for reproducibility
+    container_name: infer
+    user: "1000:1000"
+    restart: unless-stopped
+
+    # --- GPU passthrough -------------------------------------------------
+    # Docker Desktop + WSL2 provides the plumbing; this reservation requests it.
+    # (Compose v2 also accepts the shorthand `gpus: all` instead of this block.)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+      - OLLAMA_MODELS=/models
+      - OLLAMA_CONTEXT_LENGTH=32768
+      - OLLAMA_KEEP_ALIVE=60m
+      - HOME=/home/ollama                # ephemeral, rebuilt on each launch
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+    # --- filesystem: weights read-only; writable state in tmpfs ----------
+    volumes:
+      - "c:/ai_models:/models:ro"        # pre-staged weights (host path, read-only)
+
+    read_only: true                      # root filesystem read-only (defense in depth)
+    tmpfs:
+      - /tmp
+      - /home/ollama:uid=1000,gid=1000,mode=0700
+
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    networks:
+      - infernet
+
+  proxy:
+    image: alpine/socat:1.8.0.3
+    container_name: infer-proxy
+    restart: unless-stopped
+    user: "65534:65534"                  # nobody
+    command: ["TCP-LISTEN:11434,fork,reuseaddr", "TCP:infer:11434"]
+    ports:
+      - "127.0.0.1:11434:11434"          # host reaches ollama for staging/debugging
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    pids_limit: 64
+    networks:
+      - infernet
+      - frontend
+
+networks:
+  infernet:
+    internal: true                       # NO route to the internet => no egress
+    name: infernet                       # stable name so per-project cells join as external
+  frontend: {}
