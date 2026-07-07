@@ -95,7 +95,10 @@ func main() {
 		os.Exit(probeHealthz(*addr))
 	}
 
-	log.SetFlags(log.LstdFlags | log.LUTC)
+	// Local time in log timestamps: honors the container's TZ (embedded
+	// tzdata makes any IANA zone work).  Data timestamps — audit records,
+	// ledgers — stay UTC by their own code; this is only the log prefix.
+	log.SetFlags(log.LstdFlags)
 
 	switch workerMode(*mode) {
 	case modeBuilder:
