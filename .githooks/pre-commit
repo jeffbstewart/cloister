@@ -13,4 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-git diff --cached | ./scripts/presubmit-check.sh
+git diff --cached | ./scripts/presubmit-check.sh || exit 1
+# Header presence repo-wide; year currency on the staged files.
+git diff --cached --name-only --diff-filter=ACMR | go run ./cmd/copyright-lint -

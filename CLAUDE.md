@@ -18,6 +18,7 @@ mode of one Go binary, wired into per-project "cells" (docker/ai-workers.yaml).
     go vet ./...
     go-licenses check ./... # deny copyleft
     go run ./cmd/compose-lint docker/ai-workers.yaml
+    go run ./cmd/copyright-lint   # headers present + year current (policy embedded from cmd/copyright-lint/copyright.yaml)
 
 ## Conventions (do not regress)
 - Domain IDs are structs wrapping a private string with a validating parser — no

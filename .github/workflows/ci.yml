@@ -88,3 +88,14 @@ jobs:
       # invariants on every PR.
       - name: Compose lint (scholar containment)
         run: go run ./cmd/compose-lint docker/ai-workers.yaml
+
+      # Header presence and third-party observation repo-wide; year currency
+      # on the files the PR touches (main pushes re-verify presence only).
+      - name: Copyright headers
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch origin "${{ github.base_ref }}"
+            git diff --name-only "origin/${{ github.base_ref }}...HEAD" | go run ./cmd/copyright-lint -
+          else
+            go run ./cmd/copyright-lint
+          fi
