@@ -1,10 +1,13 @@
 # SVN → GitHub migration
 
-Cloister is migrating from a private Subversion repository into this repo,
-restructured as it lands. The repo root becomes the Go module; containers,
-config, and docs get their own homes. Each change lands as a PR, reviewed in the GitHub code-review UI —
-much of this code is being read closely for the first time, so expect
-substantive review on each package.
+**Status: complete.**  All 24 steps below landed as reviewed PRs; this file
+remains as the record of how the repo got its shape.
+
+Cloister migrated from a private Subversion repository into this repo,
+restructured as it landed. The repo root became the Go module; containers,
+config, and docs got their own homes. Each change landed as a PR, reviewed
+in the GitHub code-review UI — much of this code was read closely for the
+first time in that review.
 
 Per-PR flow: branch off `main` → migrate + clean the package (rewrite imports
 from the legacy private module path to `github.com/jeffbstewart/cloister/`,
