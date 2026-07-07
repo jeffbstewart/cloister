@@ -77,7 +77,7 @@ func newFixture(t *testing.T, busy bool) *fixture {
 	exit := 0
 	rec := audit.New(id, "test", audit.DecisionRun, 0)
 	rec.Status = "ok"
-	rec.Command = &audit.CommandDetail{
+	rec.Detail = &audit.CommandDetail{
 		Params:   map[string]string{"filter": "<script>alert(1)</script>"},
 		Argv:     []string{"./gradlew", "test", "--tests", "<img src=x onerror=alert(2)>"},
 		ExitCode: &exit,
@@ -122,10 +122,10 @@ func TestPendingApprovalCollapsedWhenResolved(t *testing.T) {
 	}
 	op := mustRunID(t)
 	pending := audit.New(op, "apply_diff", "pending_approval", 0)
-	pending.Mutation = &audit.MutationDetail{Path: "build.gradle.kts"}
+	pending.Detail = &audit.MutationDetail{Path: "build.gradle.kts"}
 	al.Append(pending)
 	applied := audit.New(op, "apply_diff", "applied", 0)
-	applied.Mutation = &audit.MutationDetail{Path: "build.gradle.kts"}
+	applied.Detail = &audit.MutationDetail{Path: "build.gradle.kts"}
 	al.Append(applied)
 	al.Close()
 
@@ -143,7 +143,7 @@ func TestPendingApprovalCollapsedWhenResolved(t *testing.T) {
 	state2 := t.TempDir()
 	al2, _ := audit.Open(filepath.Join(state2, "audit.jsonl"), audit.Options{})
 	stillPending := audit.New(mustRunID(t), "apply_diff", "pending_approval", 0)
-	stillPending.Mutation = &audit.MutationDetail{Path: "x.gradle.kts"}
+	stillPending.Detail = &audit.MutationDetail{Path: "x.gradle.kts"}
 	al2.Append(stillPending)
 	al2.Close()
 	ts2 := httptest.NewServer(New(Config{StateDir: state2, Version: "test"}).Handler())

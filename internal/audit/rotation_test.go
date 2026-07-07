@@ -37,7 +37,7 @@ func TestAppendWritesJSONL(t *testing.T) {
 	exit := 1
 	rec := New(id, "test", DecisionRun, 81237*time.Millisecond)
 	rec.Status = "failed"
-	rec.Command = &CommandDetail{
+	rec.Detail = &CommandDetail{
 		Params:   map[string]string{"filter": "TranscodeMatcherServiceTest"},
 		Argv:     []string{"./gradlew", "--offline", "test", "--tests", "TranscodeMatcherServiceTest"},
 		ExitCode: &exit,
@@ -70,16 +70,16 @@ func TestAppendWritesJSONL(t *testing.T) {
 	if r.Decision != DecisionRun || r.Duration.Std() != 81237*time.Millisecond || r.Status != "failed" {
 		t.Errorf("header round-trip mismatch: %+v", r.Header)
 	}
-	if r.Command == nil || r.Command.ExitCode == nil || *r.Command.ExitCode != 1 {
-		t.Errorf("action round-trip mismatch: %+v", r.Command)
+	if r.Command() == nil || r.Command().ExitCode == nil || *r.Command().ExitCode != 1 {
+		t.Errorf("action round-trip mismatch: %+v", r.Command())
 	}
-	if r.Command == nil || len(r.Command.Argv) != 5 || r.Command.Argv[0] != "./gradlew" || r.Command.Argv[4] != "TranscodeMatcherServiceTest" {
-		t.Errorf("argv round-trip mismatch: %+v", r.Command)
+	if r.Command() == nil || len(r.Command().Argv) != 5 || r.Command().Argv[0] != "./gradlew" || r.Command().Argv[4] != "TranscodeMatcherServiceTest" {
+		t.Errorf("argv round-trip mismatch: %+v", r.Command())
 	}
 	if recs[1].Decision != DecisionRejectedParam {
 		t.Errorf("rejected record decision = %q", recs[1].Decision)
 	}
-	if recs[1].Command != nil {
+	if recs[1].Command() != nil {
 		t.Error("rejected record must have no command detail")
 	}
 	if recs[1].RunID.IsZero() {

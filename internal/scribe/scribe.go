@@ -321,7 +321,7 @@ func (s *Server) createTextFile(ctx context.Context, req *mcp.CallToolRequest) (
 	if err != nil {
 		return errResult("internal: mint op id: " + err.Error()), nil
 	}
-	rec.Mutation = &audit.MutationDetail{Path: a.Path}
+	rec.Detail = &audit.MutationDetail{Path: a.Path}
 
 	p, res := s.resolveConfined(rec, a.Path)
 	if res != nil {
@@ -337,12 +337,12 @@ func (s *Server) createTextFile(ctx context.Context, req *mcp.CallToolRequest) (
 	}
 	resultDiff := workspace.Unified("/dev/null", "b/"+a.Path, nil, []byte(a.Content), workspace.DefaultContext)
 	added, _ := diffStat(resultDiff)
-	rec.Mutation.BytesAfter = int64(len(a.Content))
-	rec.Mutation.FilesTouched = 1
-	rec.Mutation.LinesAdded = added
-	rec.Mutation.SHA256After = sha256hex([]byte(a.Content))
+	rec.Mutation().BytesAfter = int64(len(a.Content))
+	rec.Mutation().FilesTouched = 1
+	rec.Mutation().LinesAdded = added
+	rec.Mutation().SHA256After = sha256hex([]byte(a.Content))
 	payload, truncated := diffPayload("", resultDiff)
-	rec.Mutation.DiffTruncated = truncated
+	rec.Mutation().DiffTruncated = truncated
 	if isBuildLogic(s.rel(p)) {
 		// Hold the create pending human approval.
 		return s.awaitApproval(rec, stagedOp{
@@ -357,7 +357,7 @@ func (s *Server) createTextFile(ctx context.Context, req *mcp.CallToolRequest) (
 		return s.rejected(rec, decError, err), nil
 	}
 	if s.putDiff(rec.RunID, payload) {
-		rec.Mutation.HasDiff = true
+		rec.Mutation().HasDiff = true
 	}
 	rec.Decision = decApplied
 	s.audit(rec)
@@ -378,7 +378,7 @@ func (s *Server) applyDiff(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 	if err != nil {
 		return errResult("internal: mint op id: " + err.Error()), nil
 	}
-	rec.Mutation = &audit.MutationDetail{Path: a.Path}
+	rec.Detail = &audit.MutationDetail{Path: a.Path}
 	p, res := s.resolveConfined(rec, a.Path)
 	if res != nil {
 		return res, nil
@@ -422,7 +422,7 @@ func (s *Server) replaceString(ctx context.Context, req *mcp.CallToolRequest) (*
 	if err != nil {
 		return errResult("internal: mint op id: " + err.Error()), nil
 	}
-	rec.Mutation = &audit.MutationDetail{Path: a.Path}
+	rec.Detail = &audit.MutationDetail{Path: a.Path}
 	if a.Find == "" {
 		return s.rejected(rec, decError, fmt.Errorf("find must not be empty")), nil
 	}
@@ -473,7 +473,7 @@ func (s *Server) replaceRegex(ctx context.Context, req *mcp.CallToolRequest) (*m
 	if err != nil {
 		return errResult("internal: mint op id: " + err.Error()), nil
 	}
-	rec.Mutation = &audit.MutationDetail{Path: a.Path}
+	rec.Detail = &audit.MutationDetail{Path: a.Path}
 	re, err := regexp.Compile(a.Pattern) // RE2: linear time, no ReDoS
 	if err != nil {
 		return s.rejected(rec, decPattern, fmt.Errorf("bad regex: %v", err)), nil
@@ -523,7 +523,7 @@ func (s *Server) writeBinaryFile(ctx context.Context, req *mcp.CallToolRequest) 
 	if err != nil {
 		return errResult("internal: mint op id: " + err.Error()), nil
 	}
-	rec.Mutation = &audit.MutationDetail{Path: a.Path}
+	rec.Detail = &audit.MutationDetail{Path: a.Path}
 	data, err := base64.StdEncoding.DecodeString(a.BytesBase64)
 	if err != nil {
 		return s.rejected(rec, decError, fmt.Errorf("invalid base64: %v", err)), nil
@@ -543,11 +543,11 @@ func (s *Server) writeBinaryFile(ctx context.Context, req *mcp.CallToolRequest) 
 			return s.rejected(rec, decError, fmt.Errorf("file exists; set overwrite to replace it")), nil
 		}
 	}
-	rec.Mutation.BytesAfter = int64(len(data))
-	rec.Mutation.FilesTouched = 1
-	rec.Mutation.SHA256After = sha256hex(data)
+	rec.Mutation().BytesAfter = int64(len(data))
+	rec.Mutation().FilesTouched = 1
+	rec.Mutation().SHA256After = sha256hex(data)
 	// Store hash + size, not the bytes; ALWAYS approval-gated (opaque).
-	payload := []byte(fmt.Sprintf("binary write to %s\n%d bytes\nsha256 %s\n(binary content is not stored for review)", a.Path, len(data), rec.Mutation.SHA256After))
+	payload := []byte(fmt.Sprintf("binary write to %s\n%d bytes\nsha256 %s\n(binary content is not stored for review)", a.Path, len(data), rec.Mutation().SHA256After))
 	return s.awaitApproval(rec, stagedOp{OpID: rec.RunID, Tool: rec.Tool, Path: s.rel(p), Content: data, Perm: 0o644, Payload: payload}, s.progressNotifier(ctx, req)), nil
 }
 
@@ -592,24 +592,24 @@ func (s *Server) finishEdit(rec audit.Record, p workspace.Path, old, newContent 
 	if string(newContent) == string(old) {
 		rec.Decision = decNoChange
 		s.audit(rec)
-		return jsonResult(map[string]any{"opId": rec.RunID, "path": rec.Mutation.Path, "status": "no_change", "changed": false}), nil
+		return jsonResult(map[string]any{"opId": rec.RunID, "path": rec.Mutation().Path, "status": "no_change", "changed": false}), nil
 	}
-	resultDiff := workspace.Unified("a/"+rec.Mutation.Path, "b/"+rec.Mutation.Path, old, newContent, workspace.DefaultContext)
+	resultDiff := workspace.Unified("a/"+rec.Mutation().Path, "b/"+rec.Mutation().Path, old, newContent, workspace.DefaultContext)
 	added, removed := diffStat(resultDiff)
-	rec.Mutation.BytesBefore = int64(len(old))
-	rec.Mutation.BytesAfter = int64(len(newContent))
-	rec.Mutation.FilesTouched = 1
-	rec.Mutation.LinesAdded = added
-	rec.Mutation.LinesRemoved = removed
-	rec.Mutation.SHA256After = sha256hex(newContent)
+	rec.Mutation().BytesBefore = int64(len(old))
+	rec.Mutation().BytesAfter = int64(len(newContent))
+	rec.Mutation().FilesTouched = 1
+	rec.Mutation().LinesAdded = added
+	rec.Mutation().LinesRemoved = removed
+	rec.Mutation().SHA256After = sha256hex(newContent)
 
 	if dryRun {
 		rec.Decision = decDryRun
 		s.audit(rec)
-		return jsonResult(map[string]any{"opId": rec.RunID, "path": rec.Mutation.Path, "diff": resultDiff, "linesAdded": added, "linesRemoved": removed, "dryRun": true}), nil
+		return jsonResult(map[string]any{"opId": rec.RunID, "path": rec.Mutation().Path, "diff": resultDiff, "linesAdded": added, "linesRemoved": removed, "dryRun": true}), nil
 	}
 	payload, truncated := diffPayload(inputDiff, resultDiff)
-	rec.Mutation.DiffTruncated = truncated
+	rec.Mutation().DiffTruncated = truncated
 	if isBuildLogic(s.rel(p)) {
 		// Hold the reviewed change pending human approval.
 		return s.awaitApproval(rec, stagedOp{
@@ -621,11 +621,11 @@ func (s *Server) finishEdit(rec audit.Record, p workspace.Path, old, newContent 
 		return s.rejected(rec, decError, err), nil
 	}
 	if s.putDiff(rec.RunID, payload) {
-		rec.Mutation.HasDiff = true
+		rec.Mutation().HasDiff = true
 	}
 	rec.Decision = decApplied
 	s.audit(rec)
-	return jsonResult(map[string]any{"opId": rec.RunID, "path": rec.Mutation.Path, "diff": resultDiff, "bytes": len(newContent), "linesAdded": added, "linesRemoved": removed}), nil
+	return jsonResult(map[string]any{"opId": rec.RunID, "path": rec.Mutation().Path, "diff": resultDiff, "bytes": len(newContent), "linesAdded": added, "linesRemoved": removed}), nil
 }
 
 func (s *Server) getDiff(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -717,7 +717,7 @@ func (s *Server) createDirectory(_ context.Context, req *mcp.CallToolRequest) (*
 	if err != nil {
 		return errResult("internal: mint op id: " + err.Error()), nil
 	}
-	rec.Mutation = &audit.MutationDetail{Path: a.Path}
+	rec.Detail = &audit.MutationDetail{Path: a.Path}
 	p, res := s.resolveForWrite(rec, a.Path)
 	if res != nil {
 		return res, nil
@@ -743,7 +743,7 @@ func (s *Server) moveFile(_ context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 	if err != nil {
 		return errResult("internal: mint op id: " + err.Error()), nil
 	}
-	rec.Mutation = &audit.MutationDetail{From: a.From, To: a.To}
+	rec.Detail = &audit.MutationDetail{From: a.From, To: a.To}
 
 	from, err := s.root.Resolve(a.From)
 	if err != nil {
@@ -797,7 +797,7 @@ func (s *Server) moveDirectory(_ context.Context, req *mcp.CallToolRequest) (*mc
 	if err != nil {
 		return errResult("internal: mint op id: " + err.Error()), nil
 	}
-	rec.Mutation = &audit.MutationDetail{From: a.From, To: a.To}
+	rec.Detail = &audit.MutationDetail{From: a.From, To: a.To}
 	from, err := s.root.Resolve(a.From)
 	if err != nil {
 		return s.rejected(rec, decConfine, err), nil
@@ -846,7 +846,7 @@ func (s *Server) copyFile(_ context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 	if err != nil {
 		return errResult("internal: mint op id: " + err.Error()), nil
 	}
-	rec.Mutation = &audit.MutationDetail{From: a.From, To: a.To}
+	rec.Detail = &audit.MutationDetail{From: a.From, To: a.To}
 
 	from, err := s.root.Resolve(a.From)
 	if err != nil {
@@ -906,7 +906,7 @@ func (s *Server) deleteFile(_ context.Context, req *mcp.CallToolRequest) (*mcp.C
 	if err != nil {
 		return errResult("internal: mint op id: " + err.Error()), nil
 	}
-	rec.Mutation = &audit.MutationDetail{Path: a.Path}
+	rec.Detail = &audit.MutationDetail{Path: a.Path}
 	p, res := s.resolveForWrite(rec, a.Path)
 	if res != nil {
 		return res, nil
@@ -938,7 +938,7 @@ func (s *Server) deleteDirectory(_ context.Context, req *mcp.CallToolRequest) (*
 	if err != nil {
 		return errResult("internal: mint op id: " + err.Error()), nil
 	}
-	rec.Mutation = &audit.MutationDetail{Path: a.Path}
+	rec.Detail = &audit.MutationDetail{Path: a.Path}
 	// The recursive flag has no MutationDetail home; it is already reported in the
 	// jsonResult response (and is inherent to whether os.RemoveAll vs os.Remove ran).
 	p, res := s.resolveForWrite(rec, a.Path)
@@ -1009,10 +1009,10 @@ func (s *Server) rejectDiff(rec audit.Record, decision audit.Decision, err error
 	payload := []byte("=== submitted diff — REJECTED ===\n" + err.Error() + "\n\n" + submitted)
 	if len(payload) > DefaultMaxDiffBytes {
 		payload = append(payload[:DefaultMaxDiffBytes], "\n[... truncated ...]\n"...)
-		rec.Mutation.DiffTruncated = true
+		rec.Mutation().DiffTruncated = true
 	}
 	if s.putDiff(rec.RunID, payload) {
-		rec.Mutation.HasDiff = true
+		rec.Mutation().HasDiff = true
 	}
 	return s.rejected(rec, decision, err)
 }

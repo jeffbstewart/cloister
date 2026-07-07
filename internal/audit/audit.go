@@ -101,25 +101,152 @@ func (h Header) Validate() error {
 	return nil
 }
 
-// Record is one audit line: the required Header envelope (embedded, so its
-// fields stay flat and greppable), an optional human-readable Status, and at
-// most one typed detail body for the record's kind.  Exactly one worker type
-// owns each detail; a reader switches on the non-nil one (or on Tool).
+// Kind names a detail body's type — the wire discriminator.
+type Kind string
+
+// The detail kinds, one per owning worker file.
+const (
+	KindCommand  Kind = "command"
+	KindMutation Kind = "mutation"
+	KindResearch Kind = "research"
+	KindSearch   Kind = "search"
+	KindExtract  Kind = "extract"
+	KindRead     Kind = "read"
+)
+
+// Detail is one record's typed body.  Each worker's file declares its
+// detail types; the single Detail field makes "at most one" true by
+// construction rather than by convention.
+type Detail interface {
+	Kind() Kind
+}
+
+// decodeDetail is the explicit decode table — deliberately a visible
+// package-local switch, not a registry: reading this function answers
+// "what kinds exist" completely.
+func decodeDetail(k Kind) (Detail, error) {
+	switch k {
+	case KindCommand:
+		return &CommandDetail{}, nil
+	case KindMutation:
+		return &MutationDetail{}, nil
+	case KindResearch:
+		return &ResearchDetail{}, nil
+	case KindSearch:
+		return &SearchDetail{}, nil
+	case KindExtract:
+		return &ExtractDetail{}, nil
+	case KindRead:
+		return &ReadDetail{}, nil
+	}
+	return nil, fmt.Errorf("audit: unknown detail kind %q", k)
+}
+
+// Record is one audit line: the required Header envelope (flat and
+// greppable on the wire), an optional human-readable Status, and at most
+// one typed Detail — enforced structurally by the single field.  On the
+// wire the detail nests under "detail" with its "kind" alongside:
+//
+//	{"ts":…,"runId":…,"tool":"apply_diff","decision":"applied","duration":"12ms",
+//	 "kind":"mutation","detail":{"path":"src/a.go",…}}
+//
+// Readers use the typed accessors (Mutation(), Command(), …), which
+// html/template resolves exactly like the former struct fields.
 type Record struct {
 	Header
-	Status   string          `json:"status,omitempty"`
-	Command  *CommandDetail  `json:"command,omitempty"`
-	Mutation *MutationDetail `json:"mutation,omitempty"`
-	Research *ResearchDetail `json:"research,omitempty"`
-	Search   *SearchDetail   `json:"search,omitempty"`
-	Extract  *ExtractDetail  `json:"extract,omitempty"`
-	Read     *ReadDetail     `json:"read,omitempty"`
+	Status string
+	Detail Detail
+}
+
+// Typed accessors: the detail if it is that kind, else nil.  Returning
+// the pointer keeps producer ergonomics — a handler may set the detail
+// once and enrich it later through the accessor.
+func (r Record) Command() *CommandDetail   { d, _ := r.Detail.(*CommandDetail); return d }
+func (r Record) Mutation() *MutationDetail { d, _ := r.Detail.(*MutationDetail); return d }
+func (r Record) Research() *ResearchDetail { d, _ := r.Detail.(*ResearchDetail); return d }
+func (r Record) Search() *SearchDetail     { d, _ := r.Detail.(*SearchDetail); return d }
+func (r Record) Extract() *ExtractDetail   { d, _ := r.Detail.(*ExtractDetail); return d }
+func (r Record) Read() *ReadDetail         { d, _ := r.Detail.(*ReadDetail); return d }
+
+// recordWire is the JSON shape: flat header + status + kind + detail.
+type recordWire struct {
+	Header
+	Status string          `json:"status,omitempty"`
+	Kind   Kind            `json:"kind,omitempty"`
+	Detail json.RawMessage `json:"detail,omitempty"`
+}
+
+// MarshalJSON writes the flat envelope with the kind-discriminated detail.
+func (r Record) MarshalJSON() ([]byte, error) {
+	w := recordWire{Header: r.Header, Status: r.Status}
+	if r.Detail != nil {
+		w.Kind = r.Detail.Kind()
+		b, err := json.Marshal(r.Detail)
+		if err != nil {
+			return nil, err
+		}
+		w.Detail = b
+	}
+	return json.Marshal(w)
+}
+
+// UnmarshalJSON decodes via the kind table.  Lines from before the
+// tagged-union format (per-kind top-level keys) still decode — the
+// deployed cells' ledgers predate it.
+func (r *Record) UnmarshalJSON(b []byte) error {
+	var w recordWire
+	if err := json.Unmarshal(b, &w); err != nil {
+		return err
+	}
+	r.Header, r.Status, r.Detail = w.Header, w.Status, nil
+	if w.Kind != "" {
+		d, err := decodeDetail(w.Kind)
+		if err != nil {
+			return err
+		}
+		if err := json.Unmarshal(w.Detail, d); err != nil {
+			return err
+		}
+		r.Detail = d
+		return nil
+	}
+	return r.unmarshalLegacy(b)
+}
+
+// unmarshalLegacy reads the pre-union shape: one optional top-level key
+// per kind.  Keep until no deployed ledger predates the union format.
+func (r *Record) unmarshalLegacy(b []byte) error {
+	var old struct {
+		Command  *CommandDetail  `json:"command"`
+		Mutation *MutationDetail `json:"mutation"`
+		Research *ResearchDetail `json:"research"`
+		Search   *SearchDetail   `json:"search"`
+		Extract  *ExtractDetail  `json:"extract"`
+		Read     *ReadDetail     `json:"read"`
+	}
+	if err := json.Unmarshal(b, &old); err != nil {
+		return err
+	}
+	switch {
+	case old.Command != nil:
+		r.Detail = old.Command
+	case old.Mutation != nil:
+		r.Detail = old.Mutation
+	case old.Research != nil:
+		r.Detail = old.Research
+	case old.Search != nil:
+		r.Detail = old.Search
+	case old.Extract != nil:
+		r.Detail = old.Extract
+	case old.Read != nil:
+		r.Detail = old.Read
+	}
+	return nil
 }
 
 // New builds a Record with its required Header.  Time is left zero here and
-// stamped by Append: the writer's clock is authoritative.  Callers attach at
-// most one detail (Command/Mutation/Research/Search/Extract/Read) and may set
-// Status.
+// stamped by Append: the writer's clock is authoritative.  Callers set
+// Detail (at most one, structurally) and may set Status.
 func New(runID runid.ID, tool string, decision Decision, dur time.Duration) Record {
 	return Record{Header: Header{RunID: runID, Tool: tool, Decision: decision, Duration: Duration(dur)}}
 }

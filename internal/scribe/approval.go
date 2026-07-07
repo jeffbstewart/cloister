@@ -99,7 +99,7 @@ func (s *Server) awaitApproval(rec audit.Record, op stagedOp, notify func(string
 	// even rejected/timed-out) truthfully carries HasDiff. rec.Mutation is shared
 	// with pend and with resolveStaged's copy, so this one assignment covers them.
 	if s.putDiff(op.OpID, op.Payload) {
-		rec.Mutation.HasDiff = true
+		rec.Mutation().HasDiff = true
 	}
 	if err := s.cfg.Approvals.RegisterPending(op.OpID, op.Tool, op.Path); err != nil {
 		s.removeStaged(op.OpID)
@@ -144,7 +144,7 @@ func (s *Server) resolveStaged(rec audit.Record, op stagedOp, d approval.Decisio
 			return s.rejected(rec, decError, fmt.Errorf("apply approved change: %v", err))
 		}
 		rec.Decision = decApplied
-		rec.Mutation.HasDiff = true
+		rec.Mutation().HasDiff = true
 		s.audit(rec)
 		return jsonResult(map[string]any{"opId": op.OpID, "path": op.Path, "status": "applied_after_approval"})
 	case approval.Timeout:
@@ -184,7 +184,7 @@ func (s *Server) Recover() {
 		op := op
 		go func() {
 			rec := audit.New(op.OpID, op.Tool, "", 0)
-			rec.Mutation = &audit.MutationDetail{Path: op.Path}
+			rec.Detail = &audit.MutationDetail{Path: op.Path}
 			s.resolveStaged(rec, op, s.awaitDecision(op.OpID))
 		}()
 	}

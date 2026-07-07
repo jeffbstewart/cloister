@@ -29,3 +29,6 @@ type MutationDetail struct {
 	HasDiff       bool   `json:"hasDiff,omitempty"`       // a diff payload is stored for this opId
 	DiffTruncated bool   `json:"diffTruncated,omitempty"` // that payload was capped for size
 }
+
+// Kind marks MutationDetail as the scribe's detail body.
+func (*MutationDetail) Kind() Kind { return KindMutation }

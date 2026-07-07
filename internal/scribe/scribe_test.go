@@ -219,7 +219,7 @@ func TestCreateTextFile(t *testing.T) {
 		t.Errorf("file content = %q, want hello", got)
 	}
 	rec, ok := f.aud.last()
-	if !ok || rec.Mutation == nil || rec.Tool != "create_text_file" || rec.Decision != decApplied || rec.Mutation.Path != "src/Foo.kt" {
+	if !ok || rec.Mutation() == nil || rec.Tool != "create_text_file" || rec.Decision != decApplied || rec.Mutation().Path != "src/Foo.kt" {
 		t.Errorf("audit record = %+v, want applied create_text_file src/Foo.kt", rec)
 	}
 	if rec.RunID.IsZero() {
@@ -518,10 +518,10 @@ func TestDiffPayloadAndGetDiff(t *testing.T) {
 		t.Fatalf("apply_diff errored: %s", res)
 	}
 	rec, _ := f.aud.last()
-	if rec.Mutation == nil || !rec.Mutation.HasDiff || rec.Mutation.LinesAdded != 1 || rec.Mutation.LinesRemoved != 1 || rec.Mutation.SHA256After == "" {
+	if rec.Mutation() == nil || !rec.Mutation().HasDiff || rec.Mutation().LinesAdded != 1 || rec.Mutation().LinesRemoved != 1 || rec.Mutation().SHA256After == "" {
 		t.Errorf("audit record not enriched: %+v", rec)
 	}
-	if rec.Mutation == nil || rec.Mutation.BytesBefore == 0 || rec.Mutation.BytesAfter == 0 || rec.Mutation.FilesTouched != 1 {
+	if rec.Mutation() == nil || rec.Mutation().BytesBefore == 0 || rec.Mutation().BytesAfter == 0 || rec.Mutation().FilesTouched != 1 {
 		t.Errorf("audit summary fields missing: %+v", rec)
 	}
 
@@ -777,7 +777,7 @@ func TestMalformedDiffIsCaptured(t *testing.T) {
 		t.Fatal("malformed diff should be rejected")
 	}
 	rec, _ := f.aud.last()
-	if rec.Mutation == nil || !rec.Mutation.HasDiff {
+	if rec.Mutation() == nil || !rec.Mutation().HasDiff {
 		t.Fatal("rejected diff was not captured (HasDiff false)")
 	}
 	// The submitted diff is retrievable, so the operator can see what was sent.

@@ -61,19 +61,19 @@ func (s *Server) finishNonUTF8(rec audit.Record, p workspace.Path, oldRaw, final
 	if string(finalBytes) == string(oldRaw) {
 		rec.Decision = decNoChange
 		s.audit(rec)
-		return jsonResult(map[string]any{"opId": rec.RunID, "path": rec.Mutation.Path, "status": "no_change", "changed": false})
+		return jsonResult(map[string]any{"opId": rec.RunID, "path": rec.Mutation().Path, "status": "no_change", "changed": false})
 	}
 	added, removed := diffStat(viewDiff)
-	rec.Mutation.BytesBefore = int64(len(oldRaw))
-	rec.Mutation.BytesAfter = int64(len(finalBytes))
-	rec.Mutation.FilesTouched = 1
-	rec.Mutation.LinesAdded = added
-	rec.Mutation.LinesRemoved = removed
-	rec.Mutation.SHA256After = sha256hex(finalBytes)
+	rec.Mutation().BytesBefore = int64(len(oldRaw))
+	rec.Mutation().BytesAfter = int64(len(finalBytes))
+	rec.Mutation().FilesTouched = 1
+	rec.Mutation().LinesAdded = added
+	rec.Mutation().LinesRemoved = removed
+	rec.Mutation().SHA256After = sha256hex(finalBytes)
 	if dryRun {
 		rec.Decision = decDryRun
 		s.audit(rec)
-		return jsonResult(map[string]any{"opId": rec.RunID, "path": rec.Mutation.Path, "diff": viewDiff, "dryRun": true, "permitNonUtf8": true})
+		return jsonResult(map[string]any{"opId": rec.RunID, "path": rec.Mutation().Path, "diff": viewDiff, "dryRun": true, "permitNonUtf8": true})
 	}
 	payload, _ := diffPayload("", viewDiff)
 	return s.awaitApproval(rec, stagedOp{OpID: rec.RunID, Tool: rec.Tool, Path: s.rel(p), Content: finalBytes, Perm: uint32(perm), Payload: payload}, notify)
@@ -89,12 +89,12 @@ func (s *Server) applyDiffRepair(rec audit.Record, p workspace.Path, diff string
 	if errors.Is(err, workspace.ErrAlreadyApplied) {
 		rec.Decision = decNoChange
 		s.audit(rec)
-		return jsonResult(map[string]any{"opId": rec.RunID, "path": rec.Mutation.Path, "status": "already_applied", "changed": false})
+		return jsonResult(map[string]any{"opId": rec.RunID, "path": rec.Mutation().Path, "status": "already_applied", "changed": false})
 	}
 	if err != nil {
 		return s.rejectDiff(rec, decError, err, diff)
 	}
-	viewDiff := workspace.Unified("a/"+rec.Mutation.Path, "b/"+rec.Mutation.Path, []byte(viewOld), newView, workspace.DefaultContext)
+	viewDiff := workspace.Unified("a/"+rec.Mutation().Path, "b/"+rec.Mutation().Path, []byte(viewOld), newView, workspace.DefaultContext)
 	return s.finishNonUTF8(rec, p, raw, workspace.BytesFromView(string(newView)), fi.Mode().Perm(), viewDiff, dryRun, notify)
 }
 
@@ -117,7 +117,7 @@ func (s *Server) replaceStringRepair(rec audit.Record, p workspace.Path, find, r
 	} else {
 		viewNew = strings.Replace(viewOld, find, replace, 1)
 	}
-	viewDiff := workspace.Unified("a/"+rec.Mutation.Path, "b/"+rec.Mutation.Path, []byte(viewOld), []byte(viewNew), workspace.DefaultContext)
+	viewDiff := workspace.Unified("a/"+rec.Mutation().Path, "b/"+rec.Mutation().Path, []byte(viewOld), []byte(viewNew), workspace.DefaultContext)
 	return s.finishNonUTF8(rec, p, raw, workspace.BytesFromView(viewNew), fi.Mode().Perm(), viewDiff, dryRun, notify)
 }
 
@@ -142,6 +142,6 @@ func (s *Server) replaceRegexRepair(rec audit.Record, p workspace.Path, re *rege
 		expanded := re.Expand(nil, []byte(replacement), view, loc)
 		newView = append(append(append([]byte{}, view[:loc[0]]...), expanded...), view[loc[1]:]...)
 	}
-	viewDiff := workspace.Unified("a/"+rec.Mutation.Path, "b/"+rec.Mutation.Path, view, newView, workspace.DefaultContext)
+	viewDiff := workspace.Unified("a/"+rec.Mutation().Path, "b/"+rec.Mutation().Path, view, newView, workspace.DefaultContext)
 	return s.finishNonUTF8(rec, p, raw, workspace.BytesFromView(string(newView)), fi.Mode().Perm(), viewDiff, dryRun, notify)
 }

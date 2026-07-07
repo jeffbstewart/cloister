@@ -179,7 +179,7 @@ func (s *Server) handleResearch(ctx context.Context, req *mcp.CallToolRequest) (
 	// One enriched research record: loop stats + transcript flag.  Its
 	// decision and duration are finalized at each exit.
 	rec := audit.New(opID, "research", decError, 0)
-	rec.Research = &audit.ResearchDetail{Query: args.Query,
+	rec.Detail = &audit.ResearchDetail{Query: args.Query,
 		Searches: res.searches, Extracts: res.extracts, Tokens: res.tokens, TranscriptStored: stored}
 	finalize := func(d audit.Decision) {
 		rec.Decision = d
@@ -214,8 +214,8 @@ func (s *Server) handleResearch(ctx context.Context, req *mcp.CallToolRequest) (
 		}
 	}
 
-	rec.Research.AnswerBytes = len(res.answer.Answer)
-	rec.Research.AnswerSHA256 = sha256Hex(res.answer.Answer)
+	rec.Research().AnswerBytes = len(res.answer.Answer)
+	rec.Research().AnswerSHA256 = sha256Hex(res.answer.Answer)
 	finalize(decAnswered)
 	return jsonResult(res.answer), nil
 }
@@ -250,7 +250,7 @@ func answerGatePath(ans Answer) string {
 
 func (s *Server) auditResearch(opID runid.ID, query string, decision audit.Decision, dur time.Duration) {
 	rec := audit.New(opID, "research", decision, dur)
-	rec.Research = &audit.ResearchDetail{Query: query}
+	rec.Detail = &audit.ResearchDetail{Query: query}
 	s.audit(rec)
 }
 
@@ -270,20 +270,20 @@ func (s *Server) audit(r audit.Record) {
 func logAudit(r audit.Record) {
 	st := statusTag(r)
 	switch {
-	case r.Search != nil:
+	case r.Search() != nil:
 		log.Printf("scholar: op=%s %s -> %s%s query=%q hits=%d%s",
-			r.RunID, r.Tool, r.Decision, limitTag(r), clip(r.Search.Query, 80), len(r.Search.ResultURLs), st)
-	case r.Extract != nil:
-		u := r.Extract.URL
+			r.RunID, r.Tool, r.Decision, limitTag(r), clip(r.Search().Query, 80), len(r.Search().ResultURLs), st)
+	case r.Extract() != nil:
+		u := r.Extract().URL
 		if u == "" {
-			u = r.Extract.FinalURL
+			u = r.Extract().FinalURL
 		}
 		log.Printf("scholar: op=%s %s -> %s%s via=%s url=%s%s",
-			r.RunID, r.Tool, r.Decision, limitTag(r), r.Extract.Via, u, st)
-	case r.Research != nil:
+			r.RunID, r.Tool, r.Decision, limitTag(r), r.Extract().Via, u, st)
+	case r.Research() != nil:
 		log.Printf("scholar: op=%s %s -> %s%s searches=%d extracts=%d tokens=%d transcript=%v%s",
 			r.RunID, r.Tool, r.Decision, limitTag(r),
-			r.Research.Searches, r.Research.Extracts, r.Research.Tokens, r.Research.TranscriptStored, st)
+			r.Research().Searches, r.Research().Extracts, r.Research().Tokens, r.Research().TranscriptStored, st)
 	default:
 		log.Printf("scholar: op=%s %s -> %s%s%s", r.RunID, r.Tool, r.Decision, limitTag(r), st)
 	}

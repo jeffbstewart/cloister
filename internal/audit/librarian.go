@@ -27,3 +27,6 @@ const DecisionReadDenied Decision = "denied_read"
 type ReadDetail struct {
 	Paths []string `json:"paths"`
 }
+
+// Kind marks ReadDetail as the librarian's detail body.
+func (*ReadDetail) Kind() Kind { return KindRead }
