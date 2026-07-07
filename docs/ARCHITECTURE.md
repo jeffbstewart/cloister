@@ -31,7 +31,7 @@ flowchart LR
     state["state<br/>cloister-builder :9201"]
     status["status<br/>alpine/socat"]
     krelay["kagi-relay<br/>alpine/socat :8443"]
-    librarian["librarian :9400<br/>PLANNED"]
+    librarian["librarian<br/>cloister-builder :9400"]
     archivist["archivist :9600<br/>PLANNED"]
     corrector["corrector :9700<br/>PLANNED"]
   end
@@ -61,15 +61,14 @@ flowchart LR
   dbg -- "frontend" --> iproxy
   iproxy -- "infernet" --> infer
 
-  ws -. "ro" .-> agent
+  ws -. "ro" .-> librarian
   ws -. "rw" .-> builder
   ws -. "rw" .-> scribe
+  agent -- "buildnet · MCP" --> librarian
+  librarian -- "statenet · denial audits" --> state
   models -. "ro" .-> infer
 
-  agent -. "buildnet · MCP (planned)" .-> librarian
-  ws -. "ro (planned)" .-> librarian
-  librarian -. "infernet (planned)" .-> infer
-  librarian -. "statenet (planned)" .-> state
+  librarian -. "infernet (planned: comprehension ops)" .-> infer
   librarian -. "infernet_big (planned)" .-> mac
   agent -. "buildnet · MCP (planned)" .-> archivist
   ws -. "rw (planned)" .-> archivist
@@ -83,22 +82,23 @@ flowchart LR
   agency -. "infernet_big (planned)" .-> mac
 
   classDef planned stroke-dasharray: 6 4;
-  class librarian,archivist,corrector,gh,mac,agency planned
+  class archivist,corrector,gh,mac,agency planned
 ```
 
 Solid arrows are network edges (labeled with the compose network that
 carries them); dotted arrows are filesystem mounts or planned components.
-The agent's workspace mount is read-only **today**; the
-[librarian design](librarian.md) removes it entirely once reads are
-mediated.
+The agent holds **no workspace mount at all**: reads go through the
+librarian (shield-filtered per [librarian.md](librarian.md)), writes
+through the scribe, and the agent's working directory is a tmpfs stub.
 
 ## The cell, container by container
 
 | Container | Worker role | Image | Listens | Mounts | Networks |
 |---|---|---|---|---|---|
-| `agent` | the coding agent: interactive qwen-code CLI (this IS the qwen image) | `cloister-agent:<qwen>-<ver>` | — (nothing inbound) | workspace **ro**; `qwen_home` vol rw | infernet, buildnet, researchnet |
+| `agent` | the coding agent: interactive qwen-code CLI (this IS the qwen image) | `cloister-agent:<qwen>-<ver>` | — (nothing inbound) | NO workspace (tmpfs cwd stub); `qwen_home` vol rw | infernet, buildnet, researchnet |
 | `builder` | `-worker-mode builder` — executes manifest actions (build/test), streams logs | `cloister-builder:<ver>` | `:9200` MCP | workspace **rw**; `gradle` vol rw | buildnet, statenet |
 | `scribe` | `-worker-mode scribe` — the sole audited writer of workspace source | `cloister-builder:<ver>` | `:9300` MCP | workspace **rw**; `scribe_state` vol rw | buildnet, statenet |
+| `librarian` | `-worker-mode librarian` — the read side: shield-filtered mechanical read tools from an in-memory model; denials audited | `cloister-builder:<ver>` | `:9400` MCP | workspace **ro** | buildnet, statenet |
 | `scholar` | `-worker-mode scholar` — quarantined web research, one `research` tool | `cloister-builder:<ver>` | `:9500` MCP | policy yaml **ro**; `scholar_burn` vol rw | researchnet, infernet, scholarstate, kagiegress |
 | `state` | `-worker-mode state-service` — sole owner of durable logs/audit/status | `cloister-builder:<ver>` | `:9201` token-gated API + pages | `state` vol rw | statenet, scholarstate, statepub |
 | `status` | blind relay publishing the status pages to the host | `alpine/socat` | `127.0.0.1:STATUS_PORT` | — | statepub, frontend |
@@ -171,11 +171,10 @@ cell fetches images or code.
 Dashed in the diagram; designed, not yet built (see
 [librarian.md](librarian.md)):
 
-- **librarian** (`:9400`) — the read side of the cell: mechanical +
-  inference-backed read tools over an in-memory, `.aiignore`/`.gitignore`-
-  filtered workspace model.  Holds workspace **ro**, `buildnet` (inbound
-  MCP), `infernet`, `statenet`.  When it lands, the agent's workspace
-  mount is removed entirely.
+- **librarian comprehension ops** (phase 5 of [librarian.md](librarian.md))
+  — the inference-backed tools (summarize, ask-about) atop the now-live
+  mechanical read path; brings the librarian its `infernet` edge and the
+  engine-routed client the agency design absorbs.
 - **deep-think node** (`infernet_big`, see [deepthink.md](deepthink.md)) —
   an off-host inference engine for heavy comprehension ops: a natively
   jailed macOS ollama (seatbelt + PF, no outbound, blind LAN relay)

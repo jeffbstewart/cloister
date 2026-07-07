@@ -13,15 +13,22 @@
 // limitations under the License.
 
 // Package composelint statically checks the cell-stack compose file
-// (docker/ai-workers.yaml) for the scholar containment invariants: the scholar
-// holds no `egress` network and no route to builder/scribe/workspace, every
-// network it IS on is internal (no internet), only the kagi-relay holds
-// `egress`, and the relay is pinned to kagi.com:443.  It is the static drift
-// guard paired with the scholar's runtime fail-closed self-check.
+// (docker/ai-workers.yaml) for the cell's containment invariants.
+//
+// Scholar: holds no `egress` network and no route to
+// builder/scribe/workspace, every network it IS on is internal (no
+// internet), only the kagi-relay holds `egress`, and the relay is pinned
+// to kagi.com:443 — the static drift guard paired with the scholar's
+// runtime fail-closed self-check.
+//
+// Read path (docs/librarian.md): the agent mounts NO workspace at all —
+// reads go through the librarian, writes through the scribe — and the
+// librarian's workspace mount is `:ro` with no egress-capable network.
 package composelint
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -44,6 +51,13 @@ type networkDef struct {
 	External bool `yaml:"external"`
 }
 
+// egressCapableNetworks are the cell networks with a path out of the cell:
+// `egress` is the internet, `frontend` publishes to the host, and
+// `kagiegress` leads to the kagi-relay (and through it to kagi.com).  Every
+// no-egress assertion checks membership against this one list, naming any
+// legitimate exception explicitly.
+var egressCapableNetworks = []string{"egress", "frontend", "kagiegress"}
+
 func (s service) hasNet(n string) bool {
 	for _, x := range s.Networks {
 		if x == n {
@@ -51,6 +65,21 @@ func (s service) hasNet(n string) bool {
 		}
 	}
 	return false
+}
+
+// egressCapable returns which egress-capable networks s holds, excluding
+// the named allowed exceptions.
+func (s service) egressCapable(allowed ...string) []string {
+	var held []string
+	for _, n := range egressCapableNetworks {
+		if slices.Contains(allowed, n) {
+			continue
+		}
+		if s.hasNet(n) {
+			held = append(held, n)
+		}
+	}
+	return held
 }
 
 // Check returns the scholar-containment violations in the compose file; an empty
@@ -66,8 +95,8 @@ func Check(data []byte) ([]string, error) {
 	if !ok {
 		return []string{"no `scholar` service defined"}, nil
 	}
-	if sch.hasNet("egress") {
-		v = append(v, "scholar holds `egress` — it must reach the internet ONLY through kagi-relay")
+	for _, n := range sch.egressCapable("kagiegress") { // kagiegress IS its sanctioned route
+		v = append(v, fmt.Sprintf("scholar holds %q — it must reach out ONLY through the kagi-relay", n))
 	}
 	if sch.hasNet("statenet") {
 		v = append(v, "scholar holds `statenet` — use `scholarstate` so it gets no route to builder/scribe")
@@ -105,6 +134,47 @@ func Check(data []byte) ([]string, error) {
 		v = append(v, "no `kagi-relay` service defined")
 	} else if !targetsKagi(relay.Command) {
 		v = append(v, fmt.Sprintf("kagi-relay is not pinned to kagi.com:443; command = %v", relay.Command))
+	}
+
+	// The read path: the librarian exists, holds the workspace read-only,
+	// and has no egress-capable network.
+	lib, ok := c.Services["librarian"]
+	if !ok {
+		v = append(v, "no `librarian` service defined — the agent has no read path without it")
+	} else {
+		wsMounts := 0
+		for _, vol := range lib.Volumes {
+			if strings.Contains(vol, ":/workspace") {
+				wsMounts++
+				if !strings.HasSuffix(vol, ":ro") {
+					v = append(v, "librarian workspace mount is not `:ro` — the reader must never write source")
+				}
+			}
+		}
+		if wsMounts == 0 {
+			v = append(v, "librarian has no workspace mount — it has nothing to serve")
+		}
+		for _, n := range lib.egressCapable() {
+			v = append(v, fmt.Sprintf("librarian holds %q — the reader gets no egress-capable network", n))
+		}
+		for _, n := range lib.Networks {
+			if def, defined := c.Networks[n]; defined && !def.External && !def.Internal {
+				v = append(v, fmt.Sprintf("librarian network %q is not `internal: true` — it may grant internet egress", n))
+			}
+		}
+	}
+
+	// The agent cutover: no workspace mount of ANY kind — reads are the
+	// librarian's, writes are the scribe's.
+	agent, ok := c.Services["agent"]
+	if !ok {
+		v = append(v, "no `agent` service defined")
+	} else {
+		for _, vol := range agent.Volumes {
+			if strings.Contains(vol, ":/workspace") {
+				v = append(v, "agent mounts the workspace — the agent reads via the librarian and writes via the scribe, never directly")
+			}
+		}
 	}
 	return v, nil
 }

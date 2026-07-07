@@ -193,6 +193,9 @@ disconnects afterward.
   server-side; it is explicitly defense-in-depth, not the gate.
 - The Brave search path has never been exercised against the real API (the
   code says so at its entry point).
-- The agent image's read-only workspace mount does not enforce `.aiignore`;
-  interposing a reader that respects it is future work — designed as the
-  librarian worker (docs/librarian.md), not yet implemented.
+- Workspace reads are mediated as of the librarian cutover: the agent
+  holds no mount, and `.aiignore`/`.gitignore` are enforced structurally
+  (docs/librarian.md).  The honest residue: the librarian's watcher covers
+  container writers only — a host-side edit surfaces via rescan within a
+  minute, not instantly — and the comprehension ops (summarize/ask) are
+  design, not code.

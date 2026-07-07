@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Register the builder, scribe, AND scholar MCP servers in qwen-code's settings
-// on container start, so build/test, the audited write path, and web research are
-// available with no per-cell manual step.
+// Register the builder, scribe, scholar, AND librarian MCP servers in
+// qwen-code's settings on container start, so build/test, the audited write
+// path, web research, and the shield-filtered read path are available with no
+// per-cell manual step.
 //
 // It MERGES: only the platform-managed `builder` and `scribe` entries are
 // set/overwritten; every other setting, MCP server, and the user's history are
@@ -37,21 +38,24 @@ const scholarUrl = process.env.SCHOLAR_MCP_URL || 'http://scholar:9500/mcp';
 // min, each with its own client-side timeout). 40 min MCP timeout bounds it with
 // headroom; the gates return before this fires.
 const scholarTimeout = Number(process.env.SCHOLAR_MCP_TIMEOUT || 2400000);
+const librarianUrl = process.env.LIBRARIAN_MCP_URL || 'http://librarian:9400/mcp';
 
 // tools.core: the capability ALLOWLIST. Only these built-ins are offered to
-// the model, so the file mutators (Edit / WriteFile / NotebookEdit) are DISABLED
-// and every source write must go through the scribe MCP. Reads, navigation,
-// shell, planning, and (vetted) Skills are permitted; web/cron/loop/monitor/
-// computer-use/worktree/sub-agent-orchestration/tool-search are denied —
-// default-deny: a tool not on this list is unavailable. This is a platform-
-// managed security control, OVERWRITTEN each start like the MCP entries. If the
-// running agent's tool names differ, override the whole set via QWEN_CORE_TOOLS
-// (comma-separated). Add a memory tool here if one appears.
+// the model. The file mutators (Edit / WriteFile / NotebookEdit), the file
+// readers (ReadFile / ListFiles / Grep / Glob), AND Shell are all DISABLED:
+// writes go through the scribe MCP, reads through the librarian MCP, and with
+// no workspace mount, no toolchain, and no egress a shell has no legitimate
+// use left — the built-ins would only show the model an empty world, and a
+// general-purpose runtime is pure probing surface once its real jobs are
+// mediated. web/cron/loop/monitor/computer-use/worktree/sub-agent-
+// orchestration/tool-search are likewise denied — default-deny: a tool not on
+// this list is unavailable. This is a platform-managed security control,
+// OVERWRITTEN each start like the MCP entries. If a vetted skill genuinely
+// needs a shell (or tool names differ), override the whole set via
+// QWEN_CORE_TOOLS (comma-separated) — a deliberate, reviewable act.
 const defaultCoreTools = [
-  // read & navigate (reads unaudited; contained by the :ro mount + no egress)
-  'ReadFile', 'ListFiles', 'Glob', 'Grep', 'ReadMcpResource',
-  // shell (the jail contains it: no egress, source :ro, non-root, ro rootfs)
-  'Shell',
+  // MCP resources only — source reads route via the librarian MCP tools
+  'ReadMcpResource',
   // planning / bookkeeping (harness-level, low-risk)
   'AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode', 'TodoList',
   // packaged skills — the tool is permitted; individual skills are vetted below
@@ -96,6 +100,7 @@ try {
   cfg.mcpServers.builder = { httpUrl: builderUrl, timeout };
   cfg.mcpServers.scribe = { httpUrl: scribeUrl, timeout: scribeTimeout };
   cfg.mcpServers.scholar = { httpUrl: scholarUrl, timeout: scholarTimeout };
+  cfg.mcpServers.librarian = { httpUrl: librarianUrl, timeout };
 
   // Platform-managed security control: authoritatively set the allowlist so the
   // built-in mutators stay disabled regardless of prior settings. qwen-code nests
@@ -116,11 +121,29 @@ try {
   writeFileSync(path, JSON.stringify(cfg, null, 2) + '\n');
   console.error(
     `qwen-mcp-init: registered builder -> ${builderUrl}, scribe -> ${scribeUrl}, ` +
-      `scholar -> ${scholarUrl}; ` +
-      `tools.core allowlist = ${coreTools.length} tools (mutators + web excluded); ` +
+      `scholar -> ${scholarUrl}, librarian -> ${librarianUrl}; ` +
+      `tools.core allowlist = ${coreTools.length} tools (mutators + readers + shell + web excluded); ` +
       `skills = ${allowedSkills.join(', ')}`,
   );
 } catch (e) {
   console.error(`qwen-mcp-init: skipped (${e.message})`);
   process.exit(0);
+}
+
+// Materialize the IMAGE-BAKED, project-agnostic QWEN.md into the tmpfs cwd:
+// qwen-code auto-loads it from the working directory, which no longer shares
+// a filesystem with the project.  A purely local copy — no service ordering,
+// no network.  Project-specific guidance stays in the workspace, read via the
+// librarian mid-session per the baked prompt's instructions.
+const bakedPrompt = process.env.QWEN_BAKED_PROMPT || '/usr/local/share/cloister/QWEN.md';
+const promptDest = process.env.QWEN_PROMPT_DEST || '/workspace/QWEN.md';
+try {
+  if (existsSync(bakedPrompt)) {
+    writeFileSync(promptDest, readFileSync(bakedPrompt));
+    console.error(`qwen-mcp-init: materialized ${promptDest} from ${bakedPrompt}`);
+  } else {
+    console.error(`qwen-mcp-init: no baked prompt at ${bakedPrompt}`);
+  }
+} catch (e) {
+  console.error(`qwen-mcp-init: baked prompt not materialized (${e.message}); continuing`);
 }
