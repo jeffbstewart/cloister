@@ -39,6 +39,7 @@ flowchart LR
   subgraph infra["Shared inference stack (one per machine)"]
     infer["infer<br/>ollama/ollama"]
     iproxy["infer-proxy<br/>alpine/socat"]
+    agency["agency<br/>PLANNED"]
   end
 
   kagi["kagi.com<br/>search + extract APIs"]
@@ -78,9 +79,11 @@ flowchart LR
   corrector -. "buildnet · diffs + comments (planned)" .-> archivist
   corrector -. "infernet (planned)" .-> infer
   corrector -. "statenet (planned)" .-> state
+  agency -. "modelnet (planned)" .-> infer
+  agency -. "infernet_big (planned)" .-> mac
 
   classDef planned stroke-dasharray: 6 4;
-  class librarian,archivist,corrector,gh,mac planned
+  class librarian,archivist,corrector,gh,mac,agency planned
 ```
 
 Solid arrows are network edges (labeled with the compose network that
@@ -186,6 +189,14 @@ Dashed in the diagram; designed, not yet built (see
   reviewer: no mounts, no credential; composes librarian reads, archivist
   diffs/comments, and engine-routed inference into a ten-lens, grounded,
   advice-never-gate review of any PR or the agent's pending work.
+- **agency** (see [agency.md](agency.md)) — the sole inference door, in
+  the shared infra stack: OpenAI-compatible front for local + LAN ollama
+  nodes (frontier designed-for, unwired), engine-class fallback chains,
+  residency-aware two-class queueing, caller deadlines, and a read-only
+  status volume the cells' state services render.  When it lands,
+  `infer` retreats behind it (existing `infernet · OpenAI API` edges
+  reroute through the agency) and the localhost `11434` relay fronts the
+  agency instead of raw ollama.
 
 ## The common hardening profile
 
