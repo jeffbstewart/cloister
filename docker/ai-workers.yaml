@@ -34,7 +34,8 @@
 #   OPENAI_MODEL   a tag installed in infer, e.g. qwen3-coder:30b
 #   STATE_TOKEN    shared builder<->state secret; per project, e.g. [guid]::NewGuid().ToString("N")
 #   STATUS_PORT    host localhost port for the status pages (unique per project)
-#   TZ             status-page timezone, e.g. America/New_York (default UTC)
+#   TZ             timezone for log timestamps AND the status pages, e.g.
+#                  America/New_York (default UTC); applied to every container
 #   KAGI_API_KEY   scholar's search/extract API token (Kagi). Set the account's
 #                  custom billing limit LOW as a spend backstop.
 #   SCHOLAR_POLICY host path of the read-only egress policy yaml (engine + deny list)
@@ -72,6 +73,11 @@
 x-workspace: &workspace "${WORKSPACE:?set WORKSPACE to the host path of the project repo}:/workspace"
 x-workspace-ro: &workspace-ro "${WORKSPACE}:/workspace:ro"
 
+# Single-source timezone: referenced by every container's environment so log
+# timestamps (and the status pages) read in the operator's local zone.
+# Defaults to UTC.  tzdata is embedded in the Go binary, so any IANA zone works.
+x-tz: &tz "TZ=${TZ:-UTC}"
+
 services:
   agent:
     image: ${REGISTRY:-ghcr.io/jeffbstewart}/${AGENT_IMAGE:?set AGENT_IMAGE, e.g. cloister-agent:latest}
@@ -83,6 +89,7 @@ services:
     # alive so you can `docker exec ... qwen` into an interactive session.
     command: ["sleep", "infinity"]
     environment:
+      - *tz
       - OPENAI_BASE_URL=http://infer:11434/v1
       - OPENAI_API_KEY=ignored-for-local-use
       - OPENAI_MODEL=${OPENAI_MODEL:?set OPENAI_MODEL, the model the agent drives}
@@ -114,6 +121,7 @@ services:
     restart: unless-stopped
     command: ["-worker-mode", "builder"]
     environment:
+      - *tz
       - STATE_URL=http://state:9201
       - STATE_TOKEN=${STATE_TOKEN:?set STATE_TOKEN, the shared worker-to-state secret}
       - GRADLE_USER_HOME=/gradle-home
@@ -151,6 +159,7 @@ services:
     # PENDING human approval on the status page instead of refused.
     command: ["-worker-mode", "scribe", "-addr", ":9300", "-workspace", "/workspace", "-scribe-approvals"]
     environment:
+      - *tz
       - STATE_URL=http://state:9201
       - STATE_TOKEN=${STATE_TOKEN}
     volumes:
@@ -182,6 +191,7 @@ services:
     # workspace (docs/librarian.md).  Read DENIALS (only) are audited to state.
     command: ["-worker-mode", "librarian", "-addr", ":9400", "-workspace", "/workspace"]
     environment:
+      - *tz
       - STATE_URL=http://state:9201
       - STATE_TOKEN=${STATE_TOKEN}
     volumes:
@@ -208,8 +218,8 @@ services:
     restart: unless-stopped
     command: ["-worker-mode", "state-service", "-addr", ":9201", "-state-dir", "/state"]
     environment:
+      - *tz
       - STATE_TOKEN=${STATE_TOKEN}
-      - TZ=${TZ:-UTC}
     volumes:
       - state:/state                     # rw: the SOLE owner of durable logs/audit/status
     read_only: true
@@ -235,6 +245,8 @@ services:
     container_name: ${PROJECT}-status
     restart: unless-stopped
     user: "65534:65534"                  # nobody
+    environment:
+      - *tz
     command: ["TCP-LISTEN:9201,fork,reuseaddr", "TCP:state:9201"]
     ports:
       - "127.0.0.1:${STATUS_PORT:-9201}:9201"
@@ -262,6 +274,7 @@ services:
     # self-check).
     command: ["-worker-mode", "scholar", "-addr", ":9500", "-policy", "/etc/scholar/policy.yaml"]
     environment:
+      - *tz
       - STATE_URL=http://state:9201
       - STATE_TOKEN=${STATE_TOKEN}
       - OPENAI_BASE_URL=http://infer:11434/v1
@@ -300,6 +313,8 @@ services:
     # stays end-to-end (the relay pipes ciphertext); `fork` re-resolves per
     # connection so Kagi CDN rotation is handled.
     command: ["TCP-LISTEN:8443,fork,reuseaddr", "TCP:kagi.com:443"]
+    environment:
+      - *tz
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
