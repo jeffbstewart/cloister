@@ -8,8 +8,10 @@
 #   WORKSPACE      host path of the project repo, e.g. c:/projects/myproject
 #                  ── THE single source of truth for the workspace: defined once
 #                     here, mounted into both agent and builder below.
-#   AGENT_IMAGE    e.g. qwen-agent:0.19.4
-#   BUILDER_IMAGE  e.g. builder-jdk25-gradle:0.2.0
+#   AGENT_IMAGE    e.g. cloister-agent:latest (published by images.yml)
+#   BUILDER_IMAGE  e.g. cloister-builder:latest (the jdk25-gradle toolchain;
+#                  a future second toolchain will need per-toolchain image
+#                  names or toolchain-prefixed tags — one name holds one)
 #   OPENAI_MODEL   a tag installed in infer, e.g. qwen3-coder:30b
 #   STATE_TOKEN    shared builder<->state secret; per project, e.g. [guid]::NewGuid().ToString("N")
 #   STATUS_PORT    host localhost port for the status pages (unique per project)
