@@ -473,6 +473,28 @@ func (r *Repo) Resident() (spent, budget int64) {
 	return r.spent, r.cfg.Budget
 }
 
+// All returns a sorted snapshot of every Entry in the model — the
+// substrate for tree, glob, and recently-modified listings.  Hidden
+// paths are absent by construction.
+func (r *Repo) All() []Entry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]Entry, 0, len(r.sorted))
+	for _, p := range r.sorted {
+		out = append(out, r.files[p].entry)
+	}
+	return out
+}
+
+// Watchable reports whether a directory is worth a filesystem watch:
+// everything except Hidden subtrees (build outputs churn constantly and
+// would burn kernel watch descriptors for events the model ignores).
+func (r *Repo) Watchable(relDir string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.sh.Visibility(relDir, true) != shield.Hidden
+}
+
 // overBudgetOffenders returns a top-offender listing when non-resident-
 // because-of-budget files exist, "" otherwise.  Callers hold the lock.
 func (r *Repo) overBudgetOffenders() string {

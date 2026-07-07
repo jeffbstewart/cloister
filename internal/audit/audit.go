@@ -113,11 +113,13 @@ type Record struct {
 	Research *ResearchDetail `json:"research,omitempty"`
 	Search   *SearchDetail   `json:"search,omitempty"`
 	Extract  *ExtractDetail  `json:"extract,omitempty"`
+	Read     *ReadDetail     `json:"read,omitempty"`
 }
 
 // New builds a Record with its required Header.  Time is left zero here and
 // stamped by Append: the writer's clock is authoritative.  Callers attach at
-// most one detail (Command/Mutation/Research/Search/Extract) and may set Status.
+// most one detail (Command/Mutation/Research/Search/Extract/Read) and may set
+// Status.
 func New(runID runid.ID, tool string, decision Decision, dur time.Duration) Record {
 	return Record{Header: Header{RunID: runID, Tool: tool, Decision: decision, Duration: Duration(dur)}}
 }

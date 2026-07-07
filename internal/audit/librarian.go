@@ -12,17 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build !linux
+package audit
 
-package watch
+// The librarian's audit vocabulary.  Reads are audited on DENIAL only
+// (docs/librarian.md): successful reads would change the ledger's
+// character, and the interesting event is refusal.
 
-// Watcher is unavailable on this platform.
-type Watcher struct{}
+// DecisionReadDenied: a content operation named a shielded path.
+const DecisionReadDenied Decision = "denied_read"
 
-// New reports ErrUnsupported.
-func New(root string, shouldDescend func(rel string) bool, onChange func(rel string), onOverflow func()) (*Watcher, error) {
-	return nil, ErrUnsupported
+// ReadDetail is the librarian's denial record: the denied path or paths
+// (plural — a batch op may deny several at once) and nothing else.  The
+// tool is in the Header; arguments are deliberately not recorded.
+type ReadDetail struct {
+	Paths []string `json:"paths"`
 }
-
-// Close is a no-op for the zero Watcher.
-func (w *Watcher) Close() error { return nil }

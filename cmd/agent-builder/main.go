@@ -30,10 +30,14 @@
 //	scholar        the quarantined web-research agent: one research MCP
 //	               tool, reaching the web only through its pinned relay,
 //	               refusing to start if any other route exists.
+//	librarian      the read side of the cell: mechanical read tools on
+//	               :9400 served from an in-memory, shield-filtered model
+//	               of the workspace; denials (only) audited to state.
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -51,13 +55,16 @@ import (
 	"github.com/jeffbstewart/cloister/internal/egress"
 	"github.com/jeffbstewart/cloister/internal/egress/policy"
 	"github.com/jeffbstewart/cloister/internal/egress/wire"
+	"github.com/jeffbstewart/cloister/internal/librarian"
 	"github.com/jeffbstewart/cloister/internal/manifest"
 	"github.com/jeffbstewart/cloister/internal/mcpserver"
+	"github.com/jeffbstewart/cloister/internal/repo"
 	"github.com/jeffbstewart/cloister/internal/runid"
 	"github.com/jeffbstewart/cloister/internal/runner"
 	"github.com/jeffbstewart/cloister/internal/scholar"
 	"github.com/jeffbstewart/cloister/internal/scribe"
 	"github.com/jeffbstewart/cloister/internal/status/sink"
+	"github.com/jeffbstewart/cloister/internal/watch"
 	"github.com/jeffbstewart/cloister/internal/workspace"
 )
 
@@ -74,9 +81,10 @@ const (
 	modeStateService workerMode = "state-service"
 	modeScribe       workerMode = "scribe"
 	modeScholar      workerMode = "scholar"
+	modeLibrarian    workerMode = "librarian"
 )
 
-const workerModes = "builder | state-service | scribe | scholar"
+const workerModes = "builder | state-service | scribe | scholar | librarian"
 
 func main() {
 	mode := flag.String("worker-mode", "", "REQUIRED: which worker this process is — "+workerModes)
@@ -97,6 +105,10 @@ func main() {
 		"scholar: writable volume for the burn-rate ledger (timestamps only)")
 	answerGate := flag.Bool("answer-gate", true,
 		"scholar: gate the answer on operator approval before returning it")
+	repoBudgetMB := flag.Int("repo-budget-mb", 256,
+		"librarian: total resident-content cap for the in-memory model")
+	repoMaxFileMB := flag.Int("repo-max-file-mb", 2,
+		"librarian: per-file cap; larger files are metadata-only")
 	healthcheck := flag.Bool("healthcheck", false,
 		"probe the local /healthz and exit 0/1 (container HEALTHCHECK)")
 	flag.Parse()
@@ -116,6 +128,8 @@ func main() {
 		runScribe(*addr, *workspace, *stateURL, *scribeStageDir, *scribeApprovals)
 	case modeScholar:
 		runScholar(*addr, *scholarPolicy, *burnDir, *stateURL, *answerGate)
+	case modeLibrarian:
+		runLibrarian(*addr, *workspace, *stateURL, *repoBudgetMB, *repoMaxFileMB)
 	case "":
 		log.Fatalf("-worker-mode is required: %s", workerModes)
 	default:
@@ -221,6 +235,56 @@ func runScribe(addr, workspaceDir, stateURL, stageDir string, approvals bool) {
 	srv.Recover() // resume any approvals staged before a restart (no-op when approvals are off)
 	serveHTTP(&http.Server{Addr: addr, Handler: srv.Handler()},
 		fmt.Sprintf("scribe (workspace %s → state %s)", workspaceDir, stateURL))
+}
+
+func runLibrarian(addr, workspaceDir, stateURL string, budgetMB, maxFileMB int) {
+	token := os.Getenv("STATE_TOKEN")
+	if stateURL == "" || token == "" {
+		log.Fatalf("librarian needs STATE_URL and STATE_TOKEN: it audits read denials to the state service")
+	}
+	rep, err := repo.New(workspaceDir, repo.Config{
+		Budget:      int64(budgetMB) << 20,
+		MaxFileSize: int64(maxFileMB) << 20,
+	})
+	if err != nil {
+		log.Fatalf("librarian: %v", err) // fail loud: the over-budget message names the offenders
+	}
+
+	// Watcher-primary freshness (the spike verdict): container writers
+	// arrive as events; the minute rescan bounds host-edit staleness and
+	// is the whole story on platforms without a watcher.
+	w, err := watch.New(workspaceDir, rep.Watchable, rep.Invalidate, func() {
+		if err := rep.Rescan(); err != nil {
+			log.Printf("librarian: overflow rescan: %v", err)
+		}
+	})
+	switch {
+	case errors.Is(err, watch.ErrUnsupported):
+		log.Printf("librarian: no filesystem watcher on this platform; rescan-only freshness")
+	case err != nil:
+		log.Fatalf("librarian: start watcher: %v", err)
+	default:
+		defer w.Close()
+	}
+	go func() {
+		tick := time.NewTicker(time.Minute)
+		defer tick.Stop()
+		for range tick.C {
+			if err := rep.Rescan(); err != nil {
+				log.Printf("librarian: rescan: %v", err)
+			}
+		}
+	}()
+
+	srv := librarian.New(librarian.Config{
+		Version: version,
+		Repo:    rep,
+		Audit:   sink.NewClient(stateURL, token),
+	})
+	spent, budget := rep.Resident()
+	serveHTTP(&http.Server{Addr: addr, Handler: srv.Handler()},
+		fmt.Sprintf("librarian (workspace %s, %d/%d MiB resident → state %s)",
+			workspaceDir, spent>>20, budget>>20, stateURL))
 }
 
 func runStateService(addr, stateDir string) {
