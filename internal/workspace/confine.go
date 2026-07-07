@@ -32,6 +32,7 @@ var (
 	ErrEmptyPath = errors.New("workspace: empty path")
 	ErrEscapes   = errors.New("workspace: path is outside the workspace root")
 	ErrSymlink   = errors.New("workspace: path contains a symlink or reparse-point component (rejected, not resolved)")
+	ErrRepoMeta  = errors.New("workspace: .git is repository metadata, off-limits to workspace ops (hooks and config execute code)")
 )
 
 // Path is a workspace-confined absolute path.  It can only be produced by
@@ -90,6 +91,11 @@ func (r *Root) Dir() string { return r.dir }
 //
 //   - after cleaning, the path must lie within the root; absolute paths outside
 //     the root and post-clean `..` escapes are rejected (ErrEscapes);
+//   - no component may be `.git` (any case — Windows filesystems are
+//     case-insensitive): repository metadata is code, not content — hooks
+//     execute on git runs and config can name commands (fsmonitor, filters,
+//     aliases) — so it is rejected outright (ErrRepoMeta), never writable or
+//     even addressable through workspace ops;
 //   - no existing component may be a symlink or reparse point — we `lstat` each
 //     and REJECT the first one we find; we never follow or resolve a symlink.
 //
@@ -109,10 +115,29 @@ func (r *Root) Resolve(input string) (Path, error) {
 	if !underRoot(r.dir, abs) {
 		return Path{}, ErrEscapes
 	}
+	if err := r.rejectRepoMetaComponents(abs); err != nil {
+		return Path{}, err
+	}
 	if err := r.rejectSymlinkComponents(abs); err != nil {
 		return Path{}, err
 	}
 	return Path{abs: abs}, nil
+}
+
+// rejectRepoMetaComponents rejects any path with a `.git` component, at any
+// depth (submodules and worktrees plant nested `.git` entries too), compared
+// case-insensitively because the underlying filesystem may be.
+func (r *Root) rejectRepoMetaComponents(abs string) error {
+	rel, err := filepath.Rel(r.dir, abs)
+	if err != nil {
+		return ErrEscapes
+	}
+	for _, comp := range strings.Split(rel, string(os.PathSeparator)) {
+		if strings.EqualFold(comp, ".git") {
+			return ErrRepoMeta
+		}
+	}
+	return nil
 }
 
 // underRoot reports whether abs is the root itself or lies beneath it, using a
