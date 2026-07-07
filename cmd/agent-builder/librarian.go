@@ -42,6 +42,11 @@ func runLibrarian(o librarianOptions) {
 	if o.StateURL == "" || token == "" {
 		log.Fatalf("librarian needs STATE_URL and STATE_TOKEN: it audits read denials to the state service")
 	}
+	// The initial scan reads every visible file into the model — it can
+	// take a while on a large tree, so bracket it with progress logs
+	// (stderr, so `docker logs` shows them).
+	log.Printf("librarian: scanning workspace %s into memory (this can take a while) ...", o.Workspace)
+	scanStart := time.Now()
 	rep, err := repo.New(o.Workspace, repo.Config{
 		Budget:      int64(o.BudgetMB) << 20,
 		MaxFileSize: int64(o.MaxFileMB) << 20,
@@ -49,6 +54,7 @@ func runLibrarian(o librarianOptions) {
 	if err != nil {
 		log.Fatalf("librarian: %v", err) // fail loud: the over-budget message names the offenders
 	}
+	log.Printf("librarian: workspace scan complete in %s", time.Since(scanStart).Round(time.Millisecond))
 
 	// Watcher-primary freshness (the spike verdict): container writers
 	// arrive as events; the minute rescan bounds host-edit staleness and
@@ -81,8 +87,18 @@ func runLibrarian(o librarianOptions) {
 		Repo:    rep,
 		Audit:   sink.NewClient(o.StateURL, token),
 	})
-	spent, budget := rep.Resident()
+
+	// Boot diagnostic: what's resident and what's heaviest, so an
+	// unexpectedly large model is explained by name (tune the ignore
+	// files) rather than guessed at.
+	report := rep.Report(15)
+	log.Printf("librarian: in-memory model — %d files, %d MiB resident of %d MiB budget",
+		report.Files, report.Bytes>>20, report.Budget>>20)
+	for _, e := range report.Largest {
+		log.Printf("librarian:   %7d KiB  %s", e.Size>>10, e.Path)
+	}
+
 	serveHTTP(&http.Server{Addr: o.Addr, Handler: srv.Handler()},
 		fmt.Sprintf("librarian (workspace %s, %d/%d MiB resident → state %s)",
-			o.Workspace, spent>>20, budget>>20, o.StateURL))
+			o.Workspace, report.Bytes>>20, report.Budget>>20, o.StateURL))
 }

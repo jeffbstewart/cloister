@@ -473,6 +473,37 @@ func (r *Repo) Resident() (spent, budget int64) {
 	return r.spent, r.cfg.Budget
 }
 
+// Report summarizes the in-memory model: what content is held, and the
+// heaviest files holding it.  The librarian logs this at boot so the
+// operator can see what fills the budget and tune .gitignore/.aiignore
+// exemptions from evidence rather than guesswork.
+type Report struct {
+	Bytes   int64   // resident content bytes
+	Files   int     // files holding content in RAM
+	Budget  int64   // configured cap
+	Largest []Entry // up to the requested N resident files, largest first
+}
+
+// Report builds a Report naming the topN largest resident files.
+func (r *Repo) Report(topN int) Report {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	rep := Report{Bytes: r.spent, Budget: r.cfg.Budget}
+	largest := make([]Entry, 0, len(r.sorted))
+	for _, p := range r.sorted {
+		if f := r.files[p]; f.content != nil {
+			rep.Files++
+			largest = append(largest, f.entry)
+		}
+	}
+	sort.Slice(largest, func(i, j int) bool { return largest[i].Size > largest[j].Size })
+	if len(largest) > topN {
+		largest = largest[:topN]
+	}
+	rep.Largest = largest
+	return rep
+}
+
 // All returns a sorted snapshot of every Entry in the model — the
 // substrate for tree, glob, and recently-modified listings.  Hidden
 // paths are absent by construction.

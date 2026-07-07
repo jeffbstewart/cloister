@@ -300,6 +300,38 @@ func TestRescanCarriesUnchangedContentWithoutReload(t *testing.T) {
 	_ = root
 }
 
+func TestReportNamesLargestResidentExcludesRest(t *testing.T) {
+	_, r := newWorkspace(t, map[string]string{
+		".aiignore":  "secret.txt\n",
+		"big.go":     strings.Repeat("a", 3000),
+		"small.go":   strings.Repeat("b", 100),
+		"medium.go":  strings.Repeat("c", 1500),
+		"secret.txt": strings.Repeat("d", 5000), // shielded: heaviest on disk, never resident
+		"blob.bin":   "\x00\x01\x02",            // binary: never resident
+	})
+	rep := r.Report(2)
+	// Resident: big.go, small.go, medium.go, and .aiignore itself (ignore
+	// files are always readable).  Excluded: the shielded secret and the
+	// binary blob.
+	if rep.Files != 4 {
+		t.Fatalf("resident files = %d, want 4 (shielded + binary excluded, .aiignore kept)", rep.Files)
+	}
+	if len(rep.Largest) != 2 {
+		t.Fatalf("topN not applied: %d entries", len(rep.Largest))
+	}
+	if rep.Largest[0].Path != "big.go" || rep.Largest[1].Path != "medium.go" {
+		t.Fatalf("largest order = %v, want [big.go medium.go]", []string{rep.Largest[0].Path, rep.Largest[1].Path})
+	}
+	for _, e := range rep.Largest {
+		if e.Path == "secret.txt" || e.Path == "blob.bin" {
+			t.Errorf("Report leaked non-resident file %q", e.Path)
+		}
+	}
+	if rep.Bytes <= 0 || rep.Budget != testBudget {
+		t.Errorf("report totals = %+v", rep)
+	}
+}
+
 func TestConfigFailsClosed(t *testing.T) {
 	root := t.TempDir()
 	if _, err := New(root, Config{Budget: 0, MaxFileSize: 100}); err == nil {
