@@ -53,22 +53,20 @@ the operator editing on the host).  The seam to close is read-your-writes:
 the agent edits file A via the scribe, then reads or greps via the
 librarian, and must see its own write.
 
-- **Preferred: an inotify watcher.**  The containers are Linux, so the
-  watcher can use the stdlib `syscall` inotify surface directly — the
-  third-party fsnotify package would need a written dependency
-  justification, and the concept doesn't require it.  The open question is
-  the mount backend: Docker Desktop shares a Windows host path through a
-  FUSE/virtio layer where events for changes made outside the container
-  (another container's writes, host edits) are historically unreliable.
-  Before the watcher is trusted, an experiment must show scribe-container
-  writes, builder-container writes, and host edits each firing events in a
-  watching container on the real mount type.  With a trusted watcher the
-  background rescan relaxes to an hourly sweep.
-- **Fallback: on-access revalidation.**  If events prove unreliable,
-  single-file ops `stat` the backing file per access and reload on
-  mtime/size change; tree-wide ops (search, glob, tree) run a
-  metadata-only walk first, behind a short cooldown (~1–2 s); a
-  once-a-minute background rescan keeps the model warm.
+- **SPIKE RESULT (2026-07-07, Docker Desktop on Windows, bind mount,
+  stdlib `syscall` inotify):** a watching container sees **other
+  containers' writes with full fidelity** — creates, modifies,
+  close-writes, and the scribe's atomic-rename lands as
+  `MOVED_FROM`/`MOVED_TO` — but **host edits generate no events at all**
+  (content and mtimes propagate; the notification does not).
+- **Therefore: watcher-primary for container writers, rescan for the
+  host.**  The inotify watcher (stdlib `syscall`, not the third-party
+  fsnotify package) covers the read-your-writes seam completely, since
+  the scribe and builder are containers.  Host edits — the one silent
+  writer — are bounded by the once-a-minute background metadata rescan,
+  which therefore does NOT relax to hourly (that option assumed the
+  watcher covered all three writers).  Single-file ops keep a cheap
+  `stat`-on-access revalidation as insurance.
 
 **Memory cap, fail loud.**  The resident set has a configured byte budget.
 Over budget at boot: refuse to start, naming the largest offenders — the
