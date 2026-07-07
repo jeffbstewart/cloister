@@ -16,11 +16,6 @@
 
 package watch
 
-import "errors"
-
-// ErrUnsupported: no watcher on this platform; run rescan-only.
-var ErrUnsupported = errors.New("watch: not supported on this platform (rescan-only mode)")
-
 // Watcher is unavailable on this platform.
 type Watcher struct{}
 

@@ -21,3 +21,11 @@
 // stat-on-access revalidation carry it; events only make the model
 // fresher.
 package watch
+
+import "errors"
+
+// ErrUnsupported: no watcher on this platform; the owner runs
+// rescan-only.  Declared here, platform-agnostic, because callers
+// errors.Is against it on every platform — including linux, where New
+// never returns it.
+var ErrUnsupported = errors.New("watch: not supported on this platform (rescan-only mode)")
