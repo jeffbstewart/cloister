@@ -75,6 +75,31 @@ func TestResolveRejectsEscapes(t *testing.T) {
 	}
 }
 
+// TestResolveRejectsRepoMetadata: `.git` is code, not content — hooks execute
+// on git runs, config names commands — so no workspace op may address it, at
+// any depth, in any case.
+func TestResolveRejectsRepoMetadata(t *testing.T) {
+	r := newRoot(t)
+	for _, in := range []string{
+		".git",
+		".git/config",
+		".git/hooks/pre-commit",
+		".GIT/config",                       // case-insensitive filesystems
+		"vendored/lib/.git/config",          // nested (submodule/worktree gitlink)
+		filepath.Join(r.Dir(), ".git", "x"), // absolute form
+	} {
+		if _, err := r.Resolve(in); !errors.Is(err, ErrRepoMeta) {
+			t.Errorf("Resolve(%q) err = %v, want ErrRepoMeta", in, err)
+		}
+	}
+	// Names that merely CONTAIN or resemble .git are ordinary content.
+	for _, in := range []string{".gitignore", ".gitattributes", ".github/workflows/ci.yml", ".githooks/pre-commit", "digit/.gitkeep"} {
+		if _, err := r.Resolve(in); err != nil {
+			t.Errorf("Resolve(%q) rejected a non-metadata path: %v", in, err)
+		}
+	}
+}
+
 // TestResolveRejectsSymlinkComponent is the headline Phase 0 acceptance: a path
 // that traverses a symlink is rejected outright, never resolved.  Skips where the
 // environment can't create symlinks (e.g. Windows without Developer Mode).
