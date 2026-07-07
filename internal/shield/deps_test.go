@@ -28,6 +28,7 @@ func TestStdlibOnlyNoSubprocess(t *testing.T) {
 	roots := []string{
 		"github.com/jeffbstewart/cloister/internal/shield",
 		"github.com/jeffbstewart/cloister/internal/repo",
+		"github.com/jeffbstewart/cloister/internal/watch",
 	}
 	seen := map[string]bool{}
 	var walk func(importPath, from string)
