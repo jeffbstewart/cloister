@@ -95,6 +95,14 @@ func TestParseRejects(t *testing.T) {
 		wantErr string
 	}{
 		{
+			// yaml.v3 rejects duplicate mapping keys; this pins that a manifest
+			// repeating an action name stays malformed rather than silently
+			// last-writer-wins.
+			name:    "duplicate action name",
+			yaml:    man(minAction + minAction),
+			wantErr: `mapping key "build" already defined`,
+		},
+		{
 			name:    "wrong harness version",
 			yaml:    "harness: 2\ntoolchain: tc\nactions:\n" + minAction,
 			wantErr: "supports only 1",
