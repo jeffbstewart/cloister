@@ -2,3 +2,6 @@
 # the working tree, on every platform. Git auto-detects binaries; add
 # explicit `binary` entries here if one is ever misdetected.
 * text=auto eol=lf
+# cmd.exe resolves goto/call labels unreliably in LF-only batch files; batch
+# scripts are the one deliberate CRLF exception.
+*.bat text eol=crlf

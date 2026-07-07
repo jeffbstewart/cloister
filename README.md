@@ -37,6 +37,8 @@ invariants with their enforcers — is in
 
 ## Quick start
 
+The step-by-step Portainer walkthrough — git-backed stacks, model staging,
+cache priming — is [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md).
 Prebuilt images are on GHCR (`ghcr.io/jeffbstewart/cloister-agent`,
 `ghcr.io/jeffbstewart/cloister-builder`); see THIRD_PARTY_NOTICES for what
 they bundle.
@@ -50,8 +52,9 @@ they bundle.
 3. **Deploy the cell**: `docker/ai-workers.yaml` with the env vars documented
    in its header (`PROJECT`, `WORKSPACE`, images, `STATE_TOKEN`, the scholar's
    policy file copied from `etc/scholar-policy.example.yaml`, …).
-4. **Warm the dependency cache** through the airlock — the one deliberate,
-   human-gated moment the builder gets egress.
+4. **Warm the dependency cache** through the airlock
+   (`bin/update-gradle-deps.bat`) — the one deliberate, human-gated moment
+   the builder gets egress.
 5. `docker exec -it <project>-agent qwen` and work; watch the status page.
 
 ## Layout
@@ -61,7 +64,8 @@ they bundle.
   guard, run by CI against the committed cell file.
 - `internal/*` — the packages.  `docker/` — Dockerfiles + compose files.
   `etc/` — config templates.  `docs/` — design + onboarding docs.
-  `scripts/` — ops helpers, including the runtime containment probe.
+  `bin/` — operator tools (the dependency airlock).  `scripts/` — repo
+  plumbing, including the presubmit scan and the runtime containment probe.
 
 ## Build & verify (from repo root)
 
