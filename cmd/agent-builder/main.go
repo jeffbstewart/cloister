@@ -1,21 +1,21 @@
 // agent-builder is the one binary of the Cloister cell — every worker is a
-// mode of it:
+// mode of it, selected by the REQUIRED -worker-mode flag:
 //
-//	default        the builder: reads /workspace/agent-harness.yaml, serves
-//	               the declared actions as MCP tools on :9200, and streams
+//	builder        reads /workspace/agent-harness.yaml, serves the declared
+//	               actions as MCP tools on :9200, and streams
 //	               logs/audit/status to the state service.  Holds NO /state
 //	               mount — agent-authored build code cannot touch the record
 //	               of what it did.
-//	-state-service the state service: owns the /state volume, accepts the
-//	               workers' authenticated appends, and serves the read-only
-//	               status pages on :9201.  No egress; reachable from the host
-//	               only via the socat status relay.
-//	-scribe        the workspace editor: the sole audited writer of /workspace,
-//	               serving confined write ops as MCP tools on :9300 and
-//	               auditing each to the state service.
-//	-scholar       the quarantined web-research agent: one research MCP tool,
-//	               reaching the web only through its pinned relay, refusing to
-//	               start if any other route exists.
+//	state-service  owns the /state volume, accepts the workers'
+//	               authenticated appends, and serves the read-only status
+//	               pages on :9201.  No egress; reachable from the host only
+//	               via the socat status relay.
+//	scribe         the workspace editor: the sole audited writer of
+//	               /workspace, serving confined write ops as MCP tools on
+//	               :9300 and auditing each to the state service.
+//	scholar        the quarantined web-research agent: one research MCP
+//	               tool, reaching the web only through its pinned relay,
+//	               refusing to start if any other route exists.
 package main
 
 import (
@@ -50,7 +50,22 @@ import (
 // version is stamped at build time via -ldflags "-X main.version=...".
 var version = "dev"
 
+// workerMode selects which worker this process runs as.  There is
+// deliberately no default: a cell's compose file must say what each
+// container is, and the incompatible per-mode flags cannot be combined.
+type workerMode string
+
+const (
+	modeBuilder      workerMode = "builder"
+	modeStateService workerMode = "state-service"
+	modeScribe       workerMode = "scribe"
+	modeScholar      workerMode = "scholar"
+)
+
+const workerModes = "builder | state-service | scribe | scholar"
+
 func main() {
+	mode := flag.String("worker-mode", "", "REQUIRED: which worker this process is — "+workerModes)
 	addr := flag.String("addr", ":9200", "listen address")
 	workspace := flag.String("workspace", "/workspace", "project bind mount; actions run here")
 	spoolDir := flag.String("spool", "/spool", "local (tmpfs) log spool for digests and get_log")
@@ -58,16 +73,10 @@ func main() {
 	stateURL := flag.String("state-url", envOr("STATE_URL", ""), "builder: base URL of the state service")
 	toolchainFile := flag.String("toolchain-file", "/etc/agent-builder/toolchain",
 		"file holding this image's toolchain id")
-	stateService := flag.Bool("state-service", false,
-		"run the state service (owns /state, serves status pages) instead of the builder")
-	scribeMode := flag.Bool("scribe", false,
-		"run the scribe (workspace editor) instead of the builder")
 	scribeStageDir := flag.String("scribe-stage-dir", "/scribe-state",
 		"scribe: durable staging dir for pending (approval-gated) changes")
 	scribeApprovals := flag.Bool("scribe-approvals", false,
 		"scribe: hold gated writes PENDING human approval instead of refusing them")
-	scholarMode := flag.Bool("scholar", false,
-		"run the scholar (quarantined web-research agent) instead of the builder")
 	scholarPolicy := flag.String("policy", "/etc/scholar/policy.yaml",
 		"scholar: read-only egress policy file")
 	burnDir := flag.String("burn-dir", "/burn",
@@ -84,15 +93,19 @@ func main() {
 
 	log.SetFlags(log.LstdFlags | log.LUTC)
 
-	switch {
-	case *stateService:
-		runStateService(*addr, *stateDir)
-	case *scribeMode:
-		runScribe(*addr, *workspace, *stateURL, *scribeStageDir, *scribeApprovals)
-	case *scholarMode:
-		runScholar(*addr, *scholarPolicy, *burnDir, *stateURL, *answerGate)
-	default:
+	switch workerMode(*mode) {
+	case modeBuilder:
 		runBuilder(*addr, *workspace, *spoolDir, *stateURL, *toolchainFile)
+	case modeStateService:
+		runStateService(*addr, *stateDir)
+	case modeScribe:
+		runScribe(*addr, *workspace, *stateURL, *scribeStageDir, *scribeApprovals)
+	case modeScholar:
+		runScholar(*addr, *scholarPolicy, *burnDir, *stateURL, *answerGate)
+	case "":
+		log.Fatalf("-worker-mode is required: %s", workerModes)
+	default:
+		log.Fatalf("unknown -worker-mode %q: want %s", *mode, workerModes)
 	}
 }
 
