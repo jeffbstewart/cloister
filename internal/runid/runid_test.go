@@ -68,14 +68,57 @@ func TestShellSafeAlphabet(t *testing.T) {
 	}
 }
 
+// swapClock pins the package clock for one test and restores it afterward.
+// Bases sit in the future so a fake tick always outruns whatever real tick
+// earlier tests left in v7state.
+func swapClock(t *testing.T, fn func() time.Time) {
+	t.Helper()
+	orig := now
+	now = fn
+	t.Cleanup(func() { now = orig })
+}
+
 // TestSortableByTime: UUIDv7's leading timestamp makes later ids compare
 // greater as plain strings.
 func TestSortableByTime(t *testing.T) {
+	cur := time.Now().Add(time.Hour)
+	swapClock(t, func() time.Time { return cur })
 	a := mustNew(t)
-	time.Sleep(5 * time.Millisecond)
+	cur = cur.Add(5 * time.Millisecond)
 	b := mustNew(t)
 	if !(a.String() < b.String()) {
 		t.Errorf("ids not time-ordered: %s !< %s", a, b)
+	}
+}
+
+// TestMonotonicWithinTick: with the clock pinned to one millisecond tick the
+// timestamp prefix cannot order ids; the counter in rand_a must keep them
+// strictly increasing anyway.  5000 ids also drive the counter through its
+// overflow-borrows-the-next-tick path.  Consumers depend on this: transcript
+// pruning deletes oldest-first by lexical id order.
+func TestMonotonicWithinTick(t *testing.T) {
+	fixed := time.Now().Add(2 * time.Hour)
+	swapClock(t, func() time.Time { return fixed })
+	prev := mustNew(t)
+	for i := 0; i < 5000; i++ {
+		id := mustNew(t)
+		if !(prev.String() < id.String()) {
+			t.Fatalf("id %d not greater than its predecessor: %s !< %s", i, prev, id)
+		}
+		prev = id
+	}
+}
+
+// TestMonotonicAcrossClockRegression: a wall clock stepping backward must
+// not mint an id that sorts before one already issued.
+func TestMonotonicAcrossClockRegression(t *testing.T) {
+	cur := time.Now().Add(3 * time.Hour)
+	swapClock(t, func() time.Time { return cur })
+	a := mustNew(t)
+	cur = cur.Add(-time.Minute)
+	b := mustNew(t)
+	if !(a.String() < b.String()) {
+		t.Errorf("ids regressed with the clock: %s !< %s", a, b)
 	}
 }
 

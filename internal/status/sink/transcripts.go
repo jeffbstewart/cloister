@@ -95,7 +95,7 @@ func (s *Server) pruneTranscripts() {
 	}
 	type entry struct {
 		path string
-		name string // "<opId>.gz" — opId is a UUIDv7, so lexical order is chronological
+		name string // "<opId>.gz" — opId is a runid UUIDv7, so lexical order is creation order
 		size int64
 	}
 	var files []entry
@@ -115,9 +115,10 @@ func (s *Server) pruneTranscripts() {
 	if total <= s.cfg.TranscriptRetention {
 		return
 	}
-	// Oldest first by opId, not filesystem mtime: a UUIDv7's lexical order is its
-	// creation order, robust regardless of mtime resolution (files written in the
-	// same millisecond would otherwise be indistinguishable).
+	// Oldest first by opId, not filesystem mtime: runid mints UUIDv7s with a
+	// same-millisecond monotonic counter, so their lexical order is creation
+	// order even for a burst of stores — mtime resolution guarantees no such
+	// thing (files written in the same tick would be indistinguishable).
 	sort.Slice(files, func(i, j int) bool { return files[i].name < files[j].name })
 	for _, f := range files {
 		if total <= s.cfg.TranscriptRetention {
