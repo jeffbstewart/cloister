@@ -44,6 +44,7 @@ crossings):
 | `current_state()` | branch, dirty files, ahead/behind (status) |
 | `history(path\|ref)` | change log, capped (log) |
 | `show_change(id)` | one change with its diff (show) |
+| `file_at(ref, path)` | file contents at a revision, without touching the working tree (show ref:path) — how the corrector reads base/head context for a PR that isn't checked out |
 | `pending_changes(path?)` | the uncommitted delta vs the last checkpoint, whole-tree or one file (diff) |
 | `start_work(name)` | new line of work off the default branch (branch + switch) |
 | `abandon_work(name, deleteRemote?)` | discard a line of work: switch to the default branch, delete the local branch (branch -D).  Refuses on the default branch or a dirty tree.  `deleteRemote` also removes the published counterpart — that half is a remote op, audited |
@@ -65,10 +66,16 @@ waits for approval):
 |---|---|
 | `publish()` | push the current work branch |
 | `propose(title, body)` | open (or update) the PR for the current branch |
-| `check_progress()` | PR state + CI check results |
-| `read_reviews()` | review comments and threads on the agent's PR |
+| `check_progress(pr?)` | PR state + CI check results — defaults to the current branch's PR, takes an explicit PR number |
+| `read_reviews(pr?)` | review comments and threads — same explicit-target rule; includes the PR's diff for a caller that wasn't its author |
 | `reply_to_review(thread, body)` | respond on a review thread |
-| `await_review(maxWait)` | block until review activity: new comments, approval, changes-requested, or merge/close |
+| `await_review(maxWait)` | block until review activity on the agent's PR: new comments, approval, changes-requested, or merge/close |
+
+The PR-read verbs take an explicit target rather than assuming "the
+agent's PR" because the corrector ([corrector.md](corrector.md)) reviews
+any PR by number — including the operator's own proposals — through this
+same contract.  `file_at` exists for the same consumer: reviewing a PR
+must never switch the working tree under a live session.
 
 `await_review` completes the authorship loop: the agent publishes,
 proposes, then *waits on the operator* without being told to look — a

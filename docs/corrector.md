@@ -73,8 +73,8 @@ Three, spanning the two audiences:
 
 ## What this asks of the archivist
 
-Two read-only, VCS-agnostic contract additions (folded into
-[archivist.md](archivist.md)'s implementation):
+Two read-only, VCS-agnostic contract requirements, recorded in
+[archivist.md](archivist.md)'s verb tables as part of its contract:
 
 - `file_at(ref, path)` — file contents at a revision (git `show
   ref:path`; svn `cat -r`).  The librarian's RAM model reflects the
@@ -82,8 +82,8 @@ Two read-only, VCS-agnostic contract additions (folded into
   base/head-pinned reads, and the corrector must never switch the working
   tree under a live session to get them.
 - PR reads generalized from "the agent's PR" to "a PR number" —
-  `check_progress`, `read_reviews`, and diff retrieval take an explicit
-  target.
+  `check_progress(pr?)`, `read_reviews(pr?)`, and diff retrieval take an
+  explicit target.
 
 ## Topology
 
