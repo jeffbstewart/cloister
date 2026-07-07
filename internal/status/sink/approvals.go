@@ -24,10 +24,11 @@ var (
 	errAlreadyDecided = errors.New("approval already decided")
 )
 
-// Approval store store.  Pending records persist one JSON file each under
-// /state/approvals so a state-service restart doesn't drop an in-flight decision.
-// The state service is the pull-only authority: the scribe registers + polls;
-// the status UI sets the decision.
+// Approval store.  Pending records persist one JSON file each under
+// /state/approvals so a state-service restart doesn't drop an in-flight
+// decision.  The state service is the pull-only authority: the scribe and
+// every other approval-consuming worker register + poll; the status UI sets
+// the decision.
 
 // loadApprovals reads persisted pending records into memory on start.
 func (s *Server) loadApprovals() error {

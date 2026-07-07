@@ -96,6 +96,51 @@ type Server struct {
 	csrfToken string // synchronizer token for the unauthenticated approve/reject form
 }
 
+// ApplyDefaults replaces each unset (zero or negative) tunable with its
+// package default.  StateDir and Token have no defaults — they are required.
+func (c *Config) ApplyDefaults() {
+	if c.MaxRunBytes <= 0 {
+		c.MaxRunBytes = DefaultMaxRunBytes
+	}
+	if c.LogBytesPerSec <= 0 {
+		c.LogBytesPerSec = DefaultLogBytesPerSec
+	}
+	if c.AuditPerSec <= 0 {
+		c.AuditPerSec = DefaultAuditPerSec
+	}
+	if c.StatusPerSec <= 0 {
+		c.StatusPerSec = DefaultStatusPerSec
+	}
+	if c.MaxDiffBytes <= 0 {
+		c.MaxDiffBytes = DefaultMaxDiffBytes
+	}
+	if c.ApprovalTimeout <= 0 {
+		c.ApprovalTimeout = DefaultApprovalTimeout
+	}
+	if c.ApprovalPoll <= 0 {
+		c.ApprovalPoll = DefaultApprovalPoll
+	}
+	if c.ApprovalPerSec <= 0 {
+		c.ApprovalPerSec = DefaultApprovalPerSec
+	}
+	if c.MaxTranscriptBytes <= 0 {
+		c.MaxTranscriptBytes = DefaultMaxTranscriptBytes
+	}
+	if c.TranscriptRetention <= 0 {
+		c.TranscriptRetention = DefaultTranscriptRetention
+	}
+}
+
+// makeStateDir creates (if needed) and returns the named directory under
+// StateDir.
+func (c Config) makeStateDir(name string) (string, error) {
+	dir := filepath.Join(c.StateDir, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
 // New prepares the state directory and opens the audit log.
 func New(cfg Config) (*Server, error) {
 	if cfg.StateDir == "" {
@@ -104,51 +149,22 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Token == "" {
 		return nil, errors.New("statesink: refusing to serve a write API without a bearer token (set STATE_TOKEN)")
 	}
-	if cfg.MaxRunBytes <= 0 {
-		cfg.MaxRunBytes = DefaultMaxRunBytes
-	}
-	if cfg.LogBytesPerSec <= 0 {
-		cfg.LogBytesPerSec = DefaultLogBytesPerSec
-	}
-	if cfg.AuditPerSec <= 0 {
-		cfg.AuditPerSec = DefaultAuditPerSec
-	}
-	if cfg.StatusPerSec <= 0 {
-		cfg.StatusPerSec = DefaultStatusPerSec
-	}
-	if cfg.MaxDiffBytes <= 0 {
-		cfg.MaxDiffBytes = DefaultMaxDiffBytes
-	}
-	if cfg.ApprovalTimeout <= 0 {
-		cfg.ApprovalTimeout = DefaultApprovalTimeout
-	}
-	if cfg.ApprovalPoll <= 0 {
-		cfg.ApprovalPoll = DefaultApprovalPoll
-	}
-	if cfg.ApprovalPerSec <= 0 {
-		cfg.ApprovalPerSec = DefaultApprovalPerSec
-	}
-	if cfg.MaxTranscriptBytes <= 0 {
-		cfg.MaxTranscriptBytes = DefaultMaxTranscriptBytes
-	}
-	if cfg.TranscriptRetention <= 0 {
-		cfg.TranscriptRetention = DefaultTranscriptRetention
-	}
+	cfg.ApplyDefaults()
 
-	logsDir := filepath.Join(cfg.StateDir, "logs")
-	if err := os.MkdirAll(logsDir, 0o755); err != nil {
+	logsDir, err := cfg.makeStateDir("logs")
+	if err != nil {
 		return nil, err
 	}
-	diffsDir := filepath.Join(cfg.StateDir, "diffs")
-	if err := os.MkdirAll(diffsDir, 0o755); err != nil {
+	diffsDir, err := cfg.makeStateDir("diffs")
+	if err != nil {
 		return nil, err
 	}
-	approvalsDir := filepath.Join(cfg.StateDir, "approvals")
-	if err := os.MkdirAll(approvalsDir, 0o755); err != nil {
+	approvalsDir, err := cfg.makeStateDir("approvals")
+	if err != nil {
 		return nil, err
 	}
-	researchDir := filepath.Join(cfg.StateDir, "research")
-	if err := os.MkdirAll(researchDir, 0o755); err != nil {
+	researchDir, err := cfg.makeStateDir("research")
+	if err != nil {
 		return nil, err
 	}
 	auditLog, err := audit.Open(filepath.Join(cfg.StateDir, "audit.jsonl"), audit.Options{})
