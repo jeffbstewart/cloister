@@ -267,10 +267,10 @@ func (s *Server) refuseTool(rc *runctx, tc ToolCall, tool string, limit audit.Li
 	rec := audit.New(rc.opID, tool, decRejectedCap, 0)
 	rec.Limit = limit
 	if tool == "web_search" {
-		rec.Search = &audit.SearchDetail{Query: argString(tc.Function.Arguments, "query")}
+		rec.Detail = &audit.SearchDetail{Query: argString(tc.Function.Arguments, "query")}
 	} else {
 		via, url := s.identify(rc, argString(tc.Function.Arguments, "target"))
-		rec.Extract = &audit.ExtractDetail{Via: via, URL: url}
+		rec.Detail = &audit.ExtractDetail{Via: via, URL: url}
 	}
 	s.audit(rec)
 }
@@ -296,7 +296,7 @@ func (s *Server) doSearch(ctx context.Context, rc *runctx, tc ToolCall) {
 		rec := audit.New(rc.opID, "web_search", dec, time.Since(start))
 		rec.Limit = lim
 		rec.Status = clip(err.Error(), 300) // scrubbed by the egress subsystem
-		rec.Search = &audit.SearchDetail{Query: query}
+		rec.Detail = &audit.SearchDetail{Query: query}
 		s.audit(rec)
 		return
 	}
@@ -322,7 +322,7 @@ func (s *Server) doSearch(ctx context.Context, rc *runctx, tc ToolCall) {
 	s.toolResult(rc.messages, tc.ID, string(b))
 	rc.tr.line("search %q -> %d results: %s", query, len(urls), strings.Join(urls, " "))
 	rec := audit.New(rc.opID, "web_search", decSearched, time.Since(start))
-	rec.Search = &audit.SearchDetail{Query: query, Engine: s.cfg.Egress.Engine(), ResultURLs: urls}
+	rec.Detail = &audit.SearchDetail{Query: query, Engine: s.cfg.Egress.Engine(), ResultURLs: urls}
 	s.audit(rec)
 }
 
@@ -351,7 +351,7 @@ func (s *Server) doExtract(ctx context.Context, rc *runctx, tc ToolCall) {
 	rec := audit.New(rc.opID, "extract_url_as_markdown", dec, time.Since(start))
 	rec.Limit = lim
 	rec.Status = clip(err.Error(), 300) // scrubbed by the egress subsystem
-	rec.Extract = &audit.ExtractDetail{Via: via, URL: url}
+	rec.Detail = &audit.ExtractDetail{Via: via, URL: url}
 	s.audit(rec)
 }
 
@@ -360,7 +360,7 @@ func (s *Server) doExtract(ctx context.Context, rc *runctx, tc ToolCall) {
 func (s *Server) gateRawExtract(ctx context.Context, rc *runctx, tc ToolCall, rawURL string, start time.Time) {
 	rc.tr.line("read[raw_url] %s: pending approval", rawURL)
 	pend := audit.New(rc.opID, "extract_url", decPending, 0)
-	pend.Extract = &audit.ExtractDetail{Via: viaRawURL, URL: rawURL}
+	pend.Detail = &audit.ExtractDetail{Via: viaRawURL, URL: rawURL}
 	s.audit(pend)
 
 	switch s.gate(ctx, "extract_url", rawURL, s.cfg.Caps.WallClock) {
@@ -374,7 +374,7 @@ func (s *Server) gateRawExtract(ctx context.Context, rc *runctx, tc ToolCall, ra
 			rec := audit.New(rc.opID, "extract_url_as_markdown", dec, time.Since(start))
 			rec.Limit = lim
 			rec.Status = clip(err.Error(), 300)
-			rec.Extract = &audit.ExtractDetail{Via: viaRawURL, URL: rawURL}
+			rec.Detail = &audit.ExtractDetail{Via: viaRawURL, URL: rawURL}
 			s.audit(rec)
 			return
 		}
@@ -392,7 +392,7 @@ func (s *Server) gateRawExtract(ctx context.Context, rc *runctx, tc ToolCall, ra
 
 func (s *Server) auditRawRefusal(opID runid.ID, rawURL string, dec audit.Decision, start time.Time) {
 	rec := audit.New(opID, "extract_url_as_markdown", dec, time.Since(start))
-	rec.Extract = &audit.ExtractDetail{Via: viaRawURL, URL: rawURL}
+	rec.Detail = &audit.ExtractDetail{Via: viaRawURL, URL: rawURL}
 	s.audit(rec)
 }
 
@@ -409,7 +409,7 @@ func (s *Server) recordExtract(rc *runctx, tc ToolCall, via, url string, ext egr
 	s.toolResult(rc.messages, tc.ID, capStr(ext.Markdown, s.cfg.Caps.MaxExtractBytes))
 	rc.tr.line("read[%s] %s (%d bytes)", via, ext.FinalURL, len(ext.Markdown))
 	rec := audit.New(rc.opID, "extract_url_as_markdown", decision, time.Since(start))
-	rec.Extract = &audit.ExtractDetail{Via: via, URL: url, Provider: s.cfg.Egress.Provider(), FinalURL: ext.FinalURL}
+	rec.Detail = &audit.ExtractDetail{Via: via, URL: url, Provider: s.cfg.Egress.Provider(), FinalURL: ext.FinalURL}
 	s.audit(rec)
 }
 

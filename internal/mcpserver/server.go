@@ -168,7 +168,7 @@ func (s *Server) runAction(ctx context.Context, name string, req *mcp.CallToolRe
 	cmd := &audit.CommandDetail{Params: params}
 	emit := func(id runid.ID, d audit.Decision, dur time.Duration) {
 		rec := audit.New(id, name, d, dur)
-		rec.Command = cmd
+		rec.Detail = cmd
 		s.audit(rec)
 	}
 
@@ -220,7 +220,7 @@ func (s *Server) runAction(ctx context.Context, name string, req *mcp.CallToolRe
 	cmd.LogBytes = res.LogBytes
 	rec := audit.New(res.RunID, name, audit.DecisionRun, res.Duration)
 	rec.Status = string(res.Status)
-	rec.Command = cmd
+	rec.Detail = cmd
 	s.audit(rec)
 
 	return jsonResult(s.buildDigest(a, res)), nil

@@ -561,7 +561,7 @@ func (s *Server) auditDenial(tool string, paths ...string) {
 		return
 	}
 	rec := audit.New(id, tool, audit.DecisionReadDenied, 0)
-	rec.Read = &audit.ReadDetail{Paths: paths}
+	rec.Detail = &audit.ReadDetail{Paths: paths}
 	if err := s.cfg.Audit.Append(rec); err != nil {
 		log.Printf("librarian: audit append failed: %v", err)
 	}

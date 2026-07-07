@@ -55,3 +55,12 @@ type ExtractDetail struct {
 	Provider string `json:"provider,omitempty"` // extract backend (success only)
 	FinalURL string `json:"finalUrl,omitempty"` // resolved URL after redirects (success only)
 }
+
+// Kind marks ResearchDetail as a scholar detail body.
+func (*ResearchDetail) Kind() Kind { return KindResearch }
+
+// Kind marks SearchDetail as a scholar detail body.
+func (*SearchDetail) Kind() Kind { return KindSearch }
+
+// Kind marks ExtractDetail as a scholar detail body.
+func (*ExtractDetail) Kind() Kind { return KindExtract }

@@ -31,3 +31,6 @@ type CommandDetail struct {
 	LogPath  string            `json:"logPath,omitempty"`
 	LogBytes int64             `json:"logBytes,omitempty"`
 }
+
+// Kind marks CommandDetail as the builder's detail body.
+func (*CommandDetail) Kind() Kind { return KindCommand }

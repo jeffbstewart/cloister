@@ -133,7 +133,7 @@ func TestReadFileAndDenials(t *testing.T) {
 	}
 	recs := f.aud.denials()
 	if len(recs) != 1 || recs[0].Decision != audit.DecisionReadDenied ||
-		recs[0].Read == nil || recs[0].Read.Paths[0] != "secrets/prod.env" || recs[0].Tool != "read_file" {
+		recs[0].Read() == nil || recs[0].Read().Paths[0] != "secrets/prod.env" || recs[0].Tool != "read_file" {
 		t.Fatalf("denial audit = %+v", recs)
 	}
 
@@ -212,7 +212,7 @@ func TestBatchReadOneDenialRecordManyPaths(t *testing.T) {
 	if len(recs) != 1 {
 		t.Fatalf("want ONE denial record for the batch, got %d", len(recs))
 	}
-	if r := recs[0].Read; r == nil || len(r.Paths) != 2 || r.Paths[0] != "one.key" || r.Paths[1] != "two.key" {
+	if r := recs[0].Read(); r == nil || len(r.Paths) != 2 || r.Paths[0] != "one.key" || r.Paths[1] != "two.key" {
 		t.Fatalf("batch denial paths = %+v", recs[0])
 	}
 }
