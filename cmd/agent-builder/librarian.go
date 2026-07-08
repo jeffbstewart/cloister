@@ -28,18 +28,14 @@ import (
 	"github.com/jeffbstewart/cloister/internal/watch"
 )
 
-// rescanInterval is how often the librarian re-walks the workspace to
-// catch host edits the inotify watcher does not see.  A rescan that eats
-// more than a tenth of it is logged as slow.
-const rescanInterval = time.Minute
-
 // librarianOptions carries the librarian's bootstrap inputs.
 type librarianOptions struct {
-	Addr      string
-	Workspace string
-	StateURL  string
-	BudgetMB  int
-	MaxFileMB int
+	Addr           string
+	Workspace      string
+	StateURL       string
+	BudgetMB       int
+	MaxFileMB      int
+	RescanInterval time.Duration
 }
 
 func runLibrarian(o librarianOptions) {
@@ -80,7 +76,7 @@ func runLibrarian(o librarianOptions) {
 		defer w.Close()
 	}
 	go func() {
-		tick := time.NewTicker(rescanInterval)
+		tick := time.NewTicker(o.RescanInterval)
 		defer tick.Stop()
 		for range tick.C {
 			if err := rep.Rescan(); err != nil {
@@ -91,10 +87,10 @@ func runLibrarian(o librarianOptions) {
 			// tenth of it, the metadata walk is too costly for this cadence
 			// (back off the interval, or the watcher is carrying freshness
 			// anyway — the rescan only catches host edits).
-			if st := rep.ScanStats(); st.Total() > rescanInterval/10 {
+			if st := rep.ScanStats(); st.Total() > o.RescanInterval/10 {
 				log.Printf("librarian: SLOW rescan %s (metadata walk %s + content read %s) — over 10%% of the %s interval",
 					st.Total().Round(time.Millisecond), st.Walk.Round(time.Millisecond),
-					st.Read.Round(time.Millisecond), rescanInterval)
+					st.Read.Round(time.Millisecond), o.RescanInterval)
 			}
 		}
 	}()
