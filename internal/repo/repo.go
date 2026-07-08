@@ -35,7 +35,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -170,68 +169,46 @@ func (r *Repo) Rescan() error {
 		return fmt.Errorf("repo: load shield: %w", err)
 	}
 
-	fresh := make(map[string]*file)
-	var toLoad []*file // visible, in-cap, changed/new: needs a content read
-	var spent int64    // carry-overs are counted up front and never evicted
 	r.mu.RLock()
 	old := r.files
 	r.mu.RUnlock()
 
-	walkErr := filepath.WalkDir(r.root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil // unreadable subtree: skip, don't fail the scan
+	// Parallel metadata walk: workers scan directories concurrently, each
+	// feeding its subdirectories back into the queue.  The per-file stat is
+	// the bind mount's dominant cost (a 70 s serial walk forced this), and
+	// scanning directories in parallel overlaps those round-trips.
+	raws := parallelWalk(r.root, sh)
+
+	// Serial post-process — pure map/memory work, no I/O: build the model
+	// entries, carry unchanged content over, and collect the changed/new
+	// files that still need a content read.
+	fresh := make(map[string]*file, len(raws))
+	var toLoad []*file // visible, in-cap, changed/new: needs a content read
+	var spent int64    // carry-overs are counted up front and never evicted
+	for _, e := range raws {
+		if e.isDir {
+			fresh[e.rel] = &file{entry: Entry{Path: e.rel, IsDir: true, ModTime: e.modTime, Visibility: e.vis}}
+			continue
 		}
-		rel := filepath.ToSlash(strings.TrimPrefix(p, r.root))
-		rel = strings.TrimPrefix(rel, "/")
-		if rel == "" {
-			return nil
+		f := &file{entry: Entry{Path: e.rel, Size: e.size, ModTime: e.modTime, Visibility: e.vis}}
+		fresh[e.rel] = f
+		if e.vis != shield.Visible {
+			continue // Stripped: metadata only, content never resident
 		}
-		if d.IsDir() && strings.EqualFold(d.Name(), ".git") {
-			return fs.SkipDir
-		}
-		vis := sh.Visibility(rel, d.IsDir())
-		if vis == shield.Hidden {
-			if d.IsDir() {
-				return fs.SkipDir // invisible subtree: never walked
-			}
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			fresh[rel] = &file{entry: Entry{Path: rel, IsDir: true, ModTime: info.ModTime(), Visibility: vis}}
-			return nil
-		}
-		if !info.Mode().IsRegular() {
-			return nil // symlinks etc.: confinement rejects them everywhere else
-		}
-		f := &file{entry: Entry{
-			Path: rel, Size: info.Size(), ModTime: info.ModTime(), Visibility: vis,
-		}}
-		fresh[rel] = f
-		if vis != shield.Visible {
-			return nil // Stripped: metadata only, content never resident
-		}
-		if info.Size() > r.cfg.MaxFileSize {
+		if e.size > r.cfg.MaxFileSize {
 			f.whyNot = ErrTooLarge
-			return nil
+			continue
 		}
 		// Unchanged since last load: carry the resident content over,
 		// counted immediately so budget assignment never evicts it.
-		if prev, ok := old[rel]; ok && prev.content != nil &&
-			prev.entry.Size == info.Size() && prev.entry.ModTime.Equal(info.ModTime()) {
+		if prev, ok := old[e.rel]; ok && prev.content != nil &&
+			prev.entry.Size == e.size && prev.entry.ModTime.Equal(e.modTime) {
 			f.content = prev.content
 			f.entry = prev.entry
 			spent += int64(len(f.content))
-			return nil
+			continue
 		}
 		toLoad = append(toLoad, f)
-		return nil
-	})
-	if walkErr != nil {
-		return walkErr
 	}
 	// One clock read marks the boundary: end of the walk, start of the read.
 	walkEnd := now()
@@ -284,6 +261,150 @@ func (r *Repo) ScanStats() ScanStats {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.lastScan
+}
+
+// walkConcurrency bounds the directory-scanning workers; walkQueueDepth
+// buffers the directory worklist.  The walk is I/O-latency-bound on a bind
+// mount — each readdir and stat waits on a round-trip — so scanning many
+// directories at once overlaps those waits (a 70 s serial stat-walk was
+// the motivating case).  The buffer must exceed the greatest number of
+// directories pending at once; a source tree has hundreds, far under this,
+// so a worker's enqueue never blocks in practice.
+const (
+	walkConcurrency = 16
+	walkQueueDepth  = 4096
+)
+
+// rawEntry is one path's metadata as the parallel walk discovers it,
+// before the serial pass turns it into model state.
+type rawEntry struct {
+	rel     string
+	isDir   bool
+	size    int64
+	modTime time.Time
+	vis     shield.Visibility
+}
+
+// parallelWalk scans the tree under root with a fixed pool of workers
+// pulling directories from one buffered channel; each worker enqueues the
+// subdirectories it finds back into that same channel.  Discovered entries
+// are collected without a lock: workers send batches to an unbuffered
+// results channel and a single goroutine owns the output slice.  A
+// pending-count WaitGroup lets the main goroutine close the worklist once
+// every queued directory has been scanned.  .git and Hidden (.gitignore)
+// subtrees are pruned — never descended.  Returns every visible or stripped
+// path's metadata in unspecified order (the caller sorts).
+func parallelWalk(root string, sh *shield.Shield) []rawEntry {
+	jobs := make(chan string, walkQueueDepth)
+	results := make(chan []rawEntry)
+	var pending sync.WaitGroup // directories enqueued but not yet scanned
+	var workers sync.WaitGroup
+
+	// Single collector owns out — no mutex; share by communicating.
+	var out []rawEntry
+	collected := make(chan struct{})
+	go func() {
+		for batch := range results {
+			out = append(out, batch...)
+		}
+		close(collected)
+	}()
+
+	// A directory's children are enqueued (each a pending.Add) during its
+	// scan, before its own pending.Done, so the counter never hits zero
+	// mid-walk — the standard safe shape for a self-feeding WaitGroup.
+	enqueue := func(relDir string) {
+		pending.Add(1)
+		jobs <- relDir
+	}
+
+	for i := 0; i < walkConcurrency; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for relDir := range jobs {
+				if local := scanDir(root, relDir, sh, enqueue); len(local) > 0 {
+					results <- local
+				}
+				pending.Done()
+			}
+		}()
+	}
+
+	enqueue("")    // the root's children
+	pending.Wait() // every discovered directory has been scanned
+	close(jobs)    // workers fall out of their range loop
+	workers.Wait()
+	close(results) // collector finishes and signals
+	<-collected
+	return out
+}
+
+// isRepoMeta reports whether a slash path has a .git component — git
+// metadata the librarian never exposes, at any depth (submodules and
+// worktrees plant nested .git), matched case-insensitively.
+func isRepoMeta(rel string) bool {
+	for _, seg := range strings.Split(rel, "/") {
+		if strings.EqualFold(seg, ".git") {
+			return true
+		}
+	}
+	return false
+}
+
+// classify is the ONE decision for a path's standing in the model, from
+// its slash path and dir-ness: whether it is admissible at all and, if so,
+// its visibility.  Both the walk and the on-demand admission path consult
+// it, so a new gate lands in exactly one place and the two can never
+// drift.  admit == false means excluded — .git or Hidden (.gitignore):
+// never in the model, and explicit access denies without an existence
+// oracle.
+func classify(sh *shield.Shield, rel string, isDir bool) (vis shield.Visibility, admit bool) {
+	if isRepoMeta(rel) {
+		return shield.Hidden, false
+	}
+	vis = sh.Visibility(rel, isDir)
+	return vis, vis != shield.Hidden
+}
+
+// scanDir reads one directory, records its visible/stripped children, and
+// enqueues visible/stripped subdirectories for further scanning.  An
+// unreadable directory is skipped, not fatal.
+func scanDir(root, relDir string, sh *shield.Shield, enqueue func(string)) []rawEntry {
+	absDir := root
+	if relDir != "" {
+		absDir = filepath.Join(root, filepath.FromSlash(relDir))
+	}
+	entries, err := os.ReadDir(absDir)
+	if err != nil {
+		return nil
+	}
+	var out []rawEntry
+	for _, e := range entries {
+		rel := e.Name()
+		if relDir != "" {
+			rel = relDir + "/" + e.Name()
+		}
+		isDir := e.IsDir()
+		vis, admit := classify(sh, rel, isDir)
+		if !admit {
+			continue // .git or hidden: never recorded, never descended
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if isDir {
+			out = append(out, rawEntry{rel: rel, isDir: true, modTime: info.ModTime(), vis: vis})
+			enqueue(rel)
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			continue // symlinks etc.: confinement rejects them everywhere else
+		}
+		out = append(out, rawEntry{rel: rel, size: info.Size(), modTime: info.ModTime(), vis: vis})
+	}
+	return out
 }
 
 // readContentParallel loads the files' content through a pool of
@@ -452,7 +573,9 @@ func (r *Repo) lookupLocked(rel string) (*file, error) {
 	full := filepath.Join(r.root, filepath.FromSlash(rel))
 	info, statErr := os.Lstat(full)
 	isDir := statErr == nil && info.IsDir()
-	if r.sh.Visibility(rel, isDir) == shield.Hidden {
+	// Excluded paths (.git, Hidden) deny without revealing existence —
+	// same central decision the walk uses, so the two never drift.
+	if _, admit := classify(r.sh, rel, isDir); !admit {
 		return nil, ErrForbidden
 	}
 	if statErr != nil {
@@ -485,9 +608,9 @@ func (r *Repo) admitLocked(rel string) *file {
 	if err != nil {
 		return nil
 	}
-	vis := r.sh.Visibility(rel, info.IsDir())
-	if vis == shield.Hidden {
-		return nil
+	vis, admit := classify(r.sh, rel, info.IsDir())
+	if !admit {
+		return nil // .git or hidden: never admitted
 	}
 	var f *file
 	if info.IsDir() {
