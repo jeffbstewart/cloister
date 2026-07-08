@@ -332,7 +332,7 @@ func (s *Server) serveLines(tool, path string, window func(total int) (int, int)
 	if err != nil {
 		return s.refuse(tool, err, path), nil
 	}
-	text, from, to, total := lineSlice(ar.Bytes(), window)
+	text, from, to, total := lineSlice(ar.CopyBytes(), window)
 	return jsonResult(map[string]any{
 		"path": path, "fromLine": from + 1, "toLine": to, "totalLines": total,
 		"content": text,
@@ -504,7 +504,7 @@ func (s *Server) search(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallT
 		if a.Glob != "" && !shield.Glob(a.Glob, rel) {
 			return nil
 		}
-		lines := strings.Split(string(ar.Bytes()), "\n")
+		lines := strings.Split(ar.String(), "\n")
 		for i, line := range lines {
 			if !re.MatchString(line) {
 				continue

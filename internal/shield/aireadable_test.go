@@ -34,8 +34,26 @@ func TestClearReadablePathMints(t *testing.T) {
 	if ar.String() != "package main\n" {
 		t.Errorf("String() = %q, want the cleared content", ar.String())
 	}
-	if string(ar.Bytes()) != "package main\n" {
-		t.Errorf("Bytes() = %q, want the cleared content", ar.Bytes())
+	if string(ar.CopyBytes()) != "package main\n" {
+		t.Errorf("CopyBytes() = %q, want the cleared content", ar.CopyBytes())
+	}
+}
+
+// TestCopyBytesIsolatesOwnedContent proves the name's promise: a caller cannot
+// reach back through CopyBytes and mutate the content the repo still owns.
+func TestCopyBytesIsolatesOwnedContent(t *testing.T) {
+	s := load(t, map[string]string{"a.txt": "x"})
+	ar, ok := s.Clear("a.txt", []byte("original"))
+	if !ok {
+		t.Fatal("Clear on a readable path returned ok=false")
+	}
+	b := ar.CopyBytes()
+	b[0] = 'X' // mutate the caller's copy
+	if ar.String() != "original" {
+		t.Errorf("caller mutation reached owned content: String() = %q", ar.String())
+	}
+	if string(ar.CopyBytes()) != "original" {
+		t.Errorf("caller mutation reached owned content: CopyBytes() = %q", ar.CopyBytes())
 	}
 }
 

@@ -193,7 +193,7 @@ func (s *Server) summarizeFile(ctx context.Context, req *mcp.CallToolRequest) (*
 // comprehension op.  No silent truncation; whole-file map-reduce for big files
 // is a later sub-phase.
 func scopeContent(ar shield.AIReadable, start, end int) (snippet, loc string, err error) {
-	content := ar.Bytes()
+	content := ar.CopyBytes()
 	text, loc := string(content), ar.Path()
 	if start != 0 || end != 0 {
 		var from, to, total int

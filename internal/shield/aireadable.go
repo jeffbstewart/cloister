@@ -39,9 +39,18 @@ func (s *Shield) Clear(rel string, data []byte) (AIReadable, bool) {
 // String returns the cleared content as a string.
 func (a AIReadable) String() string { return string(a.data) }
 
-// Bytes returns the cleared content.  The slice is shared with the minting
-// source and must not be mutated — the same contract the repo's content holds.
-func (a AIReadable) Bytes() []byte { return a.data }
+// CopyBytes returns a copy of the cleared content.  It copies — hence the name —
+// so a caller cannot reach back and mutate the content the repo still owns;
+// prefer String when a string suffices (it copies too, and reads clearer at the
+// call site).
+func (a AIReadable) CopyBytes() []byte {
+	if a.data == nil {
+		return nil
+	}
+	b := make([]byte, len(a.data))
+	copy(b, a.data)
+	return b
+}
 
 // Path returns the root-relative path whose content this cleared.
 func (a AIReadable) Path() string { return a.path }
