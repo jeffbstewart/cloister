@@ -25,7 +25,13 @@ package librarian
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"path"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -39,6 +45,15 @@ import (
 // an engine.  Over the cap the op refuses and names the cap — no silent
 // truncation, no chunking (map-reduce is a later sub-phase).
 const MaxComprehendBytes = 128 << 10
+
+// MaxDirFiles and MaxDirBytes are the big-tree guard on summarize_directory
+// (docs/librarian.md): a map-reduce over a huge tree is thousands of engine
+// calls, so over either threshold the op refuses and asks for a narrower scope
+// rather than silently launching (or silently truncating) the fan-out.
+const (
+	MaxDirFiles = 40
+	MaxDirBytes = 2 << 20
+)
 
 // Inferencer is the inference seam the comprehension tools drive, mirrored on
 // the Auditor pattern so tests fake it with no real HTTP.  *infer.Client
@@ -54,7 +69,15 @@ const (
 		"Be concise.  If the answer is not in the file, say so plainly rather than guessing."
 	summarizeSystemPrompt = "You summarize a single file using ONLY the file content provided below.  " +
 		"Be concise: state the file's purpose and its key elements."
+	dirReduceSystemPrompt = "You are given short summaries of the files in one directory. " +
+		"Write a concise overview of what the directory contains and how its files relate. " +
+		"Use only the summaries provided."
 )
+
+// errDirBudget is the sentinel ForEachResident's callback returns to stop the
+// walk once the directory would exceed the big-tree guard; the caller
+// distinguishes it from a real error with errors.Is and refuses.
+var errDirBudget = errors.New("summarize_directory: budget exceeded")
 
 func (s *Server) registerComprehensionTools() {
 	s.mcp.AddTool(&mcp.Tool{
@@ -87,6 +110,19 @@ func (s *Server) registerComprehensionTools() {
 			Required: []string{"path"},
 		},
 	}, s.summarizeFile)
+
+	s.mcp.AddTool(&mcp.Tool{
+		Name:        "summarize_directory",
+		Description: "Summarize a directory by digesting each resident file (map) then synthesizing one overview (reduce), grounded only in that content.  A context-saving alternative to reading a whole tree.  Over a file-count / total-size guard it refuses and asks for a narrower subdirectory rather than launching thousands of engine calls.  effort 'quick' (default) or 'thorough' deepens the synthesis; the overview returns with an aggregate provenance footer.",
+		InputSchema: &jsonschema.Schema{
+			Type: "object",
+			Properties: map[string]*jsonschema.Schema{
+				"path":   str("workspace-relative directory path; empty or '.' for the workspace root"),
+				"effort": effortSchema(),
+			},
+			Required: []string{"path"},
+		},
+	}, s.summarizeDirectory)
 }
 
 // effortSchema is the shared optional-enum schema for the effort knob.
@@ -240,6 +276,179 @@ func comprehendResult(res infer.Result, effort infer.Effort) *mcp.CallToolResult
 // footer is the compact provenance trailer: model-visible on purpose so the
 // quick-vs-thorough cost tradeoff shows in the response.
 func footer(res infer.Result, effort infer.Effort) string {
+	return footerParts(effort, res.ServedBy, res.Elapsed, res.Tokens)
+}
+
+// footerParts renders the provenance trailer from already-aggregated values, so
+// a map-reduce op can pass its summed tokens/elapsed and its combined engine set
+// (single-file footer just forwards one Result's fields).
+func footerParts(effort infer.Effort, servedBy string, elapsed time.Duration, tokens int) string {
 	return fmt.Sprintf("\n\n— librarian · %s → %s · %.1fs · %d tok",
-		effort, res.ServedBy, res.Elapsed.Seconds(), res.Tokens)
+		effort, servedBy, elapsed.Seconds(), tokens)
+}
+
+// summarizeDirectory summarizes a directory by map-reduce: a cheap per-file
+// digest (map) followed by one synthesis (reduce).  The map always runs at
+// infer.Quick — depth pays off in the reduce, not in N thorough per-file passes,
+// so `thorough` improves the overview without N thorough calls — while the
+// reduce runs at the caller's requested effort.
+func (s *Server) summarizeDirectory(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var a struct {
+		Path   string `json:"path"`
+		Effort string `json:"effort"`
+	}
+	if err := decode(req, &a); err != nil {
+		return errResult("bad arguments: " + err.Error()), nil
+	}
+	effort, err := parseEffort(a.Effort)
+	if err != nil {
+		return errResult(err.Error()), nil
+	}
+
+	// Validate the directory.  Root ("" or ".") needs no Stat; any other path
+	// must resolve to a visible directory — a jailed or hidden path denies and
+	// audits (via refuse), a non-directory is a plain error.
+	dir := path.Clean(filepath.ToSlash(a.Path))
+	root := dir == "." || dir == ""
+	label := dir
+	if root {
+		label = "the workspace root"
+	} else {
+		entry, err := s.cfg.Repo.Stat(dir)
+		if err != nil {
+			return s.refuse("summarize_directory", err, dir), nil
+		}
+		if !entry.IsDir {
+			return errResult(fmt.Sprintf("%s is not a directory", dir)), nil
+		}
+	}
+
+	// Collect resident file content under the repo lock.  ForEachResident holds
+	// the lock across the callback, so we MUST NOT call the engine here: we copy
+	// the bytes (CopyBytes returns an owned copy, safe to retain past the
+	// callback) and run every inference AFTER the walk returns.  Jailed, binary,
+	// and oversized files are already absent from ForEachResident — the correct
+	// silent-skip for a tree-wide op.
+	type collected struct {
+		path    string
+		content []byte
+	}
+	prefix := ""
+	if !root {
+		prefix = dir + "/"
+	}
+	var files []collected
+	var totalBytes int
+	var budgetErr error
+	walkErr := s.cfg.Repo.ForEachResident(func(ar shield.AIReadable) error {
+		p := ar.Path()
+		if prefix != "" && !strings.HasPrefix(p, prefix) {
+			return nil
+		}
+		content := ar.CopyBytes()
+		// Count only the bytes we would actually push (each file is capped to
+		// MaxComprehendBytes below).
+		size := len(content)
+		if size > MaxComprehendBytes {
+			size = MaxComprehendBytes
+		}
+		// Budget guard: refuse rather than silently truncate the fan-out.  Stop
+		// the walk on the first file that would tip us over either limit.
+		if len(files)+1 > MaxDirFiles {
+			budgetErr = fmt.Errorf("%s has more than %d readable files (the summarize_directory limit); summarize a narrower subdirectory", label, MaxDirFiles)
+			return errDirBudget
+		}
+		if totalBytes+size > MaxDirBytes {
+			budgetErr = fmt.Errorf("%s exceeds the %d-byte summarize_directory content budget; summarize a narrower subdirectory", label, MaxDirBytes)
+			return errDirBudget
+		}
+		files = append(files, collected{path: p, content: content})
+		totalBytes += size
+		return nil
+	})
+	if walkErr != nil {
+		if errors.Is(walkErr, errDirBudget) {
+			return errResult(budgetErr.Error()), nil
+		}
+		return errResult(walkErr.Error()), nil
+	}
+	if len(files) == 0 {
+		return errResult("no readable files under " + label), nil
+	}
+
+	// Map: one cheap infer.Quick digest per file.  Sequential is fine here — the
+	// budget guard bounds the count; parallelizing the map is a possible later
+	// refinement.
+	type fileSummary struct {
+		Path    string `json:"path"`
+		Summary string `json:"summary"`
+	}
+	var summaries []fileSummary
+	var truncated, totalTokens int
+	var totalElapsed time.Duration
+	engines := map[string]bool{}
+	record := func(res infer.Result) {
+		totalTokens += res.Tokens
+		totalElapsed += res.Elapsed
+		if res.ServedBy != "" {
+			engines[res.ServedBy] = true
+		}
+	}
+	for _, fc := range files {
+		content := fc.content
+		note := ""
+		if len(content) > MaxComprehendBytes {
+			content = content[:MaxComprehendBytes]
+			note = " (truncated)"
+			truncated++
+		}
+		msgs := []openai.Message{
+			{Role: "system", Content: summarizeSystemPrompt},
+			{Role: "user", Content: fmt.Sprintf("File: %s%s\n\n%s", fc.path, note, content)},
+		}
+		res, err := s.cfg.Infer.Ask(ctx, infer.Quick, msgs)
+		if err != nil {
+			return errResult("inference failed: " + err.Error()), nil
+		}
+		record(res)
+		summaries = append(summaries, fileSummary{Path: fc.path, Summary: res.Answer})
+	}
+
+	// Reduce: one synthesis at the caller's requested effort over the per-file
+	// summaries.
+	var b strings.Builder
+	fmt.Fprintf(&b, "Directory: %s\n\n", label)
+	for _, fs := range summaries {
+		fmt.Fprintf(&b, "- %s: %s\n", fs.Path, fs.Summary)
+	}
+	res, err := s.cfg.Infer.Ask(ctx, effort, []openai.Message{
+		{Role: "system", Content: dirReduceSystemPrompt},
+		{Role: "user", Content: b.String()},
+	})
+	if err != nil {
+		return errResult("inference failed: " + err.Error()), nil
+	}
+	record(res)
+
+	// Aggregate provenance across all N+1 calls; name every engine that served
+	// (sorted set joined by "+") so a mixed-engine fallback is never silent.
+	names := make([]string, 0, len(engines))
+	for n := range engines {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	servedBy := strings.Join(names, "+")
+
+	r := textResult(res.Answer + footerParts(effort, servedBy, totalElapsed, totalTokens))
+	r.StructuredContent = map[string]any{
+		"overview":        res.Answer,
+		"files":           summaries,
+		"filesSummarized": len(summaries),
+		"filesTruncated":  truncated,
+		"servedBy":        servedBy,
+		"elapsedMs":       totalElapsed.Milliseconds(),
+		"tokens":          totalTokens,
+		"effort":          string(effort),
+	}
+	return r, nil
 }

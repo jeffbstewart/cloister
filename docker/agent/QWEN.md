@@ -25,6 +25,39 @@ All reading and navigation: `read_file`, `read_range` / `read_head` /
 `----------` exists but is off-limits — do not try to read it, and do
 not recreate it.  Nothing here is writable; writes are the scribe's.
 
+### Comprehension tools — read WITHOUT spending your context
+
+The librarian also serves inference-backed reads that push the file
+content to an engine and return only a distilled answer, so you learn
+what a file or tree contains without pulling its bytes into your own
+context:
+
+- **`ask_about_file(path, question, effort?, start?, end?)`** — a
+  one-shot answer grounded ONLY in that file's content (optionally a
+  line range).  If the answer isn't in the file, it says so rather than
+  guessing.
+- **`summarize_file(path, effort?, start?, end?)`** — a concise summary
+  of a file (optionally a line range).
+- **`summarize_directory(path, effort?)`** — summarizes a directory by
+  digesting each file and synthesizing one overview.  On a large tree it
+  refuses and asks you to name a narrower subdirectory rather than
+  launching thousands of engine calls — call it again on a subpath.
+
+Prefer these over reading a whole file or tree just to understand it:
+the answer comes back small either way, so they cost you a handful of
+tokens instead of the whole file.  Reach for a mechanical `read_file` /
+`read_range` when you need the EXACT bytes (to quote, diff, or edit).
+
+`effort` is `quick` (default) or `thorough` — an INTENT, not a model
+name.  `thorough` buys engine-side depth (a slower, more careful pass);
+it does NOT return more text, so a thorough answer costs you the same
+few tokens as a quick one.  Every answer ends with a one-line provenance
+footer (`— librarian · effort → engine · time · tokens`); the tokens are
+the ENGINE's work, not yours, and let you decide when to escalate to
+`thorough`.  Only content the shield has cleared is ever pushed to an
+engine, and these tools do not lift the offline rule — they read the
+project, they fetch nothing into the build.
+
 ## Writing: the `scribe` tools
 
 Every file change goes through the scribe:
