@@ -62,7 +62,8 @@ type Auditor interface {
 type Config struct {
 	Version string
 	Repo    *repo.Repo
-	Audit   Auditor // nil disables denial auditing (tests may set a fake)
+	Audit   Auditor    // nil disables denial auditing (tests may set a fake)
+	Infer   Inferencer // nil disables the comprehension tools (mechanical-only boot)
 }
 
 // Server owns the librarian's MCP tool surface.
@@ -71,11 +72,17 @@ type Server struct {
 	mcp *mcp.Server
 }
 
-// New builds the librarian tool surface.
+// New builds the librarian tool surface.  The mechanical tools always
+// register; the inference-backed comprehension tools register only when an
+// Inferencer is wired, so the librarian can boot mechanical-only before the
+// inference endpoint exists.
 func New(cfg Config) *Server {
 	s := &Server{cfg: cfg}
 	s.mcp = mcp.NewServer(&mcp.Implementation{Name: "librarian", Version: cfg.Version}, nil)
 	s.registerTools()
+	if cfg.Infer != nil {
+		s.registerComprehensionTools()
+	}
 	return s
 }
 
