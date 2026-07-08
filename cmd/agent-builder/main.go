@@ -44,6 +44,7 @@ import (
 	"flag"
 	"log"
 	"os"
+	"time"
 )
 
 // version is stamped at build time via -ldflags "-X main.version=...".
@@ -87,6 +88,8 @@ func main() {
 		"librarian: total resident-content cap for the in-memory model")
 	repoMaxFileMB := flag.Int("repo-max-file-mb", 2,
 		"librarian: per-file cap; larger files are metadata-only")
+	rescanInterval := flag.Duration("rescan-interval", 30*time.Minute,
+		"librarian: how often to re-walk the workspace for host edits the watcher misses")
 	healthcheck := flag.Bool("healthcheck", false,
 		"probe the local /healthz and exit 0/1 (container HEALTHCHECK)")
 	flag.Parse()
@@ -122,6 +125,7 @@ func main() {
 		runLibrarian(librarianOptions{
 			Addr: *addr, Workspace: *workspace, StateURL: *stateURL,
 			BudgetMB: *repoBudgetMB, MaxFileMB: *repoMaxFileMB,
+			RescanInterval: *rescanInterval,
 		})
 	case "":
 		log.Fatalf("-worker-mode is required: %s", workerModes)
