@@ -29,10 +29,16 @@ func TestStdlibOnlyNoSubprocess(t *testing.T) {
 		"github.com/jeffbstewart/cloister/internal/shield",
 		"github.com/jeffbstewart/cloister/internal/repo",
 		"github.com/jeffbstewart/cloister/internal/watch",
+		"github.com/jeffbstewart/cloister/internal/openai",
+		"github.com/jeffbstewart/cloister/internal/infer",
 	}
 	seen := map[string]bool{}
-	var walk func(importPath, from string)
-	walk = func(importPath, from string) {
+	// srcDir is the importing package's directory, threaded through so
+	// build.Import resolves std-vendored packages (crypto/tls pulls in the
+	// GOROOT-vendored golang.org/x/crypto/... via net/http) the way the real
+	// build does; without it those imports fail to resolve at all.
+	var walk func(importPath, srcDir, from string)
+	walk = func(importPath, srcDir, from string) {
 		if seen[importPath] || importPath == "C" {
 			return
 		}
@@ -41,7 +47,7 @@ func TestStdlibOnlyNoSubprocess(t *testing.T) {
 			t.Errorf("os/exec reachable via %s — the librarian graph must not be able to shell out", from)
 			return
 		}
-		pkg, err := build.Default.Import(importPath, "", 0)
+		pkg, err := build.Default.Import(importPath, srcDir, 0)
 		if err != nil {
 			t.Fatalf("import %s (via %s): %v", importPath, from, err)
 		}
@@ -51,6 +57,10 @@ func TestStdlibOnlyNoSubprocess(t *testing.T) {
 				isRoot = true
 			}
 		}
+		// A GOROOT-vendored package resolves under GOROOT/src/vendor and its
+		// import path (golang.org/x/...) is not a real external dependency —
+		// it is part of the standard library's own tree, so it counts as
+		// Goroot here.
 		if !pkg.Goroot && !isRoot && !strings.HasPrefix(importPath, "github.com/jeffbstewart/cloister/internal/") {
 			t.Errorf("non-stdlib dependency %s reachable via %s", importPath, from)
 			return
@@ -61,10 +71,10 @@ func TestStdlibOnlyNoSubprocess(t *testing.T) {
 			t.Logf("note: internal dependency %s (via %s) joins the stdlib-only graph", importPath, from)
 		}
 		for _, imp := range pkg.Imports {
-			walk(imp, importPath)
+			walk(imp, pkg.Dir, importPath)
 		}
 	}
 	for _, r := range roots {
-		walk(r, "(root)")
+		walk(r, "", "(root)")
 	}
 }

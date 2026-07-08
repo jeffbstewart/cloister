@@ -22,7 +22,9 @@ import (
 	"os"
 	"time"
 
+	"github.com/jeffbstewart/cloister/internal/infer"
 	"github.com/jeffbstewart/cloister/internal/librarian"
+	"github.com/jeffbstewart/cloister/internal/openai"
 	"github.com/jeffbstewart/cloister/internal/repo"
 	"github.com/jeffbstewart/cloister/internal/status/sink"
 	"github.com/jeffbstewart/cloister/internal/watch"
@@ -99,6 +101,7 @@ func runLibrarian(o librarianOptions) {
 		Version: version,
 		Repo:    rep,
 		Audit:   sink.NewClient(o.StateURL, token),
+		Infer:   buildInferencer(),
 	})
 
 	// Boot diagnostic: what's resident and what's heaviest, so an
@@ -114,4 +117,37 @@ func runLibrarian(o librarianOptions) {
 	serveHTTP(&http.Server{Addr: o.Addr, Handler: srv.Handler()},
 		fmt.Sprintf("librarian (workspace %s, %d/%d MiB resident → state %s)",
 			o.Workspace, report.Bytes>>20, report.Budget>>20, o.StateURL))
+}
+
+// buildInferencer wires the comprehension inference client from env, fail-soft:
+// with OPENAI_BASE_URL and OPENAI_MODEL both set it returns an *infer.Client;
+// with either unset (or a config error) it logs that comprehension is disabled
+// and returns nil, so the librarian still boots with its mechanical tools.
+func buildInferencer() librarian.Inferencer {
+	baseURL := envOr("OPENAI_BASE_URL", "")
+	model := os.Getenv("OPENAI_MODEL")
+	if baseURL == "" || model == "" {
+		log.Printf("librarian: OPENAI_BASE_URL/OPENAI_MODEL unset — comprehension tools disabled (mechanical-only)")
+		return nil
+	}
+	// Both efforts resolve to the same endpoint today; the agency will later
+	// provide distinct engine classes (deep-think on a separate node).  The
+	// provenance Names differ now so the footer already reads the way it will.
+	engine := openai.New(openai.Options{
+		BaseURL: baseURL,
+		Model:   model,
+		Key:     os.Getenv("OPENAI_API_KEY"),
+	})
+	client, err := infer.New(infer.Config{
+		Engines: map[infer.Effort]infer.Engine{
+			infer.Quick:    {Name: "think-fast", Completer: engine},
+			infer.Thorough: {Name: "deep-think", Completer: engine},
+		},
+	})
+	if err != nil {
+		log.Printf("librarian: inference client build failed (%v) — comprehension tools disabled (mechanical-only)", err)
+		return nil
+	}
+	log.Printf("librarian: comprehension tools enabled → model %s @ %s", model, baseURL)
+	return client
 }

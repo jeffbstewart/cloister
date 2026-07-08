@@ -53,9 +53,9 @@ type fixture struct {
 	session *mcp.ClientSession
 }
 
-func newFixture(t *testing.T, files map[string]string) *fixture {
+// writeFiles materializes rel→content under dir, creating parents.
+func writeFiles(t *testing.T, dir string, files map[string]string) {
 	t.Helper()
-	dir := t.TempDir()
 	for rel, content := range files {
 		full := filepath.Join(dir, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
@@ -65,6 +65,12 @@ func newFixture(t *testing.T, files map[string]string) *fixture {
 			t.Fatal(err)
 		}
 	}
+}
+
+func newFixture(t *testing.T, files map[string]string) *fixture {
+	t.Helper()
+	dir := t.TempDir()
+	writeFiles(t, dir, files)
 	rep, err := repo.New(dir, repo.Config{Budget: 1 << 20, MaxFileSize: 64 << 10})
 	if err != nil {
 		t.Fatal(err)
