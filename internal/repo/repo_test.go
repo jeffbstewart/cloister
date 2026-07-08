@@ -16,6 +16,7 @@ package repo
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -225,6 +226,50 @@ func TestMidSessionGrowthDeniesNewFileOnly(t *testing.T) {
 	}
 	if _, err := r.Read("resident.txt"); err != nil {
 		t.Fatalf("existing resident must keep serving: %v", err)
+	}
+}
+
+func TestParallelScanLoadsManyFilesCorrectly(t *testing.T) {
+	// Exercises the concurrent read path at a scale past scanConcurrency:
+	// every file must come back resident with exactly its own content.
+	files := map[string]string{}
+	for i := 0; i < 200; i++ {
+		files[fmt.Sprintf("pkg%d/file%d.go", i%7, i)] = fmt.Sprintf("// file %d\npackage p%d\n", i, i)
+	}
+	_, r := newWorkspace(t, files)
+	for name, want := range files {
+		got, err := r.Read(name)
+		if err != nil || string(got) != want {
+			t.Fatalf("Read(%s) = %q, %v; want %q", name, got, err, want)
+		}
+	}
+}
+
+func TestOverBudgetEvictsLargestKeepsSmall(t *testing.T) {
+	// Smallest-first budget assignment: when a scan finds more new content
+	// than fits, the big files fall out and the many small ones stay.
+	// (Boot refuses on any over-budget file, so this is the mid-session
+	// growth path — several new files competing in one rescan.)
+	root := t.TempDir()
+	write(t, root, "seed.txt", "s")
+	r, err := New(root, Config{Budget: 1000, MaxFileSize: 900})
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, root, "small-a.txt", strings.Repeat("a", 100))
+	write(t, root, "small-b.txt", strings.Repeat("b", 100))
+	write(t, root, "small-c.txt", strings.Repeat("c", 100))
+	write(t, root, "huge.txt", strings.Repeat("H", 900)) // fits the per-file cap; busts the budget
+	if err := r.Rescan(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Read("huge.txt"); !errors.Is(err, ErrOverBudget) {
+		t.Errorf("huge file = %v, want ErrOverBudget (largest evicted)", err)
+	}
+	for _, s := range []string{"small-a.txt", "small-b.txt", "small-c.txt"} {
+		if _, err := r.Read(s); err != nil {
+			t.Errorf("%s should stay resident (smallest kept): %v", s, err)
+		}
 	}
 }
 

@@ -129,11 +129,22 @@ func New(root string, cfg Config) (*Repo, error) {
 	return r, nil
 }
 
+// scanConcurrency bounds the parallel content reads.  The scan is
+// I/O-latency-bound — each read waits on a bind-mount round-trip, not the
+// CPU — so overlapping many reads shrinks wall-clock far past core count
+// (a 52 s serial scan of a Docker Desktop mount was the motivating case).
+const scanConcurrency = 16
+
 // Rescan walks the workspace metadata, reloading the shield and any file
 // whose size or mtime changed, adding new paths, dropping vanished ones.
 // New files that would exceed the budget stay metadata-only (whyNot =
 // ErrOverBudget) — a live session is never killed for growth.  The new
 // state swaps in atomically.
+//
+// The heavy step — reading changed/new file content — runs concurrently
+// (scanConcurrency workers).  Budget assignment stays deterministic: it
+// happens after the reads, in sorted path order, so which files fall
+// out over-budget never depends on goroutine timing.
 func (r *Repo) Rescan() error {
 	sh, err := shield.Load(os.DirFS(r.root))
 	if err != nil {
@@ -141,7 +152,8 @@ func (r *Repo) Rescan() error {
 	}
 
 	fresh := make(map[string]*file)
-	var spent int64
+	var toLoad []*file // visible, in-cap, changed/new: needs a content read
+	var spent int64    // carry-overs are counted up front and never evicted
 	r.mu.RLock()
 	old := r.files
 	r.mu.RUnlock()
@@ -187,7 +199,8 @@ func (r *Repo) Rescan() error {
 			f.whyNot = ErrTooLarge
 			return nil
 		}
-		// Unchanged since last load: carry the resident content over.
+		// Unchanged since last load: carry the resident content over,
+		// counted immediately so budget assignment never evicts it.
 		if prev, ok := old[rel]; ok && prev.content != nil &&
 			prev.entry.Size == info.Size() && prev.entry.ModTime.Equal(info.ModTime()) {
 			f.content = prev.content
@@ -195,19 +208,39 @@ func (r *Repo) Rescan() error {
 			spent += int64(len(f.content))
 			return nil
 		}
-		if spent+info.Size() > r.cfg.Budget {
-			f.whyNot = ErrOverBudget
-			return nil
-		}
-		if err := loadContent(r.root, f); err != nil {
-			f.whyNot = err
-			return nil
-		}
-		spent += int64(len(f.content))
+		toLoad = append(toLoad, f)
 		return nil
 	})
 	if walkErr != nil {
 		return walkErr
+	}
+
+	// Read every changed/new file's content concurrently — no budget yet.
+	readContentParallel(r.root, toLoad)
+
+	// Assign budget deterministically, smallest first (path as tiebreaker):
+	// when the set overflows, the FEWEST files are evicted — the largest
+	// ones fall out, not whatever sorts last alphabetically.  Carry-overs
+	// are already counted and never evicted.  Evicted files had their
+	// content read then discarded — bounded, and only on the boot-refuse /
+	// mid-session-growth paths.
+	sort.Slice(toLoad, func(i, j int) bool {
+		if toLoad[i].entry.Size != toLoad[j].entry.Size {
+			return toLoad[i].entry.Size < toLoad[j].entry.Size
+		}
+		return toLoad[i].entry.Path < toLoad[j].entry.Path
+	})
+	for _, f := range toLoad {
+		if f.content == nil {
+			continue // binary (ErrNotText) or a read error: never resident
+		}
+		if spent+int64(len(f.content)) > r.cfg.Budget {
+			f.content = nil
+			f.entry.Resident, f.entry.LineCount, f.entry.SHA256 = false, 0, ""
+			f.whyNot = ErrOverBudget
+			continue
+		}
+		spent += int64(len(f.content))
 	}
 
 	sorted := make([]string, 0, len(fresh))
@@ -220,6 +253,41 @@ func (r *Repo) Rescan() error {
 	r.sh, r.files, r.sorted, r.spent = sh, fresh, sorted, spent
 	r.mu.Unlock()
 	return nil
+}
+
+// readContentParallel loads the files' content through a pool of
+// scanConcurrency workers reading one shared channel.  Each worker
+// touches only the *file it pulls, so no locking is needed; loadContent
+// sets content (success) or leaves it nil and records whyNot (binary or
+// read error).
+func readContentParallel(root string, files []*file) {
+	if len(files) == 0 {
+		return
+	}
+	workers := scanConcurrency
+	if len(files) < workers {
+		workers = len(files)
+	}
+	// Buffer the whole worklist so the feed loop never blocks on a busy
+	// worker: fill, close, and let the pool drain.
+	ch := make(chan *file, len(files))
+	for _, f := range files {
+		ch <- f
+	}
+	close(ch)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			for f := range ch {
+				if err := loadContent(root, f); err != nil {
+					f.whyNot = err
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 // loadContent reads one visible, size-checked file into residence,
