@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeffbstewart/cloister/internal/shield"
 )
@@ -374,6 +375,34 @@ func TestReportNamesLargestResidentExcludesRest(t *testing.T) {
 	}
 	if rep.Bytes <= 0 || rep.Budget != testBudget {
 		t.Errorf("report totals = %+v", rep)
+	}
+}
+
+func TestScanStatsMeasuresWalkAndReadPhases(t *testing.T) {
+	// Inject a clock that advances a fixed step per read, so the two phase
+	// durations are deterministic (not racing the real clock).  One Rescan
+	// reads the clock three times — walkStart, the walk/read boundary, and
+	// readEnd — so each phase spans exactly one step.
+	const step = 4 * time.Millisecond
+	orig := now
+	var calls int
+	now = func() time.Time {
+		tm := time.Unix(1000, 0).Add(time.Duration(calls) * step)
+		calls++
+		return tm
+	}
+	t.Cleanup(func() { now = orig })
+
+	_, r := newWorkspace(t, map[string]string{"a.go": "package a\n", "b.go": "package b\n"})
+	st := r.ScanStats()
+	if st.Walk != step {
+		t.Errorf("Walk = %s, want %s", st.Walk, step)
+	}
+	if st.Read != step {
+		t.Errorf("Read = %s, want %s", st.Read, step)
+	}
+	if st.Total() != 2*step {
+		t.Errorf("Total = %s, want %s", st.Total(), 2*step)
 	}
 }
 

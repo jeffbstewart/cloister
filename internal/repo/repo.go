@@ -95,12 +95,30 @@ type Repo struct {
 	root string
 	cfg  Config
 
-	mu     sync.RWMutex
-	sh     *shield.Shield
-	files  map[string]*file // rel path → state; dirs included (IsDir entries)
-	sorted []string         // sorted keys, rebuilt on swap
-	spent  int64            // resident bytes
+	mu       sync.RWMutex
+	sh       *shield.Shield
+	files    map[string]*file // rel path → state; dirs included (IsDir entries)
+	sorted   []string         // sorted keys, rebuilt on swap
+	spent    int64            // resident bytes
+	lastScan ScanStats        // timing of the most recent Rescan
 }
+
+// ScanStats reports where a scan spent its wall-clock: the metadata walk
+// (shield load + stat every visible file — the serial cost that dominates
+// on a slow bind mount) versus the content read (the parallelized file
+// reads plus budget assignment).
+type ScanStats struct {
+	Walk time.Duration
+	Read time.Duration
+}
+
+// Total is the whole scan's wall-clock.
+func (s ScanStats) Total() time.Duration { return s.Walk + s.Read }
+
+// now is the clock behind scan-phase timing; tests swap it to make the
+// measured Walk/Read durations deterministic rather than racing the real
+// clock.
+var now = time.Now
 
 // New loads the workspace at root.  Over-budget is a refusal whose error
 // names the largest resident candidates — the signal for tuning
@@ -146,6 +164,7 @@ const scanConcurrency = 16
 // happens after the reads, in sorted path order, so which files fall
 // out over-budget never depends on goroutine timing.
 func (r *Repo) Rescan() error {
+	walkStart := now()
 	sh, err := shield.Load(os.DirFS(r.root))
 	if err != nil {
 		return fmt.Errorf("repo: load shield: %w", err)
@@ -214,6 +233,9 @@ func (r *Repo) Rescan() error {
 	if walkErr != nil {
 		return walkErr
 	}
+	// One clock read marks the boundary: end of the walk, start of the read.
+	walkEnd := now()
+	walkDur := walkEnd.Sub(walkStart)
 
 	// Read every changed/new file's content concurrently — no budget yet.
 	readContentParallel(r.root, toLoad)
@@ -242,6 +264,7 @@ func (r *Repo) Rescan() error {
 		}
 		spent += int64(len(f.content))
 	}
+	readDur := now().Sub(walkEnd)
 
 	sorted := make([]string, 0, len(fresh))
 	for k := range fresh {
@@ -251,8 +274,16 @@ func (r *Repo) Rescan() error {
 
 	r.mu.Lock()
 	r.sh, r.files, r.sorted, r.spent = sh, fresh, sorted, spent
+	r.lastScan = ScanStats{Walk: walkDur, Read: readDur}
 	r.mu.Unlock()
 	return nil
+}
+
+// ScanStats returns the timing of the most recent scan.
+func (r *Repo) ScanStats() ScanStats {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.lastScan
 }
 
 // readContentParallel loads the files' content through a pool of
