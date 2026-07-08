@@ -25,6 +25,7 @@ import (
 	"github.com/jeffbstewart/cloister/internal/egress"
 	"github.com/jeffbstewart/cloister/internal/egress/policy"
 	"github.com/jeffbstewart/cloister/internal/egress/wire"
+	"github.com/jeffbstewart/cloister/internal/openai"
 	"github.com/jeffbstewart/cloister/internal/scholar"
 	"github.com/jeffbstewart/cloister/internal/status/sink"
 )
@@ -96,7 +97,7 @@ func runScholar(o scholarOptions) {
 	srv := scholar.New(scholar.Config{
 		Version: version,
 		Egress:  sub,
-		Model: scholar.NewModelClient(scholar.ModelOptions{
+		Model: openai.New(openai.Options{
 			BaseURL: baseURL,
 			Model:   model,
 			Key:     os.Getenv("OPENAI_API_KEY"),
