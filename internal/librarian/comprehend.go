@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -55,6 +56,19 @@ const (
 	MaxDirBytes = 2 << 20
 )
 
+// find_relevant_files caps bound the internal retrieve-then-rank loop
+// (docs/librarian.md): keyword expansion never exceeds MaxKeywords terms, only
+// the top MaxRerankCandidates grep hits are fed to the reranker (more are
+// dropped and the result flags it truncated), the ranked answer returns at most
+// MaxRelevantFiles paths, and each candidate carries one snippet capped to
+// relevantSnippetChars so the rerank prompt stays small.
+const (
+	MaxKeywords          = 12
+	MaxRerankCandidates  = 20
+	MaxRelevantFiles     = 10
+	relevantSnippetChars = 200
+)
+
 // Inferencer is the inference seam the comprehension tools drive, mirrored on
 // the Auditor pattern so tests fake it with no real HTTP.  *infer.Client
 // satisfies it.
@@ -72,6 +86,11 @@ const (
 	dirReduceSystemPrompt = "You are given short summaries of the files in one directory. " +
 		"Write a concise overview of what the directory contains and how its files relate. " +
 		"Use only the summaries provided."
+	keywordSystemPrompt = "Expand the user's question into a short list of search keywords and synonyms " +
+		"likely to appear in relevant source files.  Reply with ONLY the keywords, comma-separated."
+	rerankSystemPrompt = "Given the question and candidate files (each a path and a matching snippet), " +
+		"list the files most relevant to answering it, most relevant first.  " +
+		"Reply one per line as `<path> — <reason>`, using ONLY the given paths."
 )
 
 // errDirBudget is the sentinel ForEachResident's callback returns to stop the
@@ -123,6 +142,21 @@ func (s *Server) registerComprehensionTools() {
 			Required: []string{"path"},
 		},
 	}, s.summarizeDirectory)
+
+	s.mcp.AddTool(&mcp.Tool{
+		Name:        "find_relevant_files",
+		Description: "Locate the workspace files most relevant to a natural-language question (\"where is retry handled?\").  Runs an internal keyword-expand -> grep -> rerank loop over resident files and returns a ranked list of paths, each with a one-line reason — never the intermediate candidate lists.  Optional path (directory prefix) and glob narrow the search; effort 'quick' (default) or 'thorough' deepens the final ranking (keyword expansion is always quick).  Embedding-based semantic recall is a later phase.",
+		InputSchema: &jsonschema.Schema{
+			Type: "object",
+			Properties: map[string]*jsonschema.Schema{
+				"question": str("the question to locate relevant files for"),
+				"path":     str("optional workspace-relative directory prefix to restrict the search; empty or '.' for the whole tree"),
+				"glob":     str("optional anchored glob to restrict candidate files (e.g. '**/*.go')"),
+				"effort":   effortSchema(),
+			},
+			Required: []string{"question"},
+		},
+	}, s.findRelevantFiles)
 }
 
 // effortSchema is the shared optional-enum schema for the effort knob.
@@ -287,6 +321,39 @@ func footerParts(effort infer.Effort, servedBy string, elapsed time.Duration, to
 		effort, servedBy, elapsed.Seconds(), tokens)
 }
 
+// provenance accumulates tokens, wall-clock, and the engine set across the
+// several engine calls a multi-call op makes (map-reduce, or the
+// retrieve-then-rank loop), so the footer reports one aggregate and names EVERY
+// engine that served — a mixed set means a fallback happened mid-op and both
+// are named, never a silent substitution (the agency invariant).
+type provenance struct {
+	tokens  int
+	elapsed time.Duration
+	engines map[string]bool
+}
+
+// add folds one Result into the running totals.
+func (p *provenance) add(res infer.Result) {
+	p.tokens += res.Tokens
+	p.elapsed += res.Elapsed
+	if res.ServedBy != "" {
+		if p.engines == nil {
+			p.engines = map[string]bool{}
+		}
+		p.engines[res.ServedBy] = true
+	}
+}
+
+// servedBy is the engine set as a sorted, "+"-joined string for the footer.
+func (p *provenance) servedBy() string {
+	names := make([]string, 0, len(p.engines))
+	for n := range p.engines {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return strings.Join(names, "+")
+}
+
 // summarizeDirectory summarizes a directory by map-reduce: a cheap per-file
 // digest (map) followed by one synthesis (reduce).  The map always runs at
 // infer.Quick — depth pays off in the reduce, not in N thorough per-file passes,
@@ -384,16 +451,8 @@ func (s *Server) summarizeDirectory(ctx context.Context, req *mcp.CallToolReques
 		Summary string `json:"summary"`
 	}
 	var summaries []fileSummary
-	var truncated, totalTokens int
-	var totalElapsed time.Duration
-	engines := map[string]bool{}
-	record := func(res infer.Result) {
-		totalTokens += res.Tokens
-		totalElapsed += res.Elapsed
-		if res.ServedBy != "" {
-			engines[res.ServedBy] = true
-		}
-	}
+	var truncated int
+	var prov provenance
 	for _, fc := range files {
 		content := fc.content
 		note := ""
@@ -410,7 +469,7 @@ func (s *Server) summarizeDirectory(ctx context.Context, req *mcp.CallToolReques
 		if err != nil {
 			return errResult("inference failed: " + err.Error()), nil
 		}
-		record(res)
+		prov.add(res)
 		summaries = append(summaries, fileSummary{Path: fc.path, Summary: res.Answer})
 	}
 
@@ -428,27 +487,324 @@ func (s *Server) summarizeDirectory(ctx context.Context, req *mcp.CallToolReques
 	if err != nil {
 		return errResult("inference failed: " + err.Error()), nil
 	}
-	record(res)
+	prov.add(res)
 
-	// Aggregate provenance across all N+1 calls; name every engine that served
-	// (sorted set joined by "+") so a mixed-engine fallback is never silent.
-	names := make([]string, 0, len(engines))
-	for n := range engines {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	servedBy := strings.Join(names, "+")
-
-	r := textResult(res.Answer + footerParts(effort, servedBy, totalElapsed, totalTokens))
+	// Aggregate provenance across all N+1 calls; provenance names every engine
+	// that served so a mixed-engine fallback is never silent.
+	servedBy := prov.servedBy()
+	r := textResult(res.Answer + footerParts(effort, servedBy, prov.elapsed, prov.tokens))
 	r.StructuredContent = map[string]any{
 		"overview":        res.Answer,
 		"files":           summaries,
 		"filesSummarized": len(summaries),
 		"filesTruncated":  truncated,
 		"servedBy":        servedBy,
-		"elapsedMs":       totalElapsed.Milliseconds(),
-		"tokens":          totalTokens,
+		"elapsedMs":       prov.elapsed.Milliseconds(),
+		"tokens":          prov.tokens,
 		"effort":          string(effort),
 	}
 	return r, nil
+}
+
+// rankedFile is one entry of the ranked result: a path the shield surfaced and
+// a one-line reason it is relevant.
+type rankedFile struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
+}
+
+// candidate is one grep hit accumulated during retrieve: a resident path, how
+// many of its lines matched the keyword regexp, and the first matching line as
+// a representative snippet for the rerank prompt.
+type candidate struct {
+	path    string
+	count   int
+	snippet string
+}
+
+// findRelevantFiles is the semantic locate: an internal retrieve-then-rank loop
+// (docs/librarian.md) that never exposes its stages to the agent.  A cheap
+// keyword-expand (always infer.Quick — like summarize_directory's map, depth
+// pays off only in the final step) turns the question into a keyword regexp;
+// grepResident retrieves candidates from the resident tree; and ONE rerank at
+// the caller's requested effort orders them.  It returns only the ranked paths,
+// so the candidate lists never burn the agent's context.  Embeddings for true
+// semantic recall are deferred to Phase 6; v1 is keyword-expand + grep + rerank.
+func (s *Server) findRelevantFiles(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var a struct {
+		Question string `json:"question"`
+		Path     string `json:"path"`
+		Glob     string `json:"glob"`
+		Effort   string `json:"effort"`
+	}
+	if err := decode(req, &a); err != nil {
+		return errResult("bad arguments: " + err.Error()), nil
+	}
+	if a.Question == "" {
+		return errResult("question is required"), nil
+	}
+	effort, err := parseEffort(a.Effort)
+	if err != nil {
+		return errResult(err.Error()), nil
+	}
+
+	var prov provenance
+
+	// 1. Keyword expansion (map).  Always infer.Quick: only the rerank honors the
+	// requested effort, mirroring summarize_directory's map=quick / reduce=effort
+	// split — a heavy model earns its keep ranking, not brainstorming synonyms.
+	kwRes, err := s.cfg.Infer.Ask(ctx, infer.Quick, []openai.Message{
+		{Role: "system", Content: keywordSystemPrompt},
+		{Role: "user", Content: a.Question},
+	})
+	if err != nil {
+		return errResult("inference failed: " + err.Error()), nil
+	}
+	prov.add(kwRes)
+	keywords := parseKeywords(kwRes.Answer)
+	if len(keywords) == 0 {
+		// The model yielded nothing usable — fall back to the question's own
+		// significant words rather than making a second call.
+		keywords = questionKeywords(a.Question)
+	}
+	re := keywordRegexp(keywords)
+
+	// 2. Grep candidates (retrieve).  A nil regexp (no usable keywords at all)
+	// yields no candidates without touching the tree.
+	prefix := ""
+	if a.Path != "" && a.Path != "." {
+		prefix = strings.TrimSuffix(filepath.ToSlash(a.Path), "/") + "/"
+	}
+	byPath := map[string]*candidate{}
+	if re != nil {
+		grepErr := s.grepResident(re, prefix, a.Glob, func(rel string, _ int, line string, _ []string) {
+			c := byPath[rel]
+			if c == nil {
+				// First matching line is the representative snippet.
+				c = &candidate{path: rel, snippet: snippet(line)}
+				byPath[rel] = c
+			}
+			c.count++
+		})
+		if grepErr != nil {
+			return errResult("find_relevant_files: " + grepErr.Error()), nil
+		}
+	}
+
+	// Rank by match count desc, path asc for a deterministic tie-break.
+	candidates := make([]*candidate, 0, len(byPath))
+	for _, c := range byPath {
+		candidates = append(candidates, c)
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].count != candidates[j].count {
+			return candidates[i].count > candidates[j].count
+		}
+		return candidates[i].path < candidates[j].path
+	})
+	considered := len(candidates)
+	truncated := false
+	if len(candidates) > MaxRerankCandidates {
+		candidates = candidates[:MaxRerankCandidates]
+		truncated = true
+	}
+
+	// Zero candidates: a normal (non-error) result, and NO rerank call — there is
+	// nothing to rank.
+	if len(candidates) == 0 {
+		return relevantResult(a.Question, nil, considered, truncated, effort, &prov,
+			"No files matched the question's keywords."), nil
+	}
+
+	// 3. Rerank (at the requested effort).  Feed only the candidate snippets.
+	var b strings.Builder
+	fmt.Fprintf(&b, "Question: %s\n\nCandidate files:\n", a.Question)
+	for _, c := range candidates {
+		fmt.Fprintf(&b, "%s: %s\n", c.path, c.snippet)
+	}
+	rankRes, err := s.cfg.Infer.Ask(ctx, effort, []openai.Message{
+		{Role: "system", Content: rerankSystemPrompt},
+		{Role: "user", Content: b.String()},
+	})
+	if err != nil {
+		return errResult("inference failed: " + err.Error()), nil
+	}
+	prov.add(rankRes)
+
+	files := parseRerank(rankRes.Answer, candidates)
+	if len(files) == 0 {
+		// The model's ranking was unparseable — fall back to the grep-ranked
+		// candidates so a garbled answer still returns useful files, never the
+		// empty set.
+		files = grepFallback(candidates)
+	}
+
+	return relevantResult(a.Question, files, considered, truncated, effort, &prov, ""), nil
+}
+
+// relevantResult renders the ranked list (or an empty-set message) plus the
+// aggregate provenance footer, and mirrors those fields as structured content.
+func relevantResult(question string, files []rankedFile, considered int, truncated bool, effort infer.Effort, prov *provenance, emptyMsg string) *mcp.CallToolResult {
+	servedBy := prov.servedBy()
+	var body string
+	if len(files) == 0 {
+		body = emptyMsg
+	} else {
+		var b strings.Builder
+		for _, f := range files {
+			if f.Reason != "" {
+				fmt.Fprintf(&b, "%s — %s\n", f.Path, f.Reason)
+			} else {
+				fmt.Fprintf(&b, "%s\n", f.Path)
+			}
+		}
+		body = strings.TrimRight(b.String(), "\n")
+	}
+	r := textResult(body + footerParts(effort, servedBy, prov.elapsed, prov.tokens))
+	r.StructuredContent = map[string]any{
+		"question":             question,
+		"files":                files,
+		"candidatesConsidered": considered,
+		"truncated":            truncated,
+		"servedBy":             servedBy,
+		"elapsedMs":            prov.elapsed.Milliseconds(),
+		"tokens":               prov.tokens,
+		"effort":               string(effort),
+	}
+	return r
+}
+
+// snippet trims a matching line and caps it to relevantSnippetChars, on a rune
+// boundary so a multi-byte character is never split.
+func snippet(line string) string {
+	s := strings.TrimSpace(line)
+	if len(s) <= relevantSnippetChars {
+		return s
+	}
+	return strings.ToValidUTF8(s[:relevantSnippetChars], "")
+}
+
+// parseKeywords parses the keyword-expansion answer: comma-separated, trimmed,
+// lowercased, empties dropped, deduped, capped to MaxKeywords.
+func parseKeywords(answer string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, tok := range strings.Split(answer, ",") {
+		kw := strings.ToLower(strings.TrimSpace(tok))
+		if kw == "" || seen[kw] {
+			continue
+		}
+		seen[kw] = true
+		out = append(out, kw)
+		if len(out) >= MaxKeywords {
+			break
+		}
+	}
+	return out
+}
+
+// wordSplit splits on runs of non-alphanumeric characters.
+var wordSplit = regexp.MustCompile(`[^a-zA-Z0-9]+`)
+
+// questionKeywords is the fallback when the model yields no usable keywords: the
+// question's own significant words (split on non-alphanumeric, tokens < 3 chars
+// dropped, lowercased, deduped, capped).
+func questionKeywords(question string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, tok := range wordSplit.Split(question, -1) {
+		if len(tok) < 3 {
+			continue
+		}
+		kw := strings.ToLower(tok)
+		if seen[kw] {
+			continue
+		}
+		seen[kw] = true
+		out = append(out, kw)
+		if len(out) >= MaxKeywords {
+			break
+		}
+	}
+	return out
+}
+
+// keywordRegexp builds a case-insensitive alternation over the keywords, each
+// QuoteMeta'd so a keyword is matched literally.  It returns nil when there are
+// no keywords (the caller then surfaces no candidates).
+func keywordRegexp(keywords []string) *regexp.Regexp {
+	if len(keywords) == 0 {
+		return nil
+	}
+	quoted := make([]string, len(keywords))
+	for i, kw := range keywords {
+		quoted[i] = regexp.QuoteMeta(kw)
+	}
+	// QuoteMeta output plus a fixed alternation always compiles.
+	return regexp.MustCompile("(?i)(" + strings.Join(quoted, "|") + ")")
+}
+
+// parseRerank robustly parses the reranker's answer into ranked files.  Each
+// non-empty line is scanned for a candidate path (longest match wins, so a
+// short path that is a prefix of another does not shadow it); hallucinated paths
+// — anything not in the candidate set — are dropped, and the reason is whatever
+// text follows the path.  Deduped, capped to MaxRelevantFiles.
+func parseRerank(answer string, candidates []*candidate) []rankedFile {
+	set := map[string]bool{}
+	for _, c := range candidates {
+		set[c.path] = true
+	}
+	var out []rankedFile
+	seen := map[string]bool{}
+	for _, raw := range strings.Split(answer, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		p := longestPathIn(line, set)
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		reason := ""
+		if idx := strings.Index(line, p); idx >= 0 {
+			reason = strings.TrimSpace(line[idx+len(p):])
+			// Strip a leading separator (em dash, hyphen, colon, etc.).
+			reason = strings.TrimLeft(reason, "—-:·|>* \t")
+			reason = strings.TrimSpace(reason)
+		}
+		out = append(out, rankedFile{Path: p, Reason: reason})
+		if len(out) >= MaxRelevantFiles {
+			break
+		}
+	}
+	return out
+}
+
+// longestPathIn returns the longest path in set that appears as a substring of
+// line, or "" if none does.
+func longestPathIn(line string, set map[string]bool) string {
+	best := ""
+	for p := range set {
+		if len(p) > len(best) && strings.Contains(line, p) {
+			best = p
+		}
+	}
+	return best
+}
+
+// grepFallback is the parse-failure fallback: the top grep-ranked candidates
+// with a generic reason, so a garbled rerank still returns useful files.
+func grepFallback(candidates []*candidate) []rankedFile {
+	out := make([]rankedFile, 0, MaxRelevantFiles)
+	for _, c := range candidates {
+		out = append(out, rankedFile{
+			Path:   c.path,
+			Reason: fmt.Sprintf("matched %d keyword occurrences", c.count),
+		})
+		if len(out) >= MaxRelevantFiles {
+			break
+		}
+	}
+	return out
 }

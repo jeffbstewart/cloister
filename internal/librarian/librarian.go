@@ -462,6 +462,34 @@ func (s *Server) glob(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToo
 	return jsonResult(map[string]any{"pattern": a.Pattern, "entries": entriesOut(picked, MaxListEntries)}), nil
 }
 
+// grepResident is the shared scan skeleton behind both search and
+// find_relevant_files: it walks the resident tree, applies the prefix and glob
+// filters, splits each file into lines, and calls hit for every line that re
+// matches.  prefix is a "dir/" path prefix ("" = the whole tree); glob is an
+// anchored shield.Glob ("" = every file).  hit receives the file's
+// workspace-relative path, the 1-based line number, the matching line, and the
+// file's full line slice (so a caller can pull surrounding context without
+// re-splitting).  The shield is enforced by ForEachResident — jailed, binary,
+// and oversized files never reach the callback.
+func (s *Server) grepResident(re *regexp.Regexp, prefix, glob string, hit func(rel string, lineNum int, line string, lines []string)) error {
+	return s.cfg.Repo.ForEachResident(func(ar shield.AIReadable) error {
+		rel := ar.Path()
+		if prefix != "" && !strings.HasPrefix(rel, prefix) {
+			return nil
+		}
+		if glob != "" && !shield.Glob(glob, rel) {
+			return nil
+		}
+		lines := strings.Split(ar.String(), "\n")
+		for i, line := range lines {
+			if re.MatchString(line) {
+				hit(rel, i+1, line, lines)
+			}
+		}
+		return nil
+	})
+}
+
 func (s *Server) search(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var a struct {
 		Pattern string `json:"pattern"`
@@ -496,34 +524,21 @@ func (s *Server) search(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallT
 	total := 0
 	truncated := false
 
-	scanErr := s.cfg.Repo.ForEachResident(func(ar shield.AIReadable) error {
-		rel := ar.Path()
-		if prefix != "" && !strings.HasPrefix(rel, prefix) {
-			return nil
-		}
-		if a.Glob != "" && !shield.Glob(a.Glob, rel) {
-			return nil
-		}
-		lines := strings.Split(ar.String(), "\n")
-		for i, line := range lines {
-			if !re.MatchString(line) {
-				continue
+	scanErr := s.grepResident(re, prefix, a.Glob, func(rel string, lineNum int, _ string, lines []string) {
+		total++
+		counts[rel]++
+		if a.Mode == "context" {
+			if len(matches) >= MaxSearchMatches {
+				truncated = true
+				return
 			}
-			total++
-			counts[rel]++
-			if a.Mode == "context" {
-				if len(matches) >= MaxSearchMatches {
-					truncated = true
-					continue
-				}
-				from := max(0, i-a.Before)
-				to := min(len(lines), i+a.After+1)
-				for j := from; j < to; j++ {
-					matches = append(matches, match{Path: rel, Line: j + 1, Text: lines[j]})
-				}
+			i := lineNum - 1
+			from := max(0, i-a.Before)
+			to := min(len(lines), i+a.After+1)
+			for j := from; j < to; j++ {
+				matches = append(matches, match{Path: rel, Line: j + 1, Text: lines[j]})
 			}
 		}
-		return nil
 	})
 	if scanErr != nil {
 		return errResult("search: " + scanErr.Error()), nil
