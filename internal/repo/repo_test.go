@@ -58,7 +58,7 @@ func TestReadServesResidentContent(t *testing.T) {
 		"src/main.go": "package main\n",
 	})
 	got, err := r.Read("src/main.go")
-	if err != nil || string(got) != "package main\n" {
+	if err != nil || got.String() != "package main\n" {
 		t.Fatalf("Read = %q, %v", got, err)
 	}
 	e, err := r.Stat("src/main.go")
@@ -75,7 +75,7 @@ func TestReadAdmitsNewlyCreatedFile(t *testing.T) {
 	write(t, root, "brand/new/file.txt", "fresh\n")
 
 	got, err := r.Read("brand/new/file.txt")
-	if err != nil || string(got) != "fresh\n" {
+	if err != nil || got.String() != "fresh\n" {
 		t.Fatalf("Read(new file) = %q, %v; want content with no rescan", got, err)
 	}
 	// The admitted ancestors make the new file listable immediately.
@@ -160,7 +160,7 @@ func TestReadRevalidatesChangedFile(t *testing.T) {
 	}
 	write(t, root, "f.txt", "v2 is longer") // size change: no mtime-resolution luck needed
 	got, err := r.Read("f.txt")
-	if err != nil || string(got) != "v2 is longer" {
+	if err != nil || got.String() != "v2 is longer" {
 		t.Fatalf("Read after host edit = %q, %v; want fresh content", got, err)
 	}
 }
@@ -240,7 +240,7 @@ func TestParallelScanLoadsManyFilesCorrectly(t *testing.T) {
 	_, r := newWorkspace(t, files)
 	for name, want := range files {
 		got, err := r.Read(name)
-		if err != nil || string(got) != want {
+		if err != nil || got.String() != want {
 			t.Fatalf("Read(%s) = %q, %v; want %q", name, got, err, want)
 		}
 	}
@@ -299,13 +299,13 @@ func TestInvalidateAdmitsAndReloads(t *testing.T) {
 	// Unknown path: a CREATE event.
 	write(t, root, "b.txt", "two")
 	r.Invalidate("b.txt")
-	if got, err := r.Read("b.txt"); err != nil || string(got) != "two" {
+	if got, err := r.Read("b.txt"); err != nil || got.String() != "two" {
 		t.Fatalf("Read after Invalidate(create) = %q, %v", got, err)
 	}
 	// Known path: a MODIFY/MOVED_TO event.
 	write(t, root, "a.txt", "one-changed")
 	r.Invalidate("a.txt")
-	if got, err := r.Read("a.txt"); err != nil || string(got) != "one-changed" {
+	if got, err := r.Read("a.txt"); err != nil || got.String() != "one-changed" {
 		t.Fatalf("Read after Invalidate(modify) = %q, %v", got, err)
 	}
 }
@@ -318,8 +318,8 @@ func TestForEachResidentSkipsShieldedAndBinary(t *testing.T) {
 		"blob.bin":   "\x00\x01",
 	})
 	var seen []string
-	if err := r.ForEachResident(func(rel string, content []byte) error {
-		seen = append(seen, rel)
+	if err := r.ForEachResident(func(ar shield.AIReadable) error {
+		seen = append(seen, ar.Path())
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -422,8 +422,8 @@ func TestParallelWalkDescendsNestedTreeAndPrunes(t *testing.T) {
 	}
 	// The parallel search finds the deep file (it's resident).
 	var found bool
-	_ = r.ForEachResident(func(rel string, _ []byte) error {
-		if rel == "a/b/c/d/deep.go" {
+	_ = r.ForEachResident(func(ar shield.AIReadable) error {
+		if ar.Path() == "a/b/c/d/deep.go" {
 			found = true
 		}
 		return nil

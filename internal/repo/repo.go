@@ -525,27 +525,31 @@ func (r *Repo) reloadLocked(rel string, f *file) {
 // is stat'd and ADMITTED on the spot — re-stat of a known entry alone
 // would miss a file created since the last rescan.  Stripped and Hidden
 // paths refuse with ErrForbidden; the caller audits the denial.
-func (r *Repo) Read(rel string) ([]byte, error) {
+func (r *Repo) Read(rel string) (shield.AIReadable, error) {
 	rel = path.Clean(filepath.ToSlash(rel))
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	f, err := r.lookupLocked(rel)
 	if err != nil {
-		return nil, err
+		return shield.AIReadable{}, err
 	}
 	if f.entry.IsDir {
-		return nil, ErrIsDir
+		return shield.AIReadable{}, ErrIsDir
 	}
 	if f.entry.Visibility != shield.Visible {
-		return nil, ErrForbidden
+		return shield.AIReadable{}, ErrForbidden
 	}
 	r.reloadLocked(rel, f)
 	if f2, ok := r.files[rel]; !ok {
-		return nil, ErrNotFound // vanished under revalidation
+		return shield.AIReadable{}, ErrNotFound // vanished under revalidation
 	} else if f2.content == nil {
-		return nil, f2.whyNot
+		return shield.AIReadable{}, f2.whyNot
 	}
-	return f.content, nil
+	// The visibility check above already guarantees Clear succeeds; route the
+	// bytes through it so what leaves the repo is a genuine capability — content
+	// the shield minted, not a bare slice that merely claims clearance.
+	ar, _ := r.sh.Clear(rel, f.content)
+	return ar, nil
 }
 
 // Stat returns one path's Entry (metadata is served for Stripped paths —
@@ -671,9 +675,11 @@ func (r *Repo) List(dir string) ([]Entry, error) {
 
 // ForEachResident visits every resident (Visible, text, in-budget) file
 // in sorted order — the substrate for tree-wide ops (search, count).
-// Stripped and Hidden content is structurally unreachable here.  The
-// content slice must not be retained or mutated.
-func (r *Repo) ForEachResident(fn func(rel string, content []byte) error) error {
+// Stripped and Hidden content is structurally unreachable here; each
+// visited file is handed to the callback as a shield-minted AIReadable, so
+// even bulk scans cannot observe content the shield did not clear.  The
+// content slice the AIReadable carries must not be retained or mutated.
+func (r *Repo) ForEachResident(fn func(shield.AIReadable) error) error {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, p := range r.sorted {
@@ -681,7 +687,13 @@ func (r *Repo) ForEachResident(fn func(rel string, content []byte) error) error 
 		if f.content == nil {
 			continue
 		}
-		if err := fn(p, f.content); err != nil {
+		// Resident implies Visible, so Clear always succeeds here; the ok
+		// guard is belt-and-suspenders against a future model change.
+		ar, ok := r.sh.Clear(p, f.content)
+		if !ok {
+			continue
+		}
+		if err := fn(ar); err != nil {
 			return err
 		}
 	}
