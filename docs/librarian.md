@@ -3,9 +3,10 @@
 Status: **phases 0–4 implemented** (the spike, internal/shield,
 internal/repo, internal/watch, the worker + mechanical tools, and the
 cell cutover — the agent holds no workspace mount).  **Phase 5 — the
-comprehension ops and engine-routed inference — remains design**, now
-absorbed into the agency's class config (docs/agency.md).  This file
-records the decisions from the 2026-07-07 design review.
+comprehension ops and engine-routed inference — is planned in detail below
+and now in execution** (sub-phases 5a–5d); its inference routing folds into
+the agency's engine classes (docs/agency.md).  This file records the
+2026-07-07 design review plus the 2026-07-08 execution decisions.
 
 ## Problem
 
@@ -143,13 +144,16 @@ Mechanical:
 | `count_grouped` | `grep -o \| sort \| uniq -c` | match-frequency table |
 | `validate_text` | — | encoding/UTF-8 report, pairing with the scribe's UTF-8 gates |
 
-Inference-backed (same worker, same model, same shield):
+Inference-backed (same worker, same model, same shield; each takes an
+optional `effort` — see "Effort, cost, and the comprehension ops" below):
 
-- `summarize_file`, `summarize_directory` — map-reduce over resident
-  content; context-saving alternatives to reading whole trees.
-- `ask_about_file(question)` — one-shot Q&A grounded in the file's bytes.
-- `find_relevant_files(question)` — semantic locate ("where is retry
-  handled?").
+- `summarize_file(path, effort?)`, `summarize_directory(path, effort?)` —
+  map-reduce over resident content; context-saving alternatives to reading
+  whole trees.  Default `quick`.
+- `ask_about_file(path, question, effort?)` — one-shot Q&A grounded in the
+  file's bytes.  Default `quick`.
+- `find_relevant_files(question, scope?, effort?)` — semantic locate ("where
+  is retry handled?"); internal retrieve-then-rank loop, see below.
 - `explain_change(opId)` — possible later: narrate a stored scribe diff.
 
 The list is a starting catalog, not a contract; the review gate for adding
@@ -177,6 +181,95 @@ a sometimes-there machine.  Because the push model means allowed workspace
 content transits the LAN to that node, which op classes may be routed
 off-host is part of the engine configuration, not an implementation
 detail.
+
+## Effort, cost, and the comprehension ops (Phase 5, decided 2026-07-08)
+
+**One caller knob: `effort`.**  The comprehension ops take a single named
+enum, `effort: quick | thorough` (extensible; two values to start).  It is
+INTENT, not a model name — the agent never names a model.  The librarian
+maps `quick → think-fast` and `thorough → deep-think` (the agency's engine
+classes); the agency resolves the class to a concrete model via its
+presence-aware fallback chain.  So when a node sleeps, a model is retired, or
+the roster changes, the agent's tool calls do not change — the mapping lives
+in librarian config, the roster in the agency.
+
+**Why one knob and not two.**  "Fast, little context" and "effortful,
+chain-of-thought" feel like one axis but decompose into two independent
+costs:
+
+- *Time / compute* — which model, CoT on or off.  Paid by the ENGINE.
+  Chosen by `effort`.
+- *Context* — tokens returned into the agent.  Paid by the CALLER.  Kept
+  small by the firewall for BOTH efforts.
+
+The librarian **returns the final answer only and strips the reasoning
+trace**, so a `thorough` answer costs the agent the same handful of tokens as
+a `quick` one — the CoT is spent engine-side and discarded.  "Little context"
+is therefore the default for both; the only thing `effort` buys is
+engine-side depth.  Reasoning/CoT configuration belongs in the engine-class
+definition, not the agent's knob: `deep-think` = a reasoning model with
+thinking on, `think-fast` = a small model with it off.  Even before the
+agency and the deep-think node exist, `effort` is meaningful — the client
+points both classes at the existing engine and toggles the model's thinking
+mode.
+
+**No deadline knob yet.**  Deadlines are effort-derived (config profiles),
+enforced with `context.WithTimeout` — not an agent-facing parameter (the
+agent should not pick milliseconds).  Trivially added later if a caller needs
+to override.
+
+**Cost + provenance come back in the response.**  Every comprehension result
+carries a compact trailer separating the answer (context the agent pays for)
+from the provenance (cheap, ~15 tokens):
+
+    {the distilled answer}
+
+    — librarian · thorough → deep-think(model@node) · 11.2s · 5,912 tok
+
+- The footer is model-visible on purpose: the tokens are ENGINE-side work, so
+  the quick-vs-thorough delta is visible and the agent can decide when to
+  escalate effort.
+- Source of truth is the text footer; also emit it as MCP structuredContent
+  for programmatic use, but do not depend on the client surfacing that.
+- Map-reduce ops aggregate tokens + wall-clock across sub-calls; if fallback
+  made it mixed-engine, name both.  Never a silent substitution — the
+  response always says which engine served (agency invariant).
+- The operator gets this independently from the agency's status volume
+  (last-N ops); the footer is the agent's copy.
+
+**`find_relevant_files` — the retrieve-then-rank loop lives INSIDE the
+librarian.**  A metadata-first, selectively-investigate design is right for a
+big tree (MediaManager-scale), but it does NOT need an agent↔librarian
+protocol — exposing the stages would burn the agent's context on candidate
+lists.  The librarian holds the RAM tree, the shield, and the model, so it
+runs the loop internally and returns only a ranked result:
+
+1. Cheap candidate generation, NO heavy model: one tiny `quick` call expands
+   the question into keywords/synonyms; the librarian greps the resident tree
+   for them (grep over RAM is fast even on a large tree) and filters by
+   metadata (path, size, mtime).
+2. Bounded rerank: feed only the top-N candidates' snippets to the model to
+   rank and give a one-line "why."  Cap N; report if truncated.
+3. Return ranked paths + reasons.  Optional `scope` (path prefix / glob) lets
+   the agent steer by calling again narrower — no stateful protocol.
+
+The genuinely hard part is *true* semantic recall (a file that says
+"backoff/attempt" when the question said "retry").  Closing that needs an
+embedding index over the tree (resident vectors, cosine top-k, rebuilt on the
+rescan cycle) and an embeddings engine lane — **deferred to Phase 6**.  v1
+ships keyword-expansion + grep + rerank, which handles a big tree without it.
+
+**Big-tree guard on `summarize_directory`.**  A map-reduce over thousands of
+files is thousands of engine calls.  Over a file-count / total-size threshold
+the op refuses and asks for a narrower scope, rather than silently launching
+(or silently truncating) the fan-out — the same "no silent caps, say what you
+dropped" rule as the mechanical tools.
+
+**No off-host content audit.**  When `thorough` pushes allowed file content
+over the LAN to the deep-think node, that transit is NOT audited: it is the
+operator's own workspace content going to the operator's own machine on the
+house network — far lower risk than the scholar, which quarantines untrusted
+WEB bytes.  Read denials remain the only audited read event.
 
 ## Topology
 
@@ -213,6 +306,28 @@ librarian:
 3. Librarian worker mode + mechanical tools; scribe adopts `internal/shield`
    on the write path; denial audit detail.
 4. Compose + compose-lint + docs; the agent cutover (mount out, qwen config).
-5. Comprehension ops + engine-routed inference client.
-6. Later: `infernet_big`, gated reads if ever needed, build-output
+5. Comprehension ops + engine-routed inference client.  Sub-phased:
+   - **5a(i)** — extract the reusable OpenAI-compatible chat-completions
+     client (the wire types + the single-endpoint `Complete` HTTP plumbing,
+     today in internal/scholar/model.go) into a shared, **stdlib-only**,
+     worker-agnostic package; refactor the scholar onto it with no behavior
+     change.  Stdlib-only is load-bearing: the librarian graph imports it, so
+     it must stay inside the internal/shield deps assertion.  Its own PR.
+   - **5a(ii)** — `internal/infer` (name TBD): the engine-routed layer ON TOP
+     of the shared client — `effort → class → endpoint`, CoT-strip, an
+     `{answer, servedBy, elapsed, tokens}` return, context-deadline bound (no
+     client timeout, mirroring the scholar).  Config + fakes + tests,
+     library-first; no ops, no librarian wiring yet.
+   - **5b** — `ask_about_file` + `summarize_file` (single-file) wired into the
+     librarian, the `effort` schema, and the provenance footer; add the new
+     packages to the internal/shield deps_test stdlib-only roots.
+   - **5c** — `summarize_directory` (map-reduce + big-tree budget guard) and
+     `find_relevant_files` (internal keyword-expand → grep → bounded rerank,
+     optional `scope`).
+   - **5d** — compose + compose-lint (confirm `infernet` reaches an
+     OpenAI-compatible endpoint — the agency when it exists, else the current
+     engine), docs flipped design→shipped, effort-default tuning.
+6. Later: `infernet_big` + the deep-think node behind the agency;
+   **embedding-based semantic recall for `find_relevant_files`** (its own
+   engine lane + index lifecycle); gated reads if ever needed; build-output
    inspection tools if a workflow demands them.
