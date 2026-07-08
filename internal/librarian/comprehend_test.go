@@ -149,11 +149,55 @@ func TestComprehendSizeGuard(t *testing.T) {
 	if !isErr {
 		t.Fatalf("oversized file not refused: %s", text)
 	}
-	if !strings.Contains(text, "comprehension cap") || !strings.Contains(text, "read_range") {
+	if !strings.Contains(text, "comprehension cap") || !strings.Contains(text, "line range") {
 		t.Fatalf("refusal does not name the cap/alternative: %s", text)
 	}
 	if inf.calls != 0 {
 		t.Fatal("inference called on an oversized file")
+	}
+}
+
+func TestComprehendLineRange(t *testing.T) {
+	inf := &fakeInferencer{res: infer.Result{Answer: "ok", ServedBy: "think-fast", Tokens: 1}}
+	f := comprehendFixture(t, map[string]string{
+		"multi.txt": "line one\nline two\nline three\nline four\n",
+	}, inf)
+
+	if _, isErr := f.call(t, "ask_about_file", map[string]any{
+		"path": "multi.txt", "question": "?", "start": 2, "end": 3,
+	}); isErr {
+		t.Fatal("ranged ask errored")
+	}
+	user := inf.msgs[len(inf.msgs)-1].Content
+	if !strings.Contains(user, "line two") || !strings.Contains(user, "line three") {
+		t.Fatalf("range missing requested lines: %s", user)
+	}
+	if strings.Contains(user, "line one") || strings.Contains(user, "line four") {
+		t.Fatalf("range leaked lines outside 2-3: %s", user)
+	}
+	if !strings.Contains(user, "lines 2-3") {
+		t.Fatalf("prompt missing the range label: %s", user)
+	}
+}
+
+// TestComprehendRangeBringsOversizedUnderCap is the gap the review raised: a
+// file too large to comprehend whole is still reachable a range at a time,
+// without spilling its bytes into the caller's context.
+func TestComprehendRangeBringsOversizedUnderCap(t *testing.T) {
+	big := strings.Repeat("x", MaxComprehendBytes+10) + "\nsmall tail line\n"
+	inf := &fakeInferencer{res: infer.Result{Answer: "ok", ServedBy: "think-fast", Tokens: 1}}
+	f := comprehendFixture(t, map[string]string{"big.txt": big}, inf)
+
+	// Whole-file refuses...
+	if _, isErr := f.call(t, "summarize_file", map[string]any{"path": "big.txt"}); !isErr {
+		t.Fatal("oversized whole-file not refused")
+	}
+	// ...but the small in-range slice comprehends fine.
+	if _, isErr := f.call(t, "summarize_file", map[string]any{"path": "big.txt", "start": 2, "end": 2}); isErr {
+		t.Fatal("in-range summarize refused")
+	}
+	if inf.calls != 1 {
+		t.Fatalf("infer calls = %d, want 1 (only the in-range call)", inf.calls)
 	}
 }
 

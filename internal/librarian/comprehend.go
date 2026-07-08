@@ -58,13 +58,15 @@ const (
 func (s *Server) registerComprehensionTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "ask_about_file",
-		Description: "Answer a question about one workspace file, grounded only in the file's content.  effort 'quick' (default) or 'thorough' buys engine-side depth at the cost of latency; the answer returns distilled, with a provenance footer.",
+		Description: "Answer a question about one workspace file, grounded only in the file's content.  Optionally restrict to a line range (start, end) — the answer stays distilled either way, so this is how you comprehend part of a file too large for the whole-file cap.  effort 'quick' (default) or 'thorough' buys engine-side depth at the cost of latency; the answer returns with a provenance footer.",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
 				"path":     str("workspace-relative file path"),
 				"question": str("the question to answer from the file"),
 				"effort":   effortSchema(),
+				"start":    integer("optional first line, 1-based, to restrict the question to a range"),
+				"end":      integer("optional last line, inclusive; with start, comprehend only that line range"),
 			},
 			Required: []string{"path", "question"},
 		},
@@ -72,12 +74,14 @@ func (s *Server) registerComprehensionTools() {
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "summarize_file",
-		Description: "Summarize one workspace file, grounded only in its content.  effort 'quick' (default) or 'thorough' buys engine-side depth at the cost of latency; the summary returns with a provenance footer.",
+		Description: "Summarize one workspace file, grounded only in its content.  Optionally restrict to a line range (start, end) — this is how you summarize part of a file too large for the whole-file cap.  effort 'quick' (default) or 'thorough' buys engine-side depth at the cost of latency; the summary returns with a provenance footer.",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
 				"path":   str("workspace-relative file path"),
 				"effort": effortSchema(),
+				"start":  integer("optional first line, 1-based, to restrict the summary to a range"),
+				"end":    integer("optional last line, inclusive; with start, summarize only that line range"),
 			},
 			Required: []string{"path"},
 		},
@@ -111,6 +115,8 @@ func (s *Server) askAboutFile(ctx context.Context, req *mcp.CallToolRequest) (*m
 		Path     string `json:"path"`
 		Question string `json:"question"`
 		Effort   string `json:"effort"`
+		Start    int    `json:"start"`
+		End      int    `json:"end"`
 	}
 	if err := decode(req, &a); err != nil {
 		return errResult("bad arguments: " + err.Error()), nil
@@ -126,12 +132,13 @@ func (s *Server) askAboutFile(ctx context.Context, req *mcp.CallToolRequest) (*m
 	if err != nil {
 		return s.refuse("ask_about_file", err, a.Path), nil
 	}
-	if len(content) > MaxComprehendBytes {
-		return errResult(oversized(a.Path, len(content))), nil
+	snippet, loc, err := scopeContent(a.Path, content, a.Start, a.End)
+	if err != nil {
+		return errResult(err.Error()), nil
 	}
 	msgs := []openai.Message{
 		{Role: "system", Content: askSystemPrompt},
-		{Role: "user", Content: fmt.Sprintf("File: %s\n\n%s\n\nQuestion: %s", a.Path, content, a.Question)},
+		{Role: "user", Content: fmt.Sprintf("File: %s\n\n%s\n\nQuestion: %s", loc, snippet, a.Question)},
 	}
 	res, err := s.cfg.Infer.Ask(ctx, effort, msgs)
 	if err != nil {
@@ -144,6 +151,8 @@ func (s *Server) summarizeFile(ctx context.Context, req *mcp.CallToolRequest) (*
 	var a struct {
 		Path   string `json:"path"`
 		Effort string `json:"effort"`
+		Start  int    `json:"start"`
+		End    int    `json:"end"`
 	}
 	if err := decode(req, &a); err != nil {
 		return errResult("bad arguments: " + err.Error()), nil
@@ -156,12 +165,13 @@ func (s *Server) summarizeFile(ctx context.Context, req *mcp.CallToolRequest) (*
 	if err != nil {
 		return s.refuse("summarize_file", err, a.Path), nil
 	}
-	if len(content) > MaxComprehendBytes {
-		return errResult(oversized(a.Path, len(content))), nil
+	snippet, loc, err := scopeContent(a.Path, content, a.Start, a.End)
+	if err != nil {
+		return errResult(err.Error()), nil
 	}
 	msgs := []openai.Message{
 		{Role: "system", Content: summarizeSystemPrompt},
-		{Role: "user", Content: fmt.Sprintf("File: %s\n\n%s", a.Path, content)},
+		{Role: "user", Content: fmt.Sprintf("File: %s\n\n%s", loc, snippet)},
 	}
 	res, err := s.cfg.Infer.Ask(ctx, effort, msgs)
 	if err != nil {
@@ -170,11 +180,41 @@ func (s *Server) summarizeFile(ctx context.Context, req *mcp.CallToolRequest) (*
 	return comprehendResult(res, effort), nil
 }
 
-// oversized is the no-silent-truncation refusal: it names the size and the cap
-// and points at the mechanical tools for narrowing (chunking is a later phase).
-func oversized(path string, size int) string {
-	return fmt.Sprintf("%s is %d bytes, over the %d-byte comprehension cap; narrow the input with read_range or extract_section (whole-directory and big-file map-reduce is a later sub-phase)",
-		path, size, MaxComprehendBytes)
+// scopeContent selects the content a comprehension op will push — the whole
+// file, or the requested 1-based inclusive line range — and enforces the size
+// cap on that selection.  It returns the snippet and a location label for the
+// prompt ("path" or "path (lines A-B)").  Over the cap it refuses and asks for a
+// narrower RANGE rather than pointing at the mechanical readers: those would
+// spill the bytes into the caller's own context (defeating the firewall) and
+// cannot feed back into a path-based comprehension op.  No silent truncation;
+// whole-file map-reduce for big files is a later sub-phase.
+func scopeContent(path string, content []byte, start, end int) (snippet, loc string, err error) {
+	text, loc := string(content), path
+	if start != 0 || end != 0 {
+		var from, to, total int
+		// Map the 1-based inclusive [start, end] request to the shared line
+		// window's 0-based half-open [from, to); lineSlice clamps to the file.
+		text, from, to, total = lineSlice(content, func(n int) (int, int) {
+			f := 0
+			if start > 1 {
+				f = start - 1
+			}
+			t := n
+			if end != 0 {
+				t = end
+			}
+			return f, t
+		})
+		if from >= to {
+			return "", "", fmt.Errorf("line range (start %d, end %d) selects no lines; the file has %d", start, end, total)
+		}
+		loc = fmt.Sprintf("%s (lines %d-%d)", path, from+1, to)
+	}
+	if len(text) > MaxComprehendBytes {
+		return "", "", fmt.Errorf("%s: the selected content is %d bytes, over the %d-byte comprehension cap; pass a narrower line range (start, end) — whole-file map-reduce is a later sub-phase",
+			loc, len(text), MaxComprehendBytes)
+	}
+	return text, loc, nil
 }
 
 // comprehendResult renders the engine's answer plus the provenance footer, and

@@ -301,19 +301,41 @@ func (s *Server) readTail(_ context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 	})
 }
 
-// serveLines reads a file and returns the [from, to) line window the
-// selector picks from its total line count (0-based half-open).
+// lineSlice splits content into lines and returns lines[from:to) joined, plus
+// the resolved (clamped) bounds and the total line count.  window computes the
+// desired 0-based half-open [from, to) from the total.  It is the one place the
+// librarian turns a blob into a line window — shared by the mechanical range
+// reads (serveLines) and the comprehension range ops (scopeContent).
+func lineSlice(content []byte, window func(total int) (from, to int)) (text string, from, to, total int) {
+	lines := strings.Split(strings.TrimSuffix(string(content), "\n"), "\n")
+	total = len(lines)
+	from, to = window(total)
+	if from < 0 {
+		from = 0
+	}
+	if from > total {
+		from = total
+	}
+	if to < from {
+		to = from
+	}
+	if to > total {
+		to = total
+	}
+	return strings.Join(lines[from:to], "\n"), from, to, total
+}
+
+// serveLines reads a file and returns the [from, to) line window the selector
+// picks from its total line count (0-based half-open).
 func (s *Server) serveLines(tool, path string, window func(total int) (int, int)) (*mcp.CallToolResult, error) {
 	content, err := s.cfg.Repo.Read(path)
 	if err != nil {
 		return s.refuse(tool, err, path), nil
 	}
-	lines := strings.Split(strings.TrimSuffix(string(content), "\n"), "\n")
-	total := len(lines)
-	from, to := window(total)
+	text, from, to, total := lineSlice(content, window)
 	return jsonResult(map[string]any{
 		"path": path, "fromLine": from + 1, "toLine": to, "totalLines": total,
-		"content": strings.Join(lines[from:to], "\n"),
+		"content": text,
 	}), nil
 }
 

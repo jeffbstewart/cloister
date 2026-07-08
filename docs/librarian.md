@@ -147,11 +147,11 @@ Mechanical:
 Inference-backed (same worker, same model, same shield; each takes an
 optional `effort` — see "Effort, cost, and the comprehension ops" below):
 
-- `summarize_file(path, effort?)`, `summarize_directory(path, effort?)` —
-  map-reduce over resident content; context-saving alternatives to reading
-  whole trees.  Default `quick`.
-- `ask_about_file(path, question, effort?)` — one-shot Q&A grounded in the
-  file's bytes.  Default `quick`.
+- `summarize_file(path, effort?, start?, end?)`, `summarize_directory(path,
+  effort?)` — map-reduce over resident content; context-saving alternatives to
+  reading whole trees.  Default `quick`.
+- `ask_about_file(path, question, effort?, start?, end?)` — one-shot Q&A
+  grounded in the file's bytes, optionally a line range.  Default `quick`.
 - `find_relevant_files(question, scope?, effort?)` — semantic locate ("where
   is retry handled?"); internal retrieve-then-rank loop, see below.
 - `explain_change(opId)` — possible later: narrate a stored scribe diff.
