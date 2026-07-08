@@ -34,11 +34,15 @@ import (
 // directory op it derives a per-call Result from the request (so each map call
 // gets a distinct summary and the reduce sees them) when res is left zero.
 type fakeInferencer struct {
-	res    infer.Result
-	err    error
-	calls  int
-	effort infer.Effort // effort of the LAST call (single-file ops assert this)
-	msgs   []openai.Message
+	res infer.Result
+	// scripted, when non-empty, is drained one Result per call in order — so a
+	// multi-call op (keyword-expand then rerank) can return a distinct answer per
+	// stage.  It takes precedence over res.
+	scripted []infer.Result
+	err      error
+	calls    int
+	effort   infer.Effort // effort of the LAST call (single-file ops assert this)
+	msgs     []openai.Message
 	// recorded captures EVERY call in order, for the map-reduce assertions.
 	recorded []recordedCall
 }
@@ -55,6 +59,13 @@ func (f *fakeInferencer) Ask(_ context.Context, effort infer.Effort, msgs []open
 	f.recorded = append(f.recorded, recordedCall{effort: effort, msgs: msgs})
 	if f.err != nil {
 		return infer.Result{}, f.err
+	}
+	// Scripted answers win: return the next one in order, so a test can hand call
+	// 1 a keyword list and call 2 a ranking.
+	if len(f.scripted) > 0 {
+		res := f.scripted[0]
+		f.scripted = f.scripted[1:]
+		return res, nil
 	}
 	// A zero-value canned Result means "derive a per-call answer" — the last
 	// user message truncated to a short digest — so map calls stay distinct and
@@ -405,5 +416,189 @@ func TestComprehensionToolsUnregisteredWithoutInfer(t *testing.T) {
 	}
 	if names["ask_about_file"] || names["summarize_file"] {
 		t.Fatal("comprehension tools registered without an Inferencer")
+	}
+	if names["find_relevant_files"] {
+		t.Fatal("find_relevant_files registered without an Inferencer")
+	}
+}
+
+func TestFindRelevantFilesHappyPath(t *testing.T) {
+	inf := &fakeInferencer{scripted: []infer.Result{
+		// 1. keyword expansion (quick).
+		{Answer: "retry, backoff, attempt", ServedBy: "think-fast", Tokens: 3},
+		// 2. rerank (thorough): retry.go ahead of client.go.
+		{Answer: "internal/net/retry.go — the retry loop lives here\ninternal/net/client.go — calls retry",
+			ServedBy: "deep-think", Tokens: 7},
+	}}
+	f := comprehendFixture(t, map[string]string{
+		"internal/net/retry.go":  "package net\n\n// retry loop with backoff\nfunc retry() {}\n",
+		"internal/net/client.go": "package net\n\nfunc call() { retry() }\n",
+		"internal/net/parse.go":  "package net\n\nfunc parse() {}\n",
+	}, inf)
+
+	text, isErr := f.call(t, "find_relevant_files", map[string]any{
+		"question": "where is retry handled?", "effort": "thorough",
+	})
+	if isErr {
+		t.Fatalf("find_relevant_files errored: %s", text)
+	}
+	// Both expected paths present, retry.go ranked ahead of client.go.
+	ri := strings.Index(text, "internal/net/retry.go")
+	ci := strings.Index(text, "internal/net/client.go")
+	if ri < 0 || ci < 0 || ri > ci {
+		t.Fatalf("ranked order wrong (retry=%d client=%d): %s", ri, ci, text)
+	}
+	// parse.go matched no keyword → never a candidate.
+	if strings.Contains(text, "parse.go") {
+		t.Fatalf("non-matching file surfaced: %s", text)
+	}
+	// Effort sequence: quick (keyword-expand) then the requested thorough (rerank).
+	if len(inf.recorded) != 2 {
+		t.Fatalf("infer calls = %d, want 2", len(inf.recorded))
+	}
+	if inf.recorded[0].effort != infer.Quick || inf.recorded[1].effort != infer.Thorough {
+		t.Fatalf("effort sequence = %q,%q; want quick,thorough",
+			inf.recorded[0].effort, inf.recorded[1].effort)
+	}
+	// Footer sums tokens across both calls (3 + 7) and names both engines.
+	if !strings.Contains(text, "10 tok") {
+		t.Fatalf("footer token sum wrong: %s", text)
+	}
+	if !strings.Contains(text, "deep-think") || !strings.Contains(text, "think-fast") {
+		t.Fatalf("footer engine set wrong: %s", text)
+	}
+}
+
+func TestFindRelevantFilesHallucinationGuard(t *testing.T) {
+	inf := &fakeInferencer{scripted: []infer.Result{
+		{Answer: "widget", ServedBy: "think-fast", Tokens: 1},
+		// The reranker invents a path that was never a candidate.
+		{Answer: "nonexistent/ghost.go — hallucinated\nsrc/widget.go — the real match",
+			ServedBy: "think-fast", Tokens: 1},
+	}}
+	f := comprehendFixture(t, map[string]string{
+		"src/widget.go": "package src\n\nfunc widget() {}\n",
+	}, inf)
+
+	text, isErr := f.call(t, "find_relevant_files", map[string]any{"question": "widget?"})
+	if isErr {
+		t.Fatalf("find_relevant_files errored: %s", text)
+	}
+	if strings.Contains(text, "ghost.go") {
+		t.Fatalf("hallucinated path not dropped: %s", text)
+	}
+	if !strings.Contains(text, "src/widget.go") {
+		t.Fatalf("real candidate missing: %s", text)
+	}
+}
+
+func TestFindRelevantFilesParseFailureFallback(t *testing.T) {
+	inf := &fakeInferencer{scripted: []infer.Result{
+		{Answer: "alpha", ServedBy: "think-fast", Tokens: 1},
+		// Unparseable: names no candidate path at all.
+		{Answer: "I could not determine which files are relevant.", ServedBy: "think-fast", Tokens: 1},
+	}}
+	f := comprehendFixture(t, map[string]string{
+		"a/alpha.go": "package a\n// alpha alpha\n",
+		"b/also.go":  "package b\n// alpha\n",
+	}, inf)
+
+	text, isErr := f.call(t, "find_relevant_files", map[string]any{"question": "alpha?"})
+	if isErr {
+		t.Fatalf("find_relevant_files errored: %s", text)
+	}
+	// Falls back to the grep-ranked candidates with the generic reason.
+	if !strings.Contains(text, "a/alpha.go") || !strings.Contains(text, "keyword occurrences") {
+		t.Fatalf("did not fall back to grep ranking: %s", text)
+	}
+}
+
+func TestFindRelevantFilesNoCandidates(t *testing.T) {
+	inf := &fakeInferencer{scripted: []infer.Result{
+		{Answer: "zebra, quokka", ServedBy: "think-fast", Tokens: 1},
+	}}
+	f := comprehendFixture(t, map[string]string{
+		"src/main.go": "package main\n\nfunc main() {}\n",
+	}, inf)
+
+	text, isErr := f.call(t, "find_relevant_files", map[string]any{"question": "where are the zebras?"})
+	if isErr {
+		t.Fatalf("no-candidates should be a normal result: %s", text)
+	}
+	if !strings.Contains(text, "No files matched") {
+		t.Fatalf("want no-files-matched message: %s", text)
+	}
+	// Only the keyword call happened; the rerank did NOT.
+	if inf.calls != 1 {
+		t.Fatalf("infer calls = %d, want 1 (no rerank on zero candidates)", inf.calls)
+	}
+}
+
+func TestFindRelevantFilesScope(t *testing.T) {
+	// path prefix: lib/ is excluded from the candidate set entirely.
+	pathInf := &fakeInferencer{scripted: []infer.Result{
+		{Answer: "config", ServedBy: "think-fast", Tokens: 1},
+		{Answer: "app/config.go — the match", ServedBy: "think-fast", Tokens: 1},
+	}}
+	pf := comprehendFixture(t, map[string]string{
+		"app/config.go": "package app\n// config loader\n",
+		"lib/config.go": "package lib\n// config helper\n",
+	}, pathInf)
+	text, isErr := pf.call(t, "find_relevant_files", map[string]any{"question": "config?", "path": "app"})
+	if isErr {
+		t.Fatalf("scoped find errored: %s", text)
+	}
+	if strings.Contains(text, "lib/config.go") {
+		t.Fatalf("path scope leaked lib/: %s", text)
+	}
+	if !strings.Contains(text, "app/config.go") {
+		t.Fatalf("scoped file missing: %s", text)
+	}
+
+	// glob filter: only *.go under app, so app/notes.txt is excluded.
+	globInf := &fakeInferencer{scripted: []infer.Result{
+		{Answer: "config", ServedBy: "think-fast", Tokens: 1},
+		{Answer: "app/config.go — the match", ServedBy: "think-fast", Tokens: 1},
+	}}
+	gf := comprehendFixture(t, map[string]string{
+		"app/config.go":  "package app\n// config loader\n",
+		"app/config.txt": "config notes\n",
+	}, globInf)
+	text, isErr = gf.call(t, "find_relevant_files", map[string]any{"question": "config?", "glob": "app/*.go"})
+	if isErr {
+		t.Fatalf("glob-scoped find errored: %s", text)
+	}
+	if strings.Contains(text, "config.txt") {
+		t.Fatalf("glob scope leaked config.txt: %s", text)
+	}
+	if !strings.Contains(text, "app/config.go") {
+		t.Fatalf("glob-scoped file missing: %s", text)
+	}
+}
+
+func TestFindRelevantFilesJailedExclusion(t *testing.T) {
+	inf := &fakeInferencer{scripted: []infer.Result{
+		{Answer: "password, secret", ServedBy: "think-fast", Tokens: 1},
+		{Answer: "keep.txt — mentions the password policy", ServedBy: "think-fast", Tokens: 1},
+	}}
+	f := comprehendFixture(t, map[string]string{
+		".aiignore":   "*.secret\n",
+		"keep.txt":    "the password policy lives here\n",
+		"leak.secret": "password=hunter2 secret\n",
+	}, inf)
+
+	text, isErr := f.call(t, "find_relevant_files", map[string]any{"question": "where is the password?"})
+	if isErr {
+		t.Fatalf("find_relevant_files errored: %s", text)
+	}
+	if strings.Contains(text, "leak.secret") || strings.Contains(text, "hunter2") {
+		t.Fatalf("jailed file surfaced: %s", text)
+	}
+	// The jailed file's content never reached the rerank prompt either.
+	for _, rc := range inf.recorded {
+		user := rc.msgs[len(rc.msgs)-1].Content
+		if strings.Contains(user, "leak.secret") || strings.Contains(user, "hunter2") {
+			t.Fatalf("jailed file leaked into a prompt: %s", user)
+		}
 	}
 }
