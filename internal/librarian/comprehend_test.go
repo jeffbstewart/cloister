@@ -17,6 +17,7 @@ package librarian
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -28,12 +29,21 @@ import (
 	"github.com/jeffbstewart/cloister/internal/repo"
 )
 
-// fakeInferencer is the inference seam under test: it records the call and
-// returns a canned Result or error, with no real HTTP.
+// fakeInferencer is the inference seam under test: it records every call and
+// returns a canned Result or error, with no real HTTP.  For the map-reduce
+// directory op it derives a per-call Result from the request (so each map call
+// gets a distinct summary and the reduce sees them) when res is left zero.
 type fakeInferencer struct {
 	res    infer.Result
 	err    error
 	calls  int
+	effort infer.Effort // effort of the LAST call (single-file ops assert this)
+	msgs   []openai.Message
+	// recorded captures EVERY call in order, for the map-reduce assertions.
+	recorded []recordedCall
+}
+
+type recordedCall struct {
 	effort infer.Effort
 	msgs   []openai.Message
 }
@@ -42,8 +52,20 @@ func (f *fakeInferencer) Ask(_ context.Context, effort infer.Effort, msgs []open
 	f.calls++
 	f.effort = effort
 	f.msgs = msgs
+	f.recorded = append(f.recorded, recordedCall{effort: effort, msgs: msgs})
 	if f.err != nil {
 		return infer.Result{}, f.err
+	}
+	// A zero-value canned Result means "derive a per-call answer" — the last
+	// user message truncated to a short digest — so map calls stay distinct and
+	// carry a token so aggregation is testable.  A non-zero res is returned
+	// verbatim (the single-file tests rely on the exact fields).
+	if f.res == (infer.Result{}) {
+		user := msgs[len(msgs)-1].Content
+		if len(user) > 20 {
+			user = user[:20]
+		}
+		return infer.Result{Answer: "digest:" + user, ServedBy: "think-fast", Tokens: 1}, nil
 	}
 	return f.res, nil
 }
@@ -237,6 +259,133 @@ func TestComprehendInferenceError(t *testing.T) {
 	// An inference failure is a normal error, not a denial: nothing audited.
 	if got := len(f.aud.denials()); got != 0 {
 		t.Fatalf("inference error wrongly audited; records = %d", got)
+	}
+}
+
+func TestSummarizeDirectoryMapReduce(t *testing.T) {
+	inf := &fakeInferencer{} // zero res: per-call derived digests
+	f := comprehendFixture(t, map[string]string{
+		"pkg/a.go":   "package pkg\n\nfunc A() {}\n",
+		"pkg/b.go":   "package pkg\n\nfunc B() {}\n",
+		"pkg/c.go":   "package pkg\n\nfunc C() {}\n",
+		"other/z.go": "package other\n",
+	}, inf)
+
+	text, isErr := f.call(t, "summarize_directory", map[string]any{"path": "pkg", "effort": "thorough"})
+	if isErr {
+		t.Fatalf("summarize_directory errored: %s", text)
+	}
+	// 3 map calls at quick, then 1 reduce at the requested thorough.
+	if inf.calls != 4 {
+		t.Fatalf("infer calls = %d, want 4 (3 map + 1 reduce)", inf.calls)
+	}
+	wantEfforts := []infer.Effort{infer.Quick, infer.Quick, infer.Quick, infer.Thorough}
+	for i, want := range wantEfforts {
+		if inf.recorded[i].effort != want {
+			t.Fatalf("call %d effort = %q, want %q", i, inf.recorded[i].effort, want)
+		}
+	}
+	// The reduce sees only files under pkg, never other/z.go.
+	reduce := inf.recorded[3].msgs[len(inf.recorded[3].msgs)-1].Content
+	if !strings.Contains(reduce, "pkg/a.go") || strings.Contains(reduce, "other/z.go") {
+		t.Fatalf("reduce prompt scoped wrong: %s", reduce)
+	}
+	// Output carries the overview and an aggregate footer (4 calls × 1 tok).
+	if !strings.Contains(text, "digest:") || !strings.Contains(text, "4 tok") ||
+		!strings.Contains(text, "think-fast") {
+		t.Fatalf("overview/footer wrong: %s", text)
+	}
+}
+
+func TestSummarizeDirectoryBudgetGuard(t *testing.T) {
+	files := map[string]string{}
+	for i := 0; i < MaxDirFiles+1; i++ {
+		files[fmt.Sprintf("many/f%02d.txt", i)] = "x\n"
+	}
+	inf := &fakeInferencer{}
+	f := comprehendFixture(t, files, inf)
+
+	text, isErr := f.call(t, "summarize_directory", map[string]any{"path": "many"})
+	if !isErr {
+		t.Fatalf("oversized directory not refused: %s", text)
+	}
+	if !strings.Contains(text, "readable files") || !strings.Contains(text, "narrower") {
+		t.Fatalf("refusal does not name the limit/alternative: %s", text)
+	}
+	if inf.calls != 0 {
+		t.Fatalf("inference called despite the budget guard: calls = %d", inf.calls)
+	}
+}
+
+func TestSummarizeDirectoryPerFileTruncation(t *testing.T) {
+	big := strings.Repeat("x", MaxComprehendBytes+10) + "\ntail\n"
+	inf := &fakeInferencer{}
+	f := comprehendFixture(t, map[string]string{"d/big.txt": big}, inf)
+
+	text, isErr := f.call(t, "summarize_directory", map[string]any{"path": "d"})
+	if isErr {
+		t.Fatalf("summarize_directory errored: %s", text)
+	}
+	// The oversized file is still summarized (map call happens) and marked
+	// truncated in its map prompt.
+	if inf.calls != 2 {
+		t.Fatalf("infer calls = %d, want 2 (1 map + 1 reduce)", inf.calls)
+	}
+	mapPrompt := inf.recorded[0].msgs[len(inf.recorded[0].msgs)-1].Content
+	if !strings.Contains(mapPrompt, "(truncated)") {
+		t.Fatalf("map prompt not marked truncated: %.80s", mapPrompt)
+	}
+	// The pushed content is capped at MaxComprehendBytes, not the full file.
+	if len(mapPrompt) > MaxComprehendBytes+200 {
+		t.Fatalf("truncated map prompt too large: %d bytes", len(mapPrompt))
+	}
+}
+
+func TestSummarizeDirectoryJailedExclusion(t *testing.T) {
+	inf := &fakeInferencer{}
+	f := comprehendFixture(t, map[string]string{
+		".aiignore":     "*.secret\n",
+		"d/keep.txt":    "keepme\n",
+		"d/skip.secret": "DB_PASSWORD=hunter2\n",
+	}, inf)
+
+	text, isErr := f.call(t, "summarize_directory", map[string]any{"path": "d"})
+	if isErr {
+		t.Fatalf("summarize_directory errored: %s", text)
+	}
+	// Only keep.txt is summarized: 1 map + 1 reduce.  The jailed file never
+	// reaches the engine (it is not in ForEachResident).
+	if inf.calls != 2 {
+		t.Fatalf("infer calls = %d, want 2 (jailed file excluded)", inf.calls)
+	}
+	for _, rc := range inf.recorded {
+		user := rc.msgs[len(rc.msgs)-1].Content
+		if strings.Contains(user, "skip.secret") || strings.Contains(user, "hunter2") {
+			t.Fatalf("jailed file leaked into a prompt: %s", user)
+		}
+	}
+}
+
+func TestSummarizeDirectoryEmptyAndNonDir(t *testing.T) {
+	inf := &fakeInferencer{}
+	f := comprehendFixture(t, map[string]string{
+		".aiignore":       "*.secret\n",
+		"lonely/a.secret": "nothing readable here\n",
+		"solo.txt":        "just a file\n",
+	}, inf)
+
+	// A directory whose only child is jailed has no resident files → errResult.
+	text, isErr := f.call(t, "summarize_directory", map[string]any{"path": "lonely"})
+	if !isErr || !strings.Contains(text, "no readable files") {
+		t.Fatalf("empty dir = %q err=%v; want no-readable-files errResult", text, isErr)
+	}
+	// A non-directory path → errResult, not a summary.
+	text, isErr = f.call(t, "summarize_directory", map[string]any{"path": "solo.txt"})
+	if !isErr || !strings.Contains(text, "not a directory") {
+		t.Fatalf("non-dir = %q err=%v; want not-a-directory errResult", text, isErr)
+	}
+	if inf.calls != 0 {
+		t.Fatalf("inference called on an empty/non-dir target: calls = %d", inf.calls)
 	}
 }
 
