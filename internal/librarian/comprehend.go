@@ -32,6 +32,7 @@ import (
 
 	"github.com/jeffbstewart/cloister/internal/infer"
 	"github.com/jeffbstewart/cloister/internal/openai"
+	"github.com/jeffbstewart/cloister/internal/shield"
 )
 
 // MaxComprehendBytes bounds the file content a single comprehension op hands to
@@ -128,11 +129,11 @@ func (s *Server) askAboutFile(ctx context.Context, req *mcp.CallToolRequest) (*m
 	if err != nil {
 		return errResult(err.Error()), nil
 	}
-	content, err := s.cfg.Repo.Read(a.Path)
+	ar, err := s.cfg.Repo.Read(a.Path)
 	if err != nil {
 		return s.refuse("ask_about_file", err, a.Path), nil
 	}
-	snippet, loc, err := scopeContent(a.Path, content, a.Start, a.End)
+	snippet, loc, err := scopeContent(ar, a.Start, a.End)
 	if err != nil {
 		return errResult(err.Error()), nil
 	}
@@ -161,11 +162,11 @@ func (s *Server) summarizeFile(ctx context.Context, req *mcp.CallToolRequest) (*
 	if err != nil {
 		return errResult(err.Error()), nil
 	}
-	content, err := s.cfg.Repo.Read(a.Path)
+	ar, err := s.cfg.Repo.Read(a.Path)
 	if err != nil {
 		return s.refuse("summarize_file", err, a.Path), nil
 	}
-	snippet, loc, err := scopeContent(a.Path, content, a.Start, a.End)
+	snippet, loc, err := scopeContent(ar, a.Start, a.End)
 	if err != nil {
 		return errResult(err.Error()), nil
 	}
@@ -182,14 +183,18 @@ func (s *Server) summarizeFile(ctx context.Context, req *mcp.CallToolRequest) (*
 
 // scopeContent selects the content a comprehension op will push — the whole
 // file, or the requested 1-based inclusive line range — and enforces the size
-// cap on that selection.  It returns the snippet and a location label for the
-// prompt ("path" or "path (lines A-B)").  Over the cap it refuses and asks for a
-// narrower RANGE rather than pointing at the mechanical readers: those would
-// spill the bytes into the caller's own context (defeating the firewall) and
-// cannot feed back into a path-based comprehension op.  No silent truncation;
-// whole-file map-reduce for big files is a later sub-phase.
-func scopeContent(path string, content []byte, start, end int) (snippet, loc string, err error) {
-	text, loc := string(content), path
+// cap on that selection.  It takes a shield-cleared AIReadable, not raw bytes,
+// so pushing file content into a model prompt is structurally gated: the
+// off-host push cannot happen without a value the shield minted.  It returns the
+// snippet and a location label for the prompt ("path" or "path (lines A-B)").
+// Over the cap it refuses and asks for a narrower RANGE rather than pointing at
+// the mechanical readers: those would spill the bytes into the caller's own
+// context (defeating the firewall) and cannot feed back into a path-based
+// comprehension op.  No silent truncation; whole-file map-reduce for big files
+// is a later sub-phase.
+func scopeContent(ar shield.AIReadable, start, end int) (snippet, loc string, err error) {
+	content := ar.Bytes()
+	text, loc := string(content), ar.Path()
 	if start != 0 || end != 0 {
 		var from, to, total int
 		// Map the 1-based inclusive [start, end] request to the shared line
@@ -208,7 +213,7 @@ func scopeContent(path string, content []byte, start, end int) (snippet, loc str
 		if from >= to {
 			return "", "", fmt.Errorf("line range (start %d, end %d) selects no lines; the file has %d", start, end, total)
 		}
-		loc = fmt.Sprintf("%s (lines %d-%d)", path, from+1, to)
+		loc = fmt.Sprintf("%s (lines %d-%d)", ar.Path(), from+1, to)
 	}
 	if len(text) > MaxComprehendBytes {
 		return "", "", fmt.Errorf("%s: the selected content is %d bytes, over the %d-byte comprehension cap; pass a narrower line range (start, end) — whole-file map-reduce is a later sub-phase",

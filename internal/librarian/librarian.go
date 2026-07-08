@@ -245,11 +245,11 @@ func (s *Server) readFile(_ context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 	if err := decode(req, &a); err != nil {
 		return errResult("bad arguments: " + err.Error()), nil
 	}
-	content, err := s.cfg.Repo.Read(a.Path)
+	ar, err := s.cfg.Repo.Read(a.Path)
 	if err != nil {
 		return s.refuse("read_file", err, a.Path), nil
 	}
-	return textResult(string(content)), nil
+	return textResult(ar.String()), nil
 }
 
 func (s *Server) readRange(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -328,11 +328,11 @@ func lineSlice(content []byte, window func(total int) (from, to int)) (text stri
 // serveLines reads a file and returns the [from, to) line window the selector
 // picks from its total line count (0-based half-open).
 func (s *Server) serveLines(tool, path string, window func(total int) (int, int)) (*mcp.CallToolResult, error) {
-	content, err := s.cfg.Repo.Read(path)
+	ar, err := s.cfg.Repo.Read(path)
 	if err != nil {
 		return s.refuse(tool, err, path), nil
 	}
-	text, from, to, total := lineSlice(content, window)
+	text, from, to, total := lineSlice(ar.Bytes(), window)
 	return jsonResult(map[string]any{
 		"path": path, "fromLine": from + 1, "toLine": to, "totalLines": total,
 		"content": text,
@@ -357,10 +357,10 @@ func (s *Server) batchRead(_ context.Context, req *mcp.CallToolRequest) (*mcp.Ca
 	var out []fileOut
 	var denied []string
 	for _, p := range a.Paths {
-		content, err := s.cfg.Repo.Read(p)
+		ar, err := s.cfg.Repo.Read(p)
 		switch {
 		case err == nil:
-			out = append(out, fileOut{Path: p, Content: string(content)})
+			out = append(out, fileOut{Path: p, Content: ar.String()})
 		case errors.Is(err, repo.ErrForbidden):
 			denied = append(denied, p)
 			out = append(out, fileOut{Path: p, Error: err.Error()})
@@ -496,14 +496,15 @@ func (s *Server) search(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallT
 	total := 0
 	truncated := false
 
-	scanErr := s.cfg.Repo.ForEachResident(func(rel string, content []byte) error {
+	scanErr := s.cfg.Repo.ForEachResident(func(ar shield.AIReadable) error {
+		rel := ar.Path()
 		if prefix != "" && !strings.HasPrefix(rel, prefix) {
 			return nil
 		}
 		if a.Glob != "" && !shield.Glob(a.Glob, rel) {
 			return nil
 		}
-		lines := strings.Split(string(content), "\n")
+		lines := strings.Split(string(ar.Bytes()), "\n")
 		for i, line := range lines {
 			if !re.MatchString(line) {
 				continue
