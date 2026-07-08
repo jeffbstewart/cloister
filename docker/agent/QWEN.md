@@ -42,6 +42,11 @@ context:
   digesting each file and synthesizing one overview.  On a large tree it
   refuses and asks you to name a narrower subdirectory rather than
   launching thousands of engine calls — call it again on a subpath.
+- **`find_relevant_files(question, path?, glob?, effort?)`** — locates the
+  files most relevant to a question ("where is retry handled?") and returns
+  a ranked list with a one-line reason each, so you find the right files
+  without grepping and reading the tree yourself.  Optionally scope it with
+  a `path` prefix or a `glob`.
 
 Prefer these over reading a whole file or tree just to understand it:
 the answer comes back small either way, so they cost you a handful of
