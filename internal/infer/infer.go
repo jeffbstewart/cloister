@@ -177,15 +177,16 @@ func (c *Client) Ask(ctx context.Context, effort Effort, messages []openai.Messa
 	engine := c.cfg.Engines[effort]
 	timeout := c.cfg.Timeouts[effort]
 
-	// Jeff's rule: the deadline rides context.WithTimeout, never a parallel
-	// manual clock check.  The openai client sets no timeout of its own; this
-	// context is the whole bound on the turn.
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	// The deadline rides context.WithTimeout, never a parallel manual clock
+	// check.  The openai client sets no timeout of its own, so this derived
+	// context is the whole bound on the turn.  It gets its own name rather than
+	// reassigning ctx, so the parent context is never shadowed.
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	// Measure via the injected clock so elapsed is deterministic under test.
 	start := c.cfg.Now()
-	reply, tokens, err := engine.Completer.Complete(ctx, messages, nil)
+	reply, tokens, err := engine.Completer.Complete(callCtx, messages, nil)
 	elapsed := c.cfg.Now().Sub(start)
 	if err != nil {
 		return Result{}, err
