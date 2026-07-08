@@ -1,12 +1,14 @@
 # The librarian — reader-mode design
 
-Status: **phases 0–4 implemented** (the spike, internal/shield,
-internal/repo, internal/watch, the worker + mechanical tools, and the
-cell cutover — the agent holds no workspace mount).  **Phase 5 — the
-comprehension ops and engine-routed inference — is planned in detail below
-and now in execution** (sub-phases 5a–5d); its inference routing folds into
-the agency's engine classes (docs/agency.md).  This file records the
-2026-07-07 design review plus the 2026-07-08 execution decisions.
+Status: **phases 0–5 implemented** — the spike, internal/shield,
+internal/repo, internal/watch, the worker + mechanical tools, the cell
+cutover (the agent holds no workspace mount), AND the comprehension ops
+(`ask_about_file`, `summarize_file`, `summarize_directory`,
+`find_relevant_files`) on the engine-routed `internal/infer` client, gated by
+`shield.AIReadable` and wired to `infer` over `infernet`.  Its inference
+routing will fold into the agency's engine classes (docs/agency.md) once the
+agency lands.  This file records the 2026-07-07 design review plus the
+2026-07-08 execution decisions.
 
 ## Problem
 
@@ -306,7 +308,8 @@ librarian:
 3. Librarian worker mode + mechanical tools; scribe adopts `internal/shield`
    on the write path; denial audit detail.
 4. Compose + compose-lint + docs; the agent cutover (mount out, qwen config).
-5. Comprehension ops + engine-routed inference client.  Sub-phased:
+5. Comprehension ops + engine-routed inference client — **SHIPPED** (PRs
+   #54–#59 for 5a–5c; the 5d wiring below).  Sub-phased:
    - **5a(i)** — extract the reusable OpenAI-compatible chat-completions
      client (the wire types + the single-endpoint `Complete` HTTP plumbing,
      today in internal/scholar/model.go) into a shared, **stdlib-only**,
