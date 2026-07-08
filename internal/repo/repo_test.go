@@ -378,6 +378,61 @@ func TestReportNamesLargestResidentExcludesRest(t *testing.T) {
 	}
 }
 
+func TestParallelWalkDescendsNestedTreeAndPrunes(t *testing.T) {
+	// A nested tree with a .git dir, a hidden (.gitignore) subtree, and a
+	// stripped (.aiignore) file — the parallel walk must descend deep,
+	// prune the pruned subtrees, and record the rest.
+	_, r := newWorkspace(t, map[string]string{
+		".gitignore":            "build/\n",
+		".aiignore":             "secret.txt\n",
+		"a/b/c/d/deep.go":       "package d\n",
+		"a/b/sibling.go":        "package b\n",
+		"a/top.go":              "package a\n",
+		"build/gen/out.js":      "generated",   // hidden subtree
+		"build/gen/more/x.js":   "generated",   // hidden, nested
+		"secret.txt":            "shh",         // stripped
+		".git/hooks/pre-commit": "#!/bin/sh\n", // never walked
+		".git/config":           "[core]\n",
+	})
+	// Everything visible is readable and correct, at any depth.
+	for _, p := range []string{"a/b/c/d/deep.go", "a/b/sibling.go", "a/top.go"} {
+		if _, err := r.Read(p); err != nil {
+			t.Errorf("Read(%s) = %v; want the deep file served", p, err)
+		}
+	}
+	// Hidden subtree: absent from the model entirely (not even listed).
+	if e, err := r.Stat("build"); err == nil {
+		t.Errorf("hidden dir build is present: %+v", e)
+	}
+	if _, err := r.Read("build/gen/out.js"); !errors.Is(err, ErrForbidden) {
+		t.Errorf("hidden nested file = %v, want ErrForbidden", err)
+	}
+	// Stripped file: named but unreadable.
+	if _, err := r.Read("secret.txt"); !errors.Is(err, ErrForbidden) {
+		t.Errorf("stripped file = %v, want ErrForbidden", err)
+	}
+	// .git is repository metadata: never walked, AND denied on explicit
+	// access (the centralized classify gate covers both the walk and the
+	// on-demand admission path, so read_file(".git/config") can't leak it).
+	if _, err := r.Read(".git/config"); !errors.Is(err, ErrForbidden) {
+		t.Errorf("Read(.git/config) = %v, want ErrForbidden", err)
+	}
+	if _, err := r.Stat(".git/hooks/pre-commit"); !errors.Is(err, ErrForbidden) {
+		t.Errorf("Stat(.git/...) = %v, want ErrForbidden", err)
+	}
+	// The parallel search finds the deep file (it's resident).
+	var found bool
+	_ = r.ForEachResident(func(rel string, _ []byte) error {
+		if rel == "a/b/c/d/deep.go" {
+			found = true
+		}
+		return nil
+	})
+	if !found {
+		t.Error("deep file not resident after the parallel walk")
+	}
+}
+
 func TestScanStatsMeasuresWalkAndReadPhases(t *testing.T) {
 	// Inject a clock that advances a fixed step per read, so the two phase
 	// durations are deterministic (not racing the real clock).  One Rescan
