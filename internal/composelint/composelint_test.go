@@ -71,6 +71,7 @@ services:
 	agentClean := `["qwen_home:/home/node/.qwen"]`
 	kagiCmd := `["TCP-LISTEN:8443,fork,reuseaddr", "TCP:kagi.com:443"]`
 	librarianClean := `  librarian:
+    user: "1000:1000"
     networks: [buildnet, statenet]
     volumes: ["/host:/workspace:ro"]
 `
@@ -102,6 +103,11 @@ services:
 `, ""),
 		"librarian holds egress-capable net": base(clean, noVols, kagiCmd, agentClean, `  librarian:
     networks: [buildnet, statenet, frontend]
+    volumes: ["/host:/workspace:ro"]
+`, ""),
+		"librarian runs as root": base(clean, noVols, kagiCmd, agentClean, `  librarian:
+    user: "0:0"
+    networks: [buildnet, statenet]
     volumes: ["/host:/workspace:ro"]
 `, ""),
 		"agent mounts workspace": base(clean, noVols, kagiCmd, `["/host:/workspace:ro"]`, librarianClean, ""),

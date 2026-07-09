@@ -104,7 +104,10 @@ deploy naming the variable):
 | Variable | Value |
 |---|---|
 | `PROJECT` | short id, e.g. `myproject`; prefixes containers and volumes |
-| `WORKSPACE` | host path of the project repo, e.g. `c:/projects/myproject` |
+| `WORKSPACE` | host path of the project repo, e.g. `/srv/home/alice/workspace/myproject` |
+| `WORKSPACE_UID` / `WORKSPACE_GID` | uid/gid that **owns** the workspace on the host (e.g. `1000`/`1000`); the scribe/builder/librarian all run as it, so writes are owned by the real user |
+| `BUILD_HOME` | host dir for the builder's persistent toolchain caches (per **user**, shared across projects), pre-created user-owned, e.g. `/srv/home/alice/.cloister-cache` |
+| `SCRIBE_STATE` | host dir for the scribe's durable approval staging (per **project**), pre-created user-owned, e.g. `/srv/home/alice/cells/myproject/scribe` |
 | `AGENT_IMAGE` | `cloister-agent:<qwen>-sha-<commit>` — pin from [GHCR](https://github.com/jeffbstewart?tab=packages), or `cloister-agent:latest` |
 | `BUILDER_IMAGE` | `cloister-builder:sha-<commit>` or `cloister-builder:latest` |
 | `OPENAI_MODEL` | the staged model the agent drives, as `ollama list` names it |
@@ -113,6 +116,21 @@ deploy naming the variable):
 | `KAGI_API_KEY` | the scholar's search/extract token |
 | `SCHOLAR_POLICY` | host path of the policy file from step 3 |
 | `TZ` (optional) | status-page timezone, default UTC |
+
+> **Ownership setup (multi-user hosts).** The workspace, `BUILD_HOME`, and
+> `SCRIBE_STATE` are bind-mounted, and the workers run as `WORKSPACE_UID`, so
+> **create those directories owned by that user before you deploy** — Docker
+> auto-creates a missing bind-mount source as *root*, which the non-root worker
+> then cannot write:
+> ```
+> sudo mkdir -p /srv/home/alice/workspace/myproject \
+>               /srv/home/alice/.cloister-cache \
+>               /srv/home/alice/cells/myproject/scribe
+> sudo chown -R alice:alice /srv/home/alice
+> ```
+> With `WORKSPACE_UID=WORKSPACE_GID=1000` (alice), everything the cell writes —
+> source via the scribe, outputs via the builder — comes out owned by alice, and
+> the librarian reads even a `0700` tree because it runs as alice too.
 
 Deploy, then open `http://127.0.0.1:<STATUS_PORT>` — the dashboard, audit
 trail, run logs, diffs, and the approvals page where gated operations wait
@@ -147,8 +165,10 @@ boundary, and so you can perform the steps manually on a non-Windows host:
 4. **Close — always**, even when the warm fails:
    `docker network disconnect bridge <PROJECT>-builder`.
 
-The cache persists in the per-project `gradle` volume, so this is
-per-project and per-dependency-change, not per-session.
+The cache persists in the builder's `BUILD_HOME` (at `~/.gradle`), which is
+per-**user** and shared across that user's projects — so a dependency warmed
+for one project is already present for the next.  Per-dependency-change, not
+per-session or per-project.
 
 ## 6. Work
 

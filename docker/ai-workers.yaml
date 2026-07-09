@@ -24,6 +24,16 @@
 #   WORKSPACE      host path of the project repo, e.g. c:/projects/myproject
 #                  ── THE single source of truth for the workspace: defined once
 #                     here, mounted into both agent and builder below.
+#   WORKSPACE_UID  numeric uid that OWNS the workspace on the host; the
+#   WORKSPACE_GID  scribe/builder/librarian all run as it, so writes are owned by
+#                  the real user (no root-owned droppings) and the librarian can
+#                  read a per-user 0700 tree.  e.g. 1000 / 1000.
+#   BUILD_HOME     host dir for the builder's PERSISTENT toolchain caches (its
+#                  HOME): per USER, shared across that user's projects.
+#                  Pre-create it user-owned.  e.g. /srv/home/alice/.cloister-cache
+#   SCRIBE_STATE   host dir for the scribe's durable approval staging: per
+#                  PROJECT, pre-created user-owned.  e.g.
+#                  /srv/home/alice/cells/myproject/scribe
 #   AGENT_IMAGE    the jailed qwen-code image (THE "qwen image" — there is no
 #                  separately named one).  Published by images.yml with the
 #                  qwen version leading the tag: pin e.g.
@@ -73,6 +83,13 @@
 x-workspace: &workspace "${WORKSPACE:?set WORKSPACE to the host path of the project repo}:/workspace"
 x-workspace-ro: &workspace-ro "${WORKSPACE}:/workspace:ro"
 
+# Every workspace-touching worker runs as the uid:gid that OWNS the workspace on
+# the host, so its writes land owned by the real user — no root-owned droppings,
+# and the librarian can read a per-user 0700 tree.  The state service is exempt:
+# it touches no workspace and keeps its ledger in a Docker volume (harder to
+# tamper with than a /srv file), so it stays on a fixed service uid.
+x-workspace-user: &wsuser "${WORKSPACE_UID:?set WORKSPACE_UID to the uid owning the workspace, e.g. 1000}:${WORKSPACE_GID:?set WORKSPACE_GID, e.g. 1000}"
+
 # Single-source timezone: referenced by every container's environment so log
 # timestamps (and the status pages) read in the operator's local zone.
 # Defaults to UTC.  tzdata is embedded in the Go binary, so any IANA zone works.
@@ -117,26 +134,30 @@ services:
   builder:
     image: ${REGISTRY:-ghcr.io/jeffbstewart}/${BUILDER_IMAGE:?set BUILDER_IMAGE, e.g. cloister-builder:latest}
     container_name: ${PROJECT}-builder
-    user: "1000:1000"
+    user: *wsuser
     restart: unless-stopped
     command: ["-worker-mode", "builder"]
     environment:
       - *tz
       - STATE_URL=http://state:9201
       - STATE_TOKEN=${STATE_TOKEN:?set STATE_TOKEN, the shared worker-to-state secret}
-      - GRADLE_USER_HOME=/gradle-home
+      - HOME=/home/build                 # writable cache home on the BUILD_HOME bind below
+      - GRADLE_USER_HOME=/home/build/.gradle
     volumes:
       - *workspace                       # rw: SAME host dir as the agent; build outputs
-      - gradle:/gradle-home              # per caches[] in agent-harness.yaml
+      # The builder's HOME: persistent toolchain caches (go/gradle/npm/...), on a
+      # USER-OWNED /srv bind so an arbitrary-uid builder can write them and they
+      # survive restarts.  Per user, shared across that user's projects.
+      - ${BUILD_HOME:?set BUILD_HOME, the user's persistent build-cache dir on /srv (pre-create it user-owned), e.g. /srv/home/alice/.cloister-cache}:/home/build
       # NOTE: deliberately NO /state mount — durable logs/audit are the state service's.
     working_dir: /workspace
     read_only: true
     tmpfs:
       - /tmp:size=2g
       # tmpfs ownership comes from the mount option, NOT the image chown (a
-      # tmpfs is mounted fresh, root-owned, shadowing the image dir). uid/gid
-      # 1000 so the non-root builder can write its log spool.
-      - /spool:size=512m,uid=1000,gid=1000,mode=0700
+      # tmpfs is mounted fresh, root-owned, shadowing the image dir).  The
+      # workspace uid/gid so the non-root builder can write its log spool.
+      - /spool:size=512m,uid=${WORKSPACE_UID},gid=${WORKSPACE_GID},mode=0700
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     pids_limit: 1024
@@ -151,7 +172,7 @@ services:
   scribe:
     image: ${REGISTRY:-ghcr.io/jeffbstewart}/${BUILDER_IMAGE}
     container_name: ${PROJECT}-scribe
-    user: "1000:1000"
+    user: *wsuser
     restart: unless-stopped
     # Same binary, scribe mode: the sole audited writer of /workspace, serving
     # confined write ops as MCP tools on :9300 and auditing to the state service.
@@ -164,7 +185,9 @@ services:
       - STATE_TOKEN=${STATE_TOKEN}
     volumes:
       - *workspace                       # rw: the scribe is the SOLE audited writer of source
-      - scribe_state:/scribe-state       # rw: durable staging for approval-gated changes
+      # Durable approval staging, on a USER-OWNED /srv bind (not a named volume)
+      # so the arbitrary-uid scribe can write it; per project.
+      - ${SCRIBE_STATE:?set SCRIBE_STATE, the scribe's durable approval-staging dir on /srv (pre-create it user-owned, per project), e.g. /srv/home/alice/cells/myproject/scribe}:/scribe-state
       # No /state mount (audits go over statenet); no /spool (diffs upload directly).
     working_dir: /workspace
     read_only: true
@@ -184,7 +207,7 @@ services:
   librarian:
     image: ${REGISTRY:-ghcr.io/jeffbstewart}/${BUILDER_IMAGE}
     container_name: ${PROJECT}-librarian
-    user: "1000:1000"
+    user: *wsuser
     restart: unless-stopped
     # Same binary, librarian mode: the read side of the cell — mechanical read
     # tools AND inference-backed comprehension tools on :9400, served from an
@@ -220,7 +243,7 @@ services:
   state:
     image: ${REGISTRY:-ghcr.io/jeffbstewart}/${BUILDER_IMAGE}
     container_name: ${PROJECT}-state
-    user: "1000:1000"
+    user: "1000:1000"                    # fixed service uid: state touches no workspace; its ledger stays in a Docker volume
     restart: unless-stopped
     command: ["-worker-mode", "state-service", "-addr", ":9201", "-state-dir", "/state"]
     environment:
@@ -351,11 +374,11 @@ networks:
 
 volumes:
   qwen_home:
-  gradle:
-    name: ${PROJECT}_gradle
+  # The builder's caches (BUILD_HOME) and the scribe's staging (SCRIBE_STATE) are
+  # now USER-OWNED /srv binds, not named volumes — an arbitrary-uid worker can't
+  # write a root-initialized named volume.  Only the fixed-uid state service and
+  # the agent/scholar keep named volumes.
   state:
     name: ${PROJECT}_builder_state
-  scribe_state:
-    name: ${PROJECT}_scribe_state
   scholar_burn:
     name: ${PROJECT}_scholar_burn
