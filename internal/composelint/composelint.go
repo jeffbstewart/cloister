@@ -44,6 +44,7 @@ type service struct {
 	Command  []string `yaml:"command"`
 	Volumes  []string `yaml:"volumes"`
 	Networks []string `yaml:"networks"`
+	User     string   `yaml:"user"`
 }
 
 type networkDef struct {
@@ -65,6 +66,17 @@ func (s service) hasNet(n string) bool {
 		}
 	}
 	return false
+}
+
+// runsAsRoot reports whether the service would run as root: an unset user (the
+// image default, often root) or an explicit uid/name of 0/root.  A deploy-time
+// ${WORKSPACE_UID:?...} reference reads as non-root, which is the point.
+func (s service) runsAsRoot() bool {
+	id := s.User
+	if i := strings.IndexByte(id, ':'); i >= 0 {
+		id = id[:i]
+	}
+	return id == "" || id == "0" || id == "root"
 }
 
 // egressCapable returns which egress-capable networks s holds, excluding
@@ -161,6 +173,16 @@ func Check(data []byte) ([]string, error) {
 			if def, defined := c.Networks[n]; defined && !def.External && !def.Internal {
 				v = append(v, fmt.Sprintf("librarian network %q is not `internal: true` — it may grant internet egress", n))
 			}
+		}
+	}
+
+	// Workspace-touching workers must run as a non-root user: root would bypass
+	// the per-user 0700 workspace perms (reading any tree) and drop root-owned
+	// files into a user's source.  The uid is a deploy-time var; this catches a
+	// missing or hardcoded-root `user:`.
+	for _, name := range []string{"librarian", "scribe", "builder"} {
+		if svc, ok := c.Services[name]; ok && svc.runsAsRoot() {
+			v = append(v, fmt.Sprintf("%s must run as a non-root user (the workspace owner's uid); user = %q", name, svc.User))
 		}
 	}
 
