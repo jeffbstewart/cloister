@@ -34,6 +34,10 @@ secrets/
 # build context — a build artifact, never committed.
 docker/builder/agent-builder
 
+# Python bytecode from models/ build+eval tooling (qualify.py).
+__pycache__/
+*.pyc
+
 # Editor/IDE
 .idea/
 .vscode/

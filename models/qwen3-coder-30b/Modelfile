@@ -1,0 +1,36 @@
+# Copyright 2026 Jeffrey B. Stewart
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# ollama Modelfile for the liberated coder. liberate.sh substitutes @@GGUF@@
+# with the quantized artifact's path before `ollama create`.
+#
+# Parameters mirror the proven qwen3-coder-abliterated-gpu-unbound build already
+# in the store (num_gpu -1 = offload all layers to VRAM). No SYSTEM prompt: this
+# is a coder driven by the agent (qwen-code), which supplies its own guidance via
+# QWEN.md; a baked persona would fight it. The chat template rides along in the
+# GGUF from convert_hf_to_gguf.py; add an explicit TEMPLATE line here only if
+# `ollama show` reveals it did not.
+
+FROM @@GGUF@@
+
+PARAMETER num_ctx 32768
+PARAMETER num_gpu -1
+PARAMETER num_thread 12
+PARAMETER temperature 0.7
+PARAMETER top_k 20
+PARAMETER top_p 0.8
+PARAMETER repeat_penalty 1.05
+PARAMETER stop "<|im_start|>"
+PARAMETER stop "<|im_end|>"
+PARAMETER stop "<|endoftext|>"
