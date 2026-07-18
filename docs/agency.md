@@ -170,3 +170,60 @@ deep-think node: dialed by the agency via env-provided address
    engine-routing sections become agency config).
 6. Frontier, if and when decided: relay, spend ledger, content-policy
    matrix — each a deliberate, reviewable step.
+
+## Alternatives considered: adopt instead of build (2026-07-18 survey)
+
+Before implementation we surveyed the open-source gateway ecosystem
+(~35 projects, repo states verified on GitHub as of 2026-07-18) asking
+whether an existing project could serve as the agency.  Answer: no.
+Nothing implements the triad this design centers on — residency-aware
+arbitration (route to loaded models, queue over evict), caller deadline
+budgets whose queue-wait overrun advances the fallback chain, and
+two-class priority queueing.  The field splits into three shapes, none
+of them ours:
+
+- **Cloud-API aggregators** (LiteLLM, Bifrost, Portkey, the one-api
+  family): ordered fallback chains and served-by attribution exist, but
+  the routing assumes stateless cloud backends — no concept of a model
+  as a heavyweight resident whose mis-route costs an evict-and-reload.
+- **Home-lab proxies** (Olla, llama-swap, llmlb, SOLLOL): residency
+  signals and presence handling, but no class chains with terminal
+  refusal, no caller deadlines, no request priority.
+- **Datacenter routers** (llm-d and the Kubernetes
+  gateway-api-inference-extension; Envoy AI Gateway's k8s inference
+  extension): these genuinely do cache-aware placement, criticality
+  classes, and flow control — as Kubernetes-native vLLM infrastructure.
+  Right semantics, wrong scale for a three-node fleet.
+
+Point-in-time disqualifications worth recording (they date quickly):
+TensorZero archived June 2026; Kong gates fallback, priority balancing,
+and circuit breakers behind its enterprise tier; Portkey is
+mid-acquisition (Palo Alto Networks) with contradictory license
+signals; Arch/Plano pivoted to semantic routing where an LLM — hosted
+in their cloud by default — picks the route, the opposite of "never
+silently substitute," with default egress on top.
+
+**Near miss: Olla** (thushan/olla — Go, Apache-2.0, single binary, no
+external deps, no telemetry).  It already has strict no-substitute
+model routing, per-node attribution headers, health checks and circuit
+breakers tuned for nodes that come and go, and KV-cache sticky
+sessions.  It lacks exactly the scheduler contract: engine classes
+mapping to chains of different (node, model) tiers, residency
+arbitration, caller budgets, priority classes — and its status
+endpoints share the consumer listener, which violates this design's
+no-status-on-the-consumer-port invariant.  It is pre-1.0 with
+effectively one maintainer.  Forking it would mean auditing and
+carrying a whole third-party proxy — in the seat that sees every
+prompt — to save writing the easy passthrough parts, while still
+building the hard parts inside someone else's architecture.  Its
+design is worth reading before implementing the router; its code is
+not worth adopting as the sole inference door.
+
+Confirmations picked up along the way: ollama through v0.32.x remains
+strictly single-host (the three knobs above unchanged; `/api/ps` is
+still the residency signal to poll), and llm-d's criticality and
+flow-control machinery is independent prior art for
+deadline-advances-chain at datacenter scale.  Several projects handle
+a sleeping node by waking it over the LAN; our rule is the opposite —
+the agency never wakes a node, so presence probing stays
+detection-only.
