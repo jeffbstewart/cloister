@@ -41,6 +41,15 @@ nodes:
     maxInFlight: 4            # requests the door lets run on this node at
                               # once; beyond it, requests wait in the door's
                               # two-class queue (interactive ahead of batch)
+    models:                   # the CLOSED set of model tags allowed here —
+                              # chains may only ask this node for these, so
+                              # nothing routable can trigger an eviction.
+                              # Use full tags as `ollama ls` shows them, and
+                              # size the node's OLLAMA_MAX_LOADED_MODELS to
+                              # hold the whole set. Probes assert the set
+                              # against /api/ps and log drift.
+      - coder-model:30b
+      - tiny-model:3b
 
 classes:
   interactive-code:

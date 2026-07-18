@@ -59,6 +59,8 @@ nodes:
   infer:
     url: %s
     maxInFlight: 4
+    models:
+      - coder-model:30b
 classes:
   chat:
     priority: interactive
@@ -160,9 +162,13 @@ nodes:
   gone:
     url: %s
     maxInFlight: 4
+    models:
+      - big-model:x
   backup:
     url: %s
     maxInFlight: 4
+    models:
+      - small-model:y
 classes:
   chat:
     priority: interactive
@@ -218,9 +224,13 @@ nodes:
   busy:
     url: %s
     maxInFlight: 1
+    models:
+      - big-model:x
   backup:
     url: %s
     maxInFlight: 4
+    models:
+      - small-model:y
 classes:
   chat:
     priority: interactive
@@ -294,9 +304,13 @@ nodes:
   gone:
     url: http://gone-node:11434
     maxInFlight: 4
+    models:
+      - big-model:x
   backup:
     url: http://backup-node:11434
     maxInFlight: 4
+    models:
+      - small-model:y
 classes:
   chat:
     priority: interactive
@@ -360,6 +374,8 @@ nodes:
   infer:
     url: %s
     maxInFlight: 1
+    models:
+      - coder-model:30b
 classes:
   chat:
     priority: interactive
@@ -426,6 +442,9 @@ nodes:
   infer:
     url: %s
     maxInFlight: 4
+    models:
+      - coder-model:30b
+      - tiny-model:3b
 classes:
   chat:
     priority: interactive
@@ -625,6 +644,8 @@ nodes:
   infer:
     url: http://infer:11434
     maxInFlight: 4
+    models:
+      - coder-model:30b
 classes:
   chat:
     priority: interactive
@@ -665,6 +686,9 @@ nodes:
   infer:
     url: http://infer:11434
     maxInFlight: 4
+    models:
+      - coder-model:30b
+      - big-moe:latest
 classes:
   chat:
     priority: interactive
