@@ -67,9 +67,15 @@ The **agency**: the sole inference door.
   door cannot be asked for anything that would displace a resident.  The
   operator sizes each node's OLLAMA_MAX_LOADED_MODELS to its pinned set.
   Probes assert the pinned set against the node's /api/ps and log
-  drift — a pinned model not yet loaded (cold start or keep-alive lapse;
-  it loads on its next request) or a FOREIGN resident (something other
-  than the door reached the node).  Residency never steers routing.
+  drift — a pinned model not yet loaded (a cold start after
+  reboot/deploy) or a FOREIGN resident (something other than the door
+  reached the node).  Residency never steers routing.  A cold pinned
+  model is PRELOADED (2026-07-18): the sweep sends ollama's load-only
+  request (POST /api/generate, model named, no prompt, keep_alive -1)
+  so the model is warm before anyone asks — safe unprompted precisely
+  because pinning makes eviction impossible.  Nodes set
+  OLLAMA_KEEP_ALIVE=-1 to match: real requests reset the idle timer
+  from the server default, so any other value undoes the pin.
 - **Session affinity: a non-goal** (2026-07-18).  Ollama's "prompt
   cache" is the per-slot KV cache in GPU memory: llama.cpp reuses the
   longest matching token prefix when a request lands on a slot, so
@@ -197,8 +203,10 @@ deep-think node: dialed by the agency via env-provided address
    interval; chains skip a node marked absent without a dial and pick it
    back up at the next probe after it returns; detection only, never
    wake-on-LAN).  Residency — **DONE** as pinned per-node model sets
-   (never-evict by construction; probes assert the sets against /api/ps
-   and log drift); session affinity recorded as a non-goal (see Shape).
+   (never-evict by construction; probes assert the sets against /api/ps,
+   log drift, and preload cold pinned models; nodes never idle-unload —
+   OLLAMA_KEEP_ALIVE=-1); session affinity recorded as a non-goal (see
+   Shape).
    The deep-think node itself is wired in at turn-on via its
    env-provided address.
 4. The status volume + the state services' Inference panel.

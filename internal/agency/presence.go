@@ -43,7 +43,10 @@ import (
 // marked absent that just woke serves again within one probe interval.
 type presenceTracker struct {
 	client *http.Client
-	nodes  map[string]*nodePresence
+	// preload brings cold pinned models up as soon as a sweep finds them,
+	// instead of letting the first real caller pay the load.
+	preload *preloader
+	nodes   map[string]*nodePresence
 }
 
 // nodePresence is one node's mutable observed state: the reachability flag
@@ -80,7 +83,8 @@ func newPresenceTracker(cfg *RouterConfig) *presenceTracker {
 				DialContext: (&net.Dialer{Timeout: cfg.probeTimeout}).DialContext,
 			},
 		},
-		nodes: make(map[string]*nodePresence, len(cfg.nodes)),
+		preload: newPreloader(),
+		nodes:   make(map[string]*nodePresence, len(cfg.nodes)),
 	}
 	for name, node := range cfg.nodes {
 		p := &nodePresence{url: node.url, pinned: node.models}
@@ -123,7 +127,8 @@ func (t *presenceTracker) probeAll(ctx context.Context) {
 // says is actually resident.  Residency never steers routing (the pinned
 // config already makes a bad ask unroutable); this is the drift alarm — a
 // pinned model not yet loaded, or a foreign model that something other than
-// the door put there.
+// the door put there — and the trigger that preloads cold pinned models so
+// the first real caller finds them warm.
 func (t *presenceTracker) probeResidency(ctx context.Context, name string, node *nodePresence) {
 	resident, err := t.fetchResident(ctx, node.url)
 	if err != nil {
@@ -134,6 +139,12 @@ func (t *presenceTracker) probeResidency(ctx context.Context, name string, node 
 	}
 	if node.setResidency(resident, true) {
 		log.Printf("agency: node %s %s", name, describeResidency(resident, node.pinned))
+	}
+	// Every sweep, not just transitions: a load that failed retries as long
+	// as the model stays cold (the in-flight ledger stops duplicates while
+	// one is still running).
+	if cold := subtract(node.pinned, resident); len(cold) > 0 {
+		t.preload.ensureLoaded(name, node.url, cold)
 	}
 }
 
@@ -156,10 +167,10 @@ func (t *presenceTracker) residency(node string) ([]string, bool) {
 }
 
 // describeResidency renders one residency observation against the pinned
-// set: what is loaded, which pinned models are not (a cold start or a
-// keep-alive lapse — they load on their next request), and which residents
-// are FOREIGN (nothing the door routes can have loaded them, so someone
-// else reached the node).
+// set: what is loaded, which pinned models are not (a cold start — the
+// preloader is already bringing them up), and which residents are FOREIGN
+// (nothing the door routes can have loaded them, so someone else reached
+// the node).
 func describeResidency(resident, pinned []string) string {
 	msg := "resident models: " + joinOrNone(resident)
 	if cold := subtract(pinned, resident); len(cold) > 0 {
