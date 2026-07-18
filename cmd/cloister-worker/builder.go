@@ -29,6 +29,7 @@ import (
 	"github.com/jeffbstewart/cloister/internal/runid"
 	"github.com/jeffbstewart/cloister/internal/runner"
 	"github.com/jeffbstewart/cloister/internal/status/sink"
+	"github.com/jeffbstewart/cloister/internal/warming"
 )
 
 // builderRole parses the builder's flag set and returns its bootstrap.
@@ -40,8 +41,23 @@ func builderRole(args []string) (func(), error) {
 	stateURL := fs.String("state-url", envOr("STATE_URL", ""), "base URL of the state service")
 	toolchainFile := fs.String("toolchain-file", "/etc/cloister-worker/toolchain",
 		"file holding this image's toolchain id")
+	markWarmed := fs.Bool("mark-warmed", false,
+		"record that the airlock warmed this toolchain's cache, then exit (run via docker exec by the warming script)")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
+	}
+	if *markWarmed {
+		return func() {
+			id, err := readToolchainID(*toolchainFile)
+			if err != nil {
+				log.Fatalf("mark-warmed: %v", err)
+			}
+			path, err := warmingConfig(id).Mark()
+			if err != nil {
+				log.Fatalf("mark-warmed: %v", err)
+			}
+			log.Printf("recorded toolchain %s warming at %s", id, path)
+		}, nil
 	}
 	return common.runOrProbe(func() {
 		runBuilder(builderOptions{
@@ -49,6 +65,32 @@ func builderRole(args []string) (func(), error) {
 			StateURL: *stateURL, ToolchainFile: *toolchainFile,
 		})
 	}), nil
+}
+
+// readToolchainID loads the id the toolchain image baked; the builder has
+// no identity without one.
+func readToolchainID(path string) (string, error) {
+	tc, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read toolchain id: %w", err)
+	}
+	id := strings.TrimSpace(string(tc))
+	if id == "" {
+		return "", fmt.Errorf("empty toolchain id in %s", path)
+	}
+	return id, nil
+}
+
+// warmingConfig locates the warming handshake for this toolchain: the
+// image-baked instructions and the marker in the per-user cache home
+// (HOME rides the BUILD_HOME bind, so the marker lives beside the caches
+// it vouches for).
+func warmingConfig(toolchainID string) warming.Config {
+	return warming.Config{
+		InstructionsPath: warming.DefaultInstructionsPath,
+		CacheHome:        envOr("HOME", "/home/build"),
+		ToolchainID:      toolchainID,
+	}
 }
 
 // builderOptions carries the builder's bootstrap inputs; named fields at
@@ -62,13 +104,9 @@ type builderOptions struct {
 }
 
 func runBuilder(o builderOptions) {
-	tc, err := os.ReadFile(o.ToolchainFile)
+	toolchainID, err := readToolchainID(o.ToolchainFile)
 	if err != nil {
-		log.Fatalf("read toolchain id: %v", err)
-	}
-	toolchainID := strings.TrimSpace(string(tc))
-	if toolchainID == "" {
-		log.Fatalf("empty toolchain id in %s", o.ToolchainFile)
+		log.Fatal(err)
 	}
 
 	token := os.Getenv("STATE_TOKEN")
@@ -93,6 +131,7 @@ func runBuilder(o builderOptions) {
 		},
 		Audit:      stateSink.Client, // *sink.Client satisfies mcpserver.Auditor
 		LogFetcher: stateSink.Client, // ...and mcpserver.LogFetcher
+		WarmCheck:  warmingConfig(toolchainID).Check,
 	})
 	serveHTTP(&http.Server{Addr: o.Addr, Handler: srv.Handler()},
 		fmt.Sprintf("mcp (toolchain %s → state %s)", toolchainID, o.StateURL))

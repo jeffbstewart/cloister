@@ -74,6 +74,10 @@ type Config struct {
 	Runner       *runner.Runner
 	Audit        Auditor
 	LogFetcher   LogFetcher // optional: get_log fallback to durable storage
+	// WarmCheck, when set, runs before every action: a non-nil error
+	// refuses the action, handing the error's text (the toolchain's
+	// warming instructions) back to the caller.  See internal/warming.
+	WarmCheck func() error
 }
 
 // Server owns the MCP tool surface and the HTTP handler around it.
@@ -170,6 +174,16 @@ func (s *Server) runAction(ctx context.Context, name string, req *mcp.CallToolRe
 		rec := audit.New(id, name, d, dur)
 		rec.Detail = cmd
 		s.audit(rec)
+	}
+
+	// The warming gate: while the toolchain's offline cache is unprimed,
+	// refuse with the baked instructions instead of letting the build die
+	// inside offline dependency resolution (internal/warming).
+	if s.cfg.WarmCheck != nil {
+		if err := s.cfg.WarmCheck(); err != nil {
+			emit(opID, audit.DecisionRejectedUnwarmed, 0)
+			return errResult(err.Error()), nil
+		}
 	}
 
 	// Fresh read on every call: manifest edits take effect without a

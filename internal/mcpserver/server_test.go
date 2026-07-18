@@ -95,6 +95,13 @@ caches:
 
 func newFixture(t *testing.T, withManifest bool) *fixture {
 	t.Helper()
+	return newFixtureCfg(t, withManifest, nil)
+}
+
+// newFixtureCfg is newFixture with a hook to adjust the server config
+// before construction (e.g. installing a WarmCheck).
+func newFixtureCfg(t *testing.T, withManifest bool, mutate func(*Config)) *fixture {
+	t.Helper()
 	ws := t.TempDir()
 	state := t.TempDir()
 	logs := filepath.Join(state, "logs")
@@ -115,7 +122,7 @@ func newFixture(t *testing.T, withManifest bool) *fixture {
 	}
 	t.Cleanup(func() { al.Close() })
 
-	srv := New(Config{
+	cfg := Config{
 		Version:      "test",
 		ToolchainID:  "tc-test",
 		Workspace:    ws,
@@ -127,7 +134,11 @@ func newFixture(t *testing.T, withManifest bool) *fixture {
 			KillGrace:   200 * time.Millisecond,
 		},
 		Audit: al,
-	})
+	}
+	if mutate != nil {
+		mutate(&cfg)
+	}
+	srv := New(cfg)
 
 	clientT, serverT := mcp.NewInMemoryTransports()
 	ctx := context.Background()
@@ -233,6 +244,42 @@ func TestActionLifecycle(t *testing.T) {
 	// run array plus the validated param appear in the audit line.
 	if !strings.Contains(string(data), `"argv":`) || !strings.Contains(string(data), `"--filter","SomeTest"`) {
 		t.Errorf("audit did not record the resolved argv:\n%s", data)
+	}
+}
+
+// TestWarmingGate: while WarmCheck refuses, actions return its text (the
+// toolchain's warming instructions) without running, and the refusal is
+// audited; once it passes, the same action runs.
+func TestWarmingGate(t *testing.T) {
+	warmed := false
+	instructions := "toolchain tc-test has not been warmed: run bin\\update-gradle-deps.bat"
+	f := newFixtureCfg(t, true, func(c *Config) {
+		c.WarmCheck = func() error {
+			if !warmed {
+				return fmt.Errorf("%s", instructions)
+			}
+			return nil
+		}
+	})
+
+	text, isErr := callTool(t, f, "run_ok", nil)
+	if !isErr {
+		t.Fatalf("unwarmed action ran: %q", text)
+	}
+	if !strings.Contains(text, instructions) {
+		t.Errorf("refusal %q does not carry the warming instructions", text)
+	}
+	data, err := os.ReadFile(f.auditPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(data), `"decision":"rejected_unwarmed"`); got != 1 {
+		t.Errorf(`%d "rejected_unwarmed" decisions, want 1:%s`, got, data)
+	}
+
+	warmed = true
+	if text, isErr := callTool(t, f, "run_ok", nil); isErr {
+		t.Errorf("warmed action refused: %q", text)
 	}
 }
 

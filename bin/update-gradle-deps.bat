@@ -127,6 +127,15 @@ if not "%WARMUP_RC%"=="0" (
     exit /b %WARMUP_RC%
 )
 
+REM Record the warm (internal/warming): the builder refuses actions with
+REM warming instructions until this marker exists in its cache home.
+docker exec %CONTAINER% /usr/local/bin/builder -mark-warmed
+if errorlevel 1 (
+    echo WARNING: warm succeeded but recording it FAILED; builds stay refused.
+    echo Retry:  docker exec %CONTAINER% /usr/local/bin/builder -mark-warmed
+    exit /b 3
+)
+
 echo.
 echo Done: %PROJECT% gradle cache refreshed; airlock closed.
 exit /b 0

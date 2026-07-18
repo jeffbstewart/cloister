@@ -20,6 +20,9 @@ const (
 	DecisionRejectedParam      Decision = "rejected_param"
 	DecisionRejectedBusy       Decision = "rejected_busy"
 	DecisionRejectedNoManifest Decision = "rejected_no_manifest"
+	// DecisionRejectedUnwarmed: the toolchain's offline dependency cache
+	// has not been primed through the airlock (internal/warming).
+	DecisionRejectedUnwarmed Decision = "rejected_unwarmed"
 )
 
 // CommandDetail is a builder command's record body: a manifest action

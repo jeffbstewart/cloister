@@ -104,6 +104,7 @@ func TestRoleParsersAcceptTheirOwnFlags(t *testing.T) {
 		args []string
 	}{
 		{"builder", nil},
+		{"builder", []string{"-mark-warmed"}},
 		{"state-service", nil},
 		{"scribe", []string{"-scribe-approvals"}},
 		{"scholar", nil},

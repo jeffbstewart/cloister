@@ -60,6 +60,21 @@ RUN mkdir -p /etc/cloister-worker /home/builder /spool \
 # not agent-writable). Resolves all configs so offline build/test/coverage work.
 COPY warm-deps.gradle /etc/cloister-worker/warm-deps.gradle
 
+# Warming contract (internal/warming): this file's PRESENCE makes the
+# builder refuse actions until the airlock has recorded a warm for this
+# toolchain, and its CONTENT is the instruction that refusal carries.
+COPY <<'EOF' /etc/cloister-worker/warming
+This cell's builds run offline: dependencies enter only through the
+human-gated airlock (docs/GETTING_STARTED.md, "Prime the Gradle cache").
+From the cloister repository on the host, run
+
+    bin\update-gradle-deps.bat <PROJECT> <workspace-path>
+
+(<PROJECT> is the cell's short project id, <workspace-path> the host path
+of its repo).  The airlock warms the Gradle cache with temporary egress,
+closes it, and records the warm; then retry this action.
+EOF
+
 USER builder
 EXPOSE 9200
 # The generic entrypoint: compose overrides it with the builder role link;
