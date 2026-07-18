@@ -48,6 +48,27 @@ func newRoutingServer(t *testing.T, yaml string) *httptest.Server {
 	return ts
 }
 
+// chatClassYAML renders a one-node, one-class config with the standard
+// budgets these tests share.
+func chatClassYAML(nodeURL string) string {
+	return fmt.Sprintf(`
+nodes:
+  infer:
+    url: %s
+    maxInFlight: 4
+classes:
+  chat:
+    priority: interactive
+    deadline: 90s
+    maxDeadline: 5m
+    queueWait: 10s
+    maxQueueWait: 1m
+    chain:
+      - node: infer
+        model: coder-model:30b
+`, nodeURL)
+}
+
 // deadServerURL returns a URL nothing listens on: a real listener's address,
 // closed before use, so a dial is refused fast.
 func deadServerURL(t *testing.T) string {
@@ -59,12 +80,12 @@ func deadServerURL(t *testing.T) string {
 
 // TestRouterRoutesFirstLink: the happy path.  The class's first link gets the
 // request with the model field rewritten to the link's model tag and every
-// other field intact, the control header is stripped, and the response comes
-// back intact plus the node/model provenance header.
+// other field intact, the control headers are stripped, and the response
+// comes back intact plus the node/model provenance header.
 func TestRouterRoutesFirstLink(t *testing.T) {
 	var got struct {
-		model, host, deadlineHeader string
-		messages                    any
+		model, host, deadlineHeader, queueWaitHeader string
+		messages                                     any
 	}
 	node := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
@@ -75,22 +96,13 @@ func TestRouterRoutesFirstLink(t *testing.T) {
 		got.messages = body["messages"]
 		got.host = r.Host
 		got.deadlineHeader = r.Header.Get(DeadlineHeader)
+		got.queueWaitHeader = r.Header.Get(QueueWaitHeader)
 		w.Header().Set("Content-Type", "application/json")
 		io.WriteString(w, `{"choices":[]}`)
 	}))
 	defer node.Close()
 
-	ts := newRoutingServer(t, fmt.Sprintf(`
-nodes:
-  infer: %s
-classes:
-  chat:
-    deadline: 90s
-    maxDeadline: 5m
-    chain:
-      - node: infer
-        model: coder-model:30b
-`, node.URL))
+	ts := newRoutingServer(t, chatClassYAML(node.URL))
 
 	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions",
 		strings.NewReader(`{"model":"chat","messages":[{"role":"user","content":"hi"}]}`))
@@ -98,6 +110,7 @@ classes:
 		t.Fatal(err)
 	}
 	req.Header.Set(DeadlineHeader, "60s")
+	req.Header.Set(QueueWaitHeader, "5s")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -113,8 +126,8 @@ classes:
 	if wantHost := strings.TrimPrefix(node.URL, "http://"); got.host != wantHost {
 		t.Errorf("node saw Host %q, want %q", got.host, wantHost)
 	}
-	if got.deadlineHeader != "" {
-		t.Errorf("node saw %s %q, want the control header stripped", DeadlineHeader, got.deadlineHeader)
+	if got.deadlineHeader != "" || got.queueWaitHeader != "" {
+		t.Errorf("node saw control headers %q/%q, want both stripped", got.deadlineHeader, got.queueWaitHeader)
 	}
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
@@ -138,12 +151,19 @@ func TestRouterAdvancesPastDeadLink(t *testing.T) {
 
 	ts := newRoutingServer(t, fmt.Sprintf(`
 nodes:
-  gone: %s
-  backup: %s
+  gone:
+    url: %s
+    maxInFlight: 4
+  backup:
+    url: %s
+    maxInFlight: 4
 classes:
   chat:
+    priority: interactive
     deadline: 90s
     maxDeadline: 5m
+    queueWait: 10s
+    maxQueueWait: 1m
     chain:
       - node: gone
         model: big-model:x
@@ -165,20 +185,121 @@ classes:
 	}
 }
 
+// TestRouterAdvancesPastBusyLink: a full node whose queue budget runs out is
+// an unavailable link — the chain advances instead of stalling.  The first
+// request parks inside the busy node's handler (slot held); the second
+// request's 5ms queue budget fires — a guaranteed event, not a sleep — and
+// the fallback serves it.
+func TestRouterAdvancesPastBusyLink(t *testing.T) {
+	occupied := make(chan struct{})
+	release := make(chan struct{})
+	busy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(occupied)
+		<-release
+		io.WriteString(w, `{"choices":[]}`)
+	}))
+	defer busy.Close()
+	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"choices":[]}`)
+	}))
+	defer backup.Close()
+
+	ts := newRoutingServer(t, fmt.Sprintf(`
+nodes:
+  busy:
+    url: %s
+    maxInFlight: 1
+  backup:
+    url: %s
+    maxInFlight: 4
+classes:
+  chat:
+    priority: interactive
+    deadline: 90s
+    maxDeadline: 5m
+    queueWait: 5ms
+    maxQueueWait: 1m
+    chain:
+      - node: busy
+        model: big-model:x
+      - node: backup
+        model: small-model:y
+`, busy.URL, backup.URL))
+
+	firstDone := make(chan error, 1)
+	go func() {
+		resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json",
+			strings.NewReader(`{"model":"chat"}`))
+		if err == nil {
+			resp.Body.Close()
+		}
+		firstDone <- err
+	}()
+	<-occupied // the busy node's only slot is now held
+
+	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json",
+		strings.NewReader(`{"model":"chat"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200 from the fallback link", resp.StatusCode)
+	}
+	if served := resp.Header.Get(servedByHeader); served != "backup/small-model:y" {
+		t.Errorf("%s = %q, want the fallback link past the busy node", servedByHeader, served)
+	}
+
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first request: %v", err)
+	}
+}
+
+// TestRouterFreesSlotAfterResponse: a completed response hands its node slot
+// back.  With maxInFlight 1 and a 5ms queue budget, a leaked slot would turn
+// the second request into a fast chain-exhausted refusal.
+func TestRouterFreesSlotAfterResponse(t *testing.T) {
+	node := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"choices":[]}`)
+	}))
+	defer node.Close()
+
+	ts := newRoutingServer(t, fmt.Sprintf(`
+nodes:
+  infer:
+    url: %s
+    maxInFlight: 1
+classes:
+  chat:
+    priority: interactive
+    deadline: 90s
+    maxDeadline: 5m
+    queueWait: 5ms
+    maxQueueWait: 1m
+    chain:
+      - node: infer
+        model: coder-model:30b
+`, node.URL))
+
+	for i := 0; i < 2; i++ {
+		resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json",
+			strings.NewReader(`{"model":"chat"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("request %d status = %d, want 200 (a non-200 second request means the slot leaked)", i, resp.StatusCode)
+		}
+	}
+}
+
 // TestRouterChainExhaustedRefusal: every link unreachable is a distinct,
 // fast refusal naming the class — never a mystery stall.
 func TestRouterChainExhaustedRefusal(t *testing.T) {
-	ts := newRoutingServer(t, fmt.Sprintf(`
-nodes:
-  gone: %s
-classes:
-  chat:
-    deadline: 90s
-    maxDeadline: 5m
-    chain:
-      - node: gone
-        model: big-model:x
-`, deadServerURL(t)))
+	ts := newRoutingServer(t, chatClassYAML(deadServerURL(t)))
 
 	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json",
 		strings.NewReader(`{"model":"chat"}`))
@@ -209,17 +330,25 @@ func TestRouterRefusesBadRequests(t *testing.T) {
 
 	ts := newRoutingServer(t, fmt.Sprintf(`
 nodes:
-  infer: %s
+  infer:
+    url: %s
+    maxInFlight: 4
 classes:
   chat:
+    priority: interactive
     deadline: 90s
     maxDeadline: 5m
+    queueWait: 10s
+    maxQueueWait: 1m
     chain:
       - node: infer
         model: coder-model:30b
   summarize-cheap:
+    priority: batch
     deadline: 30s
     maxDeadline: 2m
+    queueWait: 30s
+    maxQueueWait: 2m
     chain:
       - node: infer
         model: tiny-model:3b
@@ -228,19 +357,31 @@ classes:
 	cases := []struct {
 		name       string
 		body       string
+		header     http.Header
 		wantStatus int
 		wantInBody string
 	}{
-		{"unknown class", `{"model":"ghost"}`, http.StatusNotFound, "configured: chat, summarize-cheap"},
-		{"missing model", `{"messages":[]}`, http.StatusBadRequest, "configured: chat, summarize-cheap"},
-		{"model not a string", `{"model":7}`, http.StatusBadRequest, "JSON string"},
-		{"invalid class name", `{"model":"bad name"}`, http.StatusBadRequest, "invalid engine class name"},
-		{"not a JSON object", `[1,2]`, http.StatusBadRequest, "JSON object"},
+		{"unknown class", `{"model":"ghost"}`, nil, http.StatusNotFound, "configured: chat, summarize-cheap"},
+		{"missing model", `{"messages":[]}`, nil, http.StatusBadRequest, "configured: chat, summarize-cheap"},
+		{"model not a string", `{"model":7}`, nil, http.StatusBadRequest, "JSON string"},
+		{"invalid class name", `{"model":"bad name"}`, nil, http.StatusBadRequest, "invalid engine class name"},
+		{"not a JSON object", `[1,2]`, nil, http.StatusBadRequest, "JSON object"},
+		{"deadline over class cap", `{"model":"chat"}`,
+			http.Header{DeadlineHeader: []string{"10m"}}, http.StatusBadRequest, "exceeds class"},
+		{"queue wait over class cap", `{"model":"chat"}`,
+			http.Header{QueueWaitHeader: []string{"10m"}}, http.StatusBadRequest, "exceeds class"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json",
+			req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions",
 				strings.NewReader(tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for name, vals := range tc.header {
+				req.Header[name] = vals
+			}
+			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -297,6 +438,24 @@ func TestRequestDeadline(t *testing.T) {
 	}
 }
 
+// TestRequestQueueWait: the queue budget resolves against its own class
+// fields — the shared header semantics are covered by TestRequestDeadline.
+func TestRequestQueueWait(t *testing.T) {
+	route := classRoute{
+		queueWait:    10 * time.Second,
+		maxQueueWait: time.Minute,
+	}
+	if got, err := requestQueueWait(route, ""); err != nil || got != 10*time.Second {
+		t.Errorf("requestQueueWait(absent) = %s, %v; want the class default 10s", got, err)
+	}
+	if got, err := requestQueueWait(route, "2s"); err != nil || got != 2*time.Second {
+		t.Errorf("requestQueueWait(2s) = %s, %v; want 2s", got, err)
+	}
+	if _, err := requestQueueWait(route, "5m"); err == nil {
+		t.Error("requestQueueWait over the cap succeeded, want refusal")
+	}
+}
+
 // recordingTransport is the injected round-tripper seam: it records the
 // per-attempt request and answers 200 without any network.
 type recordingTransport struct {
@@ -319,17 +478,7 @@ func (rt *recordingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 // clock — no sleeps: the deadline either is or is not within the budget.
 func TestRouterAppliesDeadline(t *testing.T) {
 	rec := &recordingTransport{}
-	rt := newRouter(routerConfig(t, `
-nodes:
-  infer: http://infer:11434
-classes:
-  chat:
-    deadline: 90s
-    maxDeadline: 5m
-    chain:
-      - node: infer
-        model: coder-model:30b
-`), rec)
+	rt := newRouter(routerConfig(t, chatClassYAML("http://infer:11434")), rec)
 	ts := httptest.NewServer(rt)
 	defer ts.Close()
 
@@ -377,11 +526,16 @@ func (blockedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 func TestRouterDeadlineExhaustedRefusal(t *testing.T) {
 	rt := newRouter(routerConfig(t, `
 nodes:
-  infer: http://infer:11434
+  infer:
+    url: http://infer:11434
+    maxInFlight: 4
 classes:
   chat:
+    priority: interactive
     deadline: 5ms
     maxDeadline: 5m
+    queueWait: 10s
+    maxQueueWait: 1m
     chain:
       - node: infer
         model: coder-model:30b
@@ -409,17 +563,25 @@ classes:
 func TestRouterServesModelList(t *testing.T) {
 	ts := newRoutingServer(t, `
 nodes:
-  infer: http://infer:11434
+  infer:
+    url: http://infer:11434
+    maxInFlight: 4
 classes:
   chat:
+    priority: interactive
     deadline: 90s
     maxDeadline: 5m
+    queueWait: 10s
+    maxQueueWait: 1m
     chain:
       - node: infer
         model: coder-model:30b
   deep-think:
+    priority: batch
     deadline: 2m
     maxDeadline: 10m
+    queueWait: 30s
+    maxQueueWait: 5m
     chain:
       - node: infer
         model: big-moe:latest
@@ -466,17 +628,7 @@ func TestRouterStreamsChunksAsTheyArrive(t *testing.T) {
 	}))
 	defer node.Close()
 
-	ts := newRoutingServer(t, fmt.Sprintf(`
-nodes:
-  infer: %s
-classes:
-  chat:
-    deadline: 90s
-    maxDeadline: 5m
-    chain:
-      - node: infer
-        model: coder-model:30b
-`, node.URL))
+	ts := newRoutingServer(t, chatClassYAML(node.URL))
 
 	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json",
 		strings.NewReader(`{"model":"chat","stream":true}`))

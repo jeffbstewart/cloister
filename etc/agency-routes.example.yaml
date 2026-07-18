@@ -20,28 +20,40 @@
 # table you did not choose.
 #
 # Consumers put a CLASS name in the request's `model` field, never a model
-# tag or a URL; GET /v1/models lists the classes. An unavailable link means
-# the next link in the chain; an exhausted chain is a refusal, never a
-# silent substitute. Callers may tighten their budget per request with the
-# Agency-Deadline header (a Go duration string, e.g. "45s") up to the
-# class's maxDeadline.
+# tag or a URL; GET /v1/models lists the classes. An unavailable OR
+# too-busy link means the next link in the chain; an exhausted chain is a
+# refusal, never a silent substitute. Callers may tighten their budgets per
+# request with the Agency-Deadline and Agency-Queue-Wait headers (Go
+# duration strings, e.g. "45s") up to the class's maxima.
 
 nodes:
-  # node name -> base URL, scheme://host[:port] only. Addresses beyond the
-  # infra stack (a LAN node) belong here in your copy, not in the repo.
-  infer: http://infer:11434
+  # Addresses beyond the infra stack (a LAN node) belong here in your copy,
+  # not in the repo.
+  infer:
+    url: http://infer:11434   # base URL, scheme://host[:port] only
+    maxInFlight: 4            # requests the door lets run on this node at
+                              # once; beyond it, requests wait in the door's
+                              # two-class queue (interactive ahead of batch)
 
 classes:
   interactive-code:
+    priority: interactive  # interactive | batch: who queues ahead when a
+                           # node slot frees
     deadline: 90s          # default total budget (queue + decode) when the
                            # caller sends no Agency-Deadline header
     maxDeadline: 10m       # hard cap; a caller asking past it is refused
+    queueWait: 10s         # default per-link queue budget: waiting longer
+                           # for a node slot advances the chain
+    maxQueueWait: 1m       # hard cap on Agency-Queue-Wait asks
     chain:                 # ordered fallback: first reachable link serves
       - node: infer
         model: coder-model:30b   # the tag ollama knows on that node
   summarize-cheap:
+    priority: batch
     deadline: 30s
     maxDeadline: 2m
+    queueWait: 30s
+    maxQueueWait: 2m
     chain:
       - node: infer
         model: tiny-model:3b
