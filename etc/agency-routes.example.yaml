@@ -1,0 +1,47 @@
+# Copyright 2026 Jeffrey B. Stewart
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Agency engine-class routing — TEMPLATE (docs/agency.md).
+#
+# Mount read-only into the agency container and start the door with
+# `-config <path>`. FAIL-CLOSED: an unknown key, a missing field, or a chain
+# link naming an unlisted node refuses startup — the door never routes on a
+# table you did not choose.
+#
+# Consumers put a CLASS name in the request's `model` field, never a model
+# tag or a URL; GET /v1/models lists the classes. An unavailable link means
+# the next link in the chain; an exhausted chain is a refusal, never a
+# silent substitute. Callers may tighten their budget per request with the
+# Agency-Deadline header (a Go duration string, e.g. "45s") up to the
+# class's maxDeadline.
+
+nodes:
+  # node name -> base URL, scheme://host[:port] only. Addresses beyond the
+  # infra stack (a LAN node) belong here in your copy, not in the repo.
+  infer: http://infer:11434
+
+classes:
+  interactive-code:
+    deadline: 90s          # default total budget (queue + decode) when the
+                           # caller sends no Agency-Deadline header
+    maxDeadline: 10m       # hard cap; a caller asking past it is refused
+    chain:                 # ordered fallback: first reachable link serves
+      - node: infer
+        model: coder-model:30b   # the tag ollama knows on that node
+  summarize-cheap:
+    deadline: 30s
+    maxDeadline: 2m
+    chain:
+      - node: infer
+        model: tiny-model:3b

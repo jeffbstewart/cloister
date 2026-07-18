@@ -53,6 +53,14 @@ func TestNewFailsClosedOnBadConfig(t *testing.T) {
 	}
 }
 
+// TestNewRejectsBothModes: pass-through and class routing are a deliberate
+// either/or, never resolved by precedence.
+func TestNewRejectsBothModes(t *testing.T) {
+	if _, err := New(Config{UpstreamURL: "http://infer:11434", Routes: &RouterConfig{}}); err == nil {
+		t.Error("New with both UpstreamURL and Routes succeeded, want error")
+	}
+}
+
 // TestPassThrough proves the door is behaviorally invisible for /v1 traffic:
 // method, path, query, request headers, and body reach the upstream intact
 // (with the Host header presented as the upstream's own name), and the
