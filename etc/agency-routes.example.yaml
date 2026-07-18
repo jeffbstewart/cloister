@@ -44,10 +44,12 @@ nodes:
     models:                   # the CLOSED set of model tags allowed here —
                               # chains may only ask this node for these, so
                               # nothing routable can trigger an eviction.
-                              # Use full tags as `ollama ls` shows them, and
-                              # size the node's OLLAMA_MAX_LOADED_MODELS to
-                              # hold the whole set. Probes assert the set
-                              # against /api/ps and log drift.
+                              # Use full tags as `ollama ls` shows them; size
+                              # the node's OLLAMA_MAX_LOADED_MODELS to hold
+                              # the whole set and set OLLAMA_KEEP_ALIVE=-1.
+                              # Probes assert the set against /api/ps, log
+                              # drift, and preload cold pinned models so the
+                              # first caller finds them warm.
       - coder-model:30b
       - tiny-model:3b
 

@@ -164,6 +164,13 @@ func TestResidencyUnknownWhenPsFails(t *testing.T) {
 	if _, known := tr.residency("up"); known {
 		t.Error("residency known despite /api/ps failing, want unknown")
 	}
+	// Unknown is not cold: no preload may fire on a node whose residency
+	// cannot be read (a non-ollama engine would be hammered forever).  Any
+	// spawn happens inside probeAll, so an unclaimed key here proves none
+	// did.
+	if !tr.preload.begin("up/coder-model:30b") {
+		t.Error("preload fired for a node with unknown residency")
+	}
 }
 
 // TestProbeRecoversAndDegradesOnStatus: a node answering non-2xx is absent —

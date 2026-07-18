@@ -78,7 +78,12 @@ services:
       - OLLAMA_HOST=0.0.0.0:11434
       - OLLAMA_MODELS=/models
       - OLLAMA_CONTEXT_LENGTH=32768
-      - OLLAMA_KEEP_ALIVE=60m
+      # Never idle-unload: the agency pins which models may live here, so
+      # nothing can evict a resident and a timeout unload would only re-buy
+      # a cold load.  The agency preloads pinned models it finds cold; real
+      # requests reset the keep-alive timer from this value, so it must be
+      # -1 or the preload's pin is undone by the first caller.
+      - OLLAMA_KEEP_ALIVE=-1
       - HOME=/home/ollama                # ephemeral, rebuilt on each launch
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility

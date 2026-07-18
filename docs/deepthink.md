@@ -78,8 +78,11 @@ The picks rot; the method doesn't.  A deep-think candidate must clear:
 - **`OLLAMA_CONTEXT_LENGTH=131072`**, **`OLLAMA_NUM_PARALLEL=1`** (each
   slot multiplies KV at full context; the agency queues instead),
   **`OLLAMA_MAX_LOADED_MODELS=2`** (both lanes resident, no eviction
-  thrash), **`OLLAMA_KEEP_ALIVE`** long, per the cell's existing
-  posture.
+  thrash), **`OLLAMA_KEEP_ALIVE=-1`** — never idle-unload: under the
+  agency's pinned model sets nothing can evict a resident, so a timeout
+  unload only re-buys a cold load (the agency preloads pinned models it
+  finds cold, and its keep_alive on that load must not be undone by the
+  next real request resetting the timer from this default).
 - **Honest limit: prefill.**  Apple Silicon prefill is compute-bound;
   feeding 100k tokens takes real minutes regardless of model.  The
   agency's caller deadlines and which-engine-served visibility keep
