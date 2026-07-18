@@ -51,6 +51,13 @@ ghcr.io/jeffbstewart/cloister-agent
   inside the published image.
 
 ghcr.io/jeffbstewart/cloister-workers
+  A scratch-based image: the Apache-2.0 cloister-worker binary plus the
+  Mozilla CA certificate bundle (copied from Alpine's ca-certificates
+  package at build time; nothing else of Alpine ships).
+    Mozilla CA certificate data (from NSS) — Mozilla Public License 2.0
+      https://www.mozilla.org/en-US/MPL/2.0/
+
+ghcr.io/jeffbstewart/cloister-builder-jvm
   Bundles Amazon Corretto 25 (a distribution of OpenJDK), from the base
   image amazoncorretto:25.
     Amazon Corretto / OpenJDK — GNU General Public License, version 2,

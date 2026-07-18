@@ -56,6 +56,7 @@ networks:
   egress: {}
 services:
   scholar:
+    image: ${REGISTRY:-x}/${WORKERS_IMAGE}
     entrypoint: ["/usr/local/bin/scholar"]
     networks: ` + scholarNets + `
     volumes: ` + scholarVols + `
@@ -73,6 +74,7 @@ services:
 	kagiCmd := `["TCP-LISTEN:8443,fork,reuseaddr", "TCP:kagi.com:443"]`
 	librarianClean := `  librarian:
     user: "1000:1000"
+    image: ${REGISTRY:-x}/${WORKERS_IMAGE}
     entrypoint: ["/usr/local/bin/librarian"]
     networks: [buildnet, statenet]
     volumes: ["/host:/workspace:ro"]
@@ -122,8 +124,20 @@ services:
 `, ""),
 		"scribe missing its role entrypoint": base(clean, noVols, kagiCmd, agentClean, librarianClean, `  scribe:
     user: "1000:1000"
+    image: ${REGISTRY:-x}/${WORKERS_IMAGE}
     networks: [buildnet, statenet]
 `),
+		// The image split: the builder is the only worker on a toolchain
+		// image, and no other worker may share one.
+		"builder on the workers image": base(clean, noVols, kagiCmd, agentClean, librarianClean, `  builder:
+    user: "1000:1000"
+    image: ${REGISTRY:-x}/${WORKERS_IMAGE}
+    entrypoint: ["/usr/local/bin/builder"]
+    networks: [buildnet, statenet]
+`),
+		"scholar on the toolchain image": strings.Replace(cleanCompose(),
+			"scholar:\n    image: ${REGISTRY:-x}/${WORKERS_IMAGE}",
+			"scholar:\n    image: ${REGISTRY:-x}/${TOOLCHAIN_IMAGE}", 1),
 	}
 	for name, yaml := range cases {
 		t.Run(name, func(t *testing.T) {

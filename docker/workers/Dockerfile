@@ -12,63 +12,45 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# cloister-workers — every cell worker role (one multi-call binary) + the
-# JDK 25 Gradle toolchain the builder role drives.  The build pipeline
-# (images.yml) cross-compiles the static cloister-worker binary into this
-# directory before `docker build`; the binary itself is never committed
-# (.gitignore).
-FROM amazoncorretto:25
+# cloister-workers — the slim, toolchain-free multi-call worker image: the
+# static cloister-worker binary and its role links on a scratch base
+# (docs/toolchains.md).  Toolchains live in per-ecosystem builder images
+# (docker/toolchains/); this image deliberately ships NO
+# /etc/cloister-worker/toolchain id, so running the builder role on it
+# fails loudly at startup instead of at first build.
+#
+# The build pipeline (images.yml) cross-compiles the static binary into
+# this directory before `docker build`; the binary itself is never
+# committed (.gitignore).
 
-# UTF-8 locale. Kotlin allows backtick-quoted test names with any Unicode, so the
-# compiler emits .class files whose NAMES carry those bytes (e.g. an em-dash in a
-# test method name). The JVM decodes filenames via sun.jnu.encoding, which
-# follows the OS locale; under the default C/POSIX (ASCII) locale, walking or
-# deleting such a file throws "Malformed input or input contains unmappable
-# characters" — which breaks `clean` and any task that scans build/. JDK 25's
-# UTF-8 file.encoding default does NOT cover filenames. A UTF-8 locale does.
-ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+# Prep stage: the artifacts scratch cannot create itself.
+#   - CA roots: the scholar verifies kagi.com's certificate against the
+#     system pool; without a bundle every research call fails x509.
+#   - passwd/group: a name for uid 1000 so user lookups resolve.
+#   - role symlinks (not hard links: COPY between stages is guaranteed to
+#     preserve symlinks; expanded hard links would ship one binary copy
+#     per role).  agent-builder is the pre-rename compat link.
+#   - 1000-owned mount points: Docker copies a mountpoint's image-side
+#     ownership onto a fresh named volume, so a root-owned /state would be
+#     unwritable by the non-root state service.
+FROM alpine:3.22 AS prep
+RUN apk add --no-cache ca-certificates
+COPY cloister-worker /out/usr/local/bin/cloister-worker
+RUN set -eux; \
+    cd /out/usr/local/bin; \
+    for role in builder scribe scholar librarian state-service agency agent-builder; do \
+      ln -s cloister-worker "$role"; \
+    done; \
+    mkdir -p /out/etc/ssl/certs /out/tmp /out/spool /out/state /out/scribe-state /out/burn /out/workspace /out/home/worker; \
+    cp /etc/ssl/certs/ca-certificates.crt /out/etc/ssl/certs/; \
+    echo "worker:x:1000:1000::/home/worker:/sbin/nologin" > /out/etc/passwd; \
+    echo "worker:x:1000:" > /out/etc/group; \
+    chown -R 1000:1000 /out/spool /out/state /out/scribe-state /out/burn /out/home/worker
 
-# The Gradle 9 wrapper (gradlew) hard-requires `xargs` to parse JVM options
-# and aborts with "xargs is not available" without it. AL2023 (corretto's
-# base) ships no findutils, so install it. Clean the dnf cache to keep the
-# layer lean; this is the only package the toolchain adds beyond the JDK.
-RUN dnf install -y findutils \
-    && dnf clean all \
-    && rm -rf /var/cache/dnf
-
-COPY cloister-worker /usr/local/bin/cloister-worker
-
-# Multi-call: each worker role is a hard link to the one binary, and the
-# program name (argv[0]) selects the role and its flag set.  The extra
-# `agent-builder` link keeps pre-rename compose files working — their
-# entrypoint and HEALTHCHECKs name that path, which falls through to the
-# generic -worker-mode form.
-RUN for role in builder scribe scholar librarian state-service agency agent-builder; do \
-      ln /usr/local/bin/cloister-worker "/usr/local/bin/${role}"; \
-    done
-
-# amazoncorretto's AL2023 base has no shadow-utils (useradd), and pulling
-# it in just to make one static user is more package surface than the jail
-# needs — write the passwd/group entries directly instead. /spool, /state,
-# /gradle-home, /scribe-state, and /burn are tmpfs/volume mount points that MUST
-# pre-exist in the image, created 1000-owned: Docker copies a mountpoint's
-# image-side ownership onto a fresh volume, so a path missing here yields a
-# root-owned volume the non-root user cannot write (gradlew then fails to create
-# its dist/lock dirs under /gradle-home; the scribe fails to stage under
-# /scribe-state; the scholar fails to open its burn ledger under /burn).
-RUN mkdir -p /etc/cloister-worker /home/builder /spool /state /gradle-home /scribe-state /burn \
-    && echo "jdk25-gradle" > /etc/cloister-worker/toolchain \
-    && echo "builder:x:1000:1000::/home/builder:/sbin/nologin" >> /etc/passwd \
-    && echo "builder:x:1000:" >> /etc/group \
-    && chown 1000:1000 /home/builder /spool /state /gradle-home /scribe-state /burn
-
-# Platform dependency-warmer init script used by the airlock (world-readable;
-# not agent-writable). Resolves all configs so offline build/test/coverage work.
-COPY warm-deps.gradle /etc/cloister-worker/warm-deps.gradle
-
-USER builder
-EXPOSE 9200
-# The generic entrypoint: compose overrides it per service with a role link
-# (entrypoint: ["/usr/local/bin/scribe"]); under this default, a leading
-# -worker-mode selects the role.
+FROM scratch
+COPY --from=prep /out/ /
+USER 1000:1000
+# The generic entrypoint: compose overrides it per service with a role
+# link (entrypoint: ["/usr/local/bin/scribe"]); under this default, a
+# leading -worker-mode selects the role.
 ENTRYPOINT ["/usr/local/bin/cloister-worker"]
