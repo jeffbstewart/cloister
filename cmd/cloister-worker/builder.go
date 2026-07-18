@@ -15,6 +15,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -29,6 +30,26 @@ import (
 	"github.com/jeffbstewart/cloister/internal/runner"
 	"github.com/jeffbstewart/cloister/internal/status/sink"
 )
+
+// builderRole parses the builder's flag set and returns its bootstrap.
+func builderRole(args []string) (func(), error) {
+	fs := flag.NewFlagSet("builder", flag.ContinueOnError)
+	common := registerCommon(fs, ":9200")
+	workspace := fs.String("workspace", "/workspace", "project bind mount; actions run here")
+	spoolDir := fs.String("spool", "/spool", "local (tmpfs) log spool for digests and get_log")
+	stateURL := fs.String("state-url", envOr("STATE_URL", ""), "base URL of the state service")
+	toolchainFile := fs.String("toolchain-file", "/etc/cloister-worker/toolchain",
+		"file holding this image's toolchain id")
+	if err := fs.Parse(args); err != nil {
+		return nil, err
+	}
+	return common.runOrProbe(func() {
+		runBuilder(builderOptions{
+			Addr: *common.addr, Workspace: *workspace, SpoolDir: *spoolDir,
+			StateURL: *stateURL, ToolchainFile: *toolchainFile,
+		})
+	}), nil
+}
 
 // builderOptions carries the builder's bootstrap inputs; named fields at
 // the dispatch site make same-typed argument transposition impossible.

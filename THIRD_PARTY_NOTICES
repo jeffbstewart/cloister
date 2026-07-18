@@ -6,7 +6,7 @@ LICENSE).  This file records the third-party software Cloister depends on,
 in two distinct categories with different distribution consequences.
 
 
-1. Go modules compiled into the agent-builder and compose-lint binaries
+1. Go modules compiled into the cloister-worker and compose-lint binaries
 -----------------------------------------------------------------------
 
 Generated with `go-licenses report ./...`; regenerate when go.mod changes.
@@ -50,7 +50,7 @@ ghcr.io/jeffbstewart/cloister-agent
   The base image's own license and notice files are retained unmodified
   inside the published image.
 
-ghcr.io/jeffbstewart/cloister-builder
+ghcr.io/jeffbstewart/cloister-workers
   Bundles Amazon Corretto 25 (a distribution of OpenJDK), from the base
   image amazoncorretto:25.
     Amazon Corretto / OpenJDK — GNU General Public License, version 2,
@@ -60,7 +60,7 @@ ghcr.io/jeffbstewart/cloister-builder
   corresponding source for Amazon Corretto 25 is available from Amazon at:
       https://github.com/corretto/corretto-25
   The Corretto image's license files are retained unmodified inside the
-  published image.  The agent-builder binary in this image is a separate,
+  published image.  The cloister-worker binary in this image is a separate,
   independently licensed (Apache-2.0) work that is merely aggregated
   alongside the JDK on the same image (GPLv2 section 2, "mere
   aggregation"); it does not link against the JDK.

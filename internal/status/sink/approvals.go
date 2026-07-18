@@ -342,7 +342,7 @@ footer{margin-top:2em;color:#777;font-size:.8em}
 {{else}}
 <p>none pending</p>
 {{end}}
-<footer>agent-builder &mdash; approvals are recorded in the audit trail</footer>
+<footer>cloister &mdash; approvals are recorded in the audit trail</footer>
 </body></html>
 `))
 

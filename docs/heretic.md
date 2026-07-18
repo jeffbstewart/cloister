@@ -100,7 +100,7 @@ serve gets its own qualification, splitting the two costs:
 
 - **AGPL stays outside the tree.**  Heretic is a standalone *build tool*,
   invoked out-of-band like `llama.cpp` and `ollama` already are — never
-  vendored, never imported into `agent-builder`, never in `go.mod`.  So it never
+  vendored, never imported into `cloister-worker`, never in `go.mod`.  So it never
   reaches `go-licenses check ./...`, and its copyleft never touches cloister's
   own license posture.  The models it outputs are weights we run locally and do
   not distribute.  This invariant is load-bearing: heretic in the Go tree would

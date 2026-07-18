@@ -15,6 +15,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -29,6 +30,27 @@ import (
 	"github.com/jeffbstewart/cloister/internal/scholar"
 	"github.com/jeffbstewart/cloister/internal/status/sink"
 )
+
+// scholarRole parses the scholar's flag set and returns its bootstrap.
+func scholarRole(args []string) (func(), error) {
+	fs := flag.NewFlagSet("scholar", flag.ContinueOnError)
+	common := registerCommon(fs, ":9500")
+	policyPath := fs.String("policy", "/etc/scholar/policy.yaml", "read-only egress policy file")
+	burnDir := fs.String("burn-dir", "/burn",
+		"writable volume for the burn-rate ledger (timestamps only)")
+	stateURL := fs.String("state-url", envOr("STATE_URL", ""), "base URL of the state service")
+	answerGate := fs.Bool("answer-gate", true,
+		"gate the answer on operator approval before returning it")
+	if err := fs.Parse(args); err != nil {
+		return nil, err
+	}
+	return common.runOrProbe(func() {
+		runScholar(scholarOptions{
+			Addr: *common.addr, PolicyPath: *policyPath, BurnDir: *burnDir,
+			StateURL: *stateURL, AnswerGate: *answerGate,
+		})
+	}), nil
+}
 
 // scholarOptions carries the scholar's bootstrap inputs.
 type scholarOptions struct {

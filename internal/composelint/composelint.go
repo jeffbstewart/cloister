@@ -43,11 +43,27 @@ type compose struct {
 }
 
 type service struct {
+	Entrypoint  []string `yaml:"entrypoint"`
 	Command     []string `yaml:"command"`
 	Volumes     []string `yaml:"volumes"`
 	Networks    []string `yaml:"networks"`
 	Environment []string `yaml:"environment"`
 	User        string   `yaml:"user"`
+}
+
+// wantsRoleEntrypoint checks that a worker service execs its own role link
+// of the multi-call binary — the compose file must SAY what each container
+// is, and the wrong link would parse the wrong flag set.
+func wantsRoleEntrypoint(c compose, serviceName, role string) []string {
+	svc, ok := c.Services[serviceName]
+	if !ok {
+		return nil // presence is the concern of the per-stack checks
+	}
+	want := "/usr/local/bin/" + role
+	if len(svc.Entrypoint) != 1 || svc.Entrypoint[0] != want {
+		return []string{fmt.Sprintf("%s must exec its role link [%q]; entrypoint = %v", serviceName, want, svc.Entrypoint)}
+	}
+	return nil
 }
 
 type networkDef struct {
@@ -187,6 +203,15 @@ func Check(data []byte) ([]string, error) {
 		if svc, ok := c.Services[name]; ok && svc.runsAsRoot() {
 			v = append(v, fmt.Sprintf("%s must run as a non-root user (the workspace owner's uid); user = %q", name, svc.User))
 		}
+	}
+
+	// Every worker container execs its own role link, so the topology file
+	// says what each container is and no service can run another's role.
+	for _, w := range []struct{ service, role string }{
+		{"builder", "builder"}, {"librarian", "librarian"}, {"scholar", "scholar"},
+		{"scribe", "scribe"}, {"state", "state-service"},
+	} {
+		v = append(v, wantsRoleEntrypoint(c, w.service, w.role)...)
 	}
 
 	// The inference door: every consumer's model endpoint is the agency

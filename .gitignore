@@ -32,7 +32,7 @@ secrets/
 
 # The static Linux binary images.yml cross-compiles into the builder image's
 # build context — a build artifact, never committed.
-docker/builder/agent-builder
+docker/workers/cloister-worker
 
 # Python bytecode from models/ build+eval tooling (qualify.py).
 __pycache__/

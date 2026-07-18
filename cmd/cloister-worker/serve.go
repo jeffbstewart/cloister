@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -26,6 +27,34 @@ import (
 	"time"
 	_ "time/tzdata" // embed zone data so TZ=<zone> localizes status pages in any base image
 )
+
+// commonFlags are the flags every role shares: where to listen, and the
+// container HEALTHCHECK probe (registered per role so `scribe -healthcheck`
+// probes the scribe's default port).
+type commonFlags struct {
+	addr        *string
+	healthcheck *bool
+}
+
+// registerCommon registers the shared flags on a role's flag set, with the
+// role's own default listen address.
+func registerCommon(fs *flag.FlagSet, defaultAddr string) commonFlags {
+	return commonFlags{
+		addr: fs.String("addr", defaultAddr, "listen address"),
+		healthcheck: fs.Bool("healthcheck", false,
+			"probe the local /healthz and exit 0/1 (container HEALTHCHECK)"),
+	}
+}
+
+// runOrProbe wraps a role's action: when -healthcheck was passed, the
+// process probes the running server and exits instead of serving.
+func (c commonFlags) runOrProbe(run func()) func() {
+	if *c.healthcheck {
+		addr := *c.addr
+		return func() { os.Exit(probeHealthz(addr)) }
+	}
+	return run
+}
 
 // serveHTTP runs the server until SIGTERM/SIGINT, then drains connections.
 func serveHTTP(httpSrv *http.Server, what string) {

@@ -15,6 +15,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -22,6 +23,20 @@ import (
 
 	"github.com/jeffbstewart/cloister/internal/status/sink"
 )
+
+// stateServiceRole parses the state service's flag set and returns its
+// bootstrap.
+func stateServiceRole(args []string) (func(), error) {
+	fs := flag.NewFlagSet("state-service", flag.ContinueOnError)
+	common := registerCommon(fs, ":9201")
+	stateDir := fs.String("state-dir", "/state", "state volume: logs, audit, status")
+	if err := fs.Parse(args); err != nil {
+		return nil, err
+	}
+	return common.runOrProbe(func() {
+		runStateService(stateOptions{Addr: *common.addr, StateDir: *stateDir})
+	}), nil
+}
 
 // stateOptions carries the state service's bootstrap inputs.
 type stateOptions struct {

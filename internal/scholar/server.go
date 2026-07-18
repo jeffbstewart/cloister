@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // Package scholar is the quarantined web-research agent:
-// the agent-builder binary's -scholar mode.  It serves one MCP tool, research(query),
+// the cloister-worker binary's scholar role.  It serves one MCP tool, research(query),
 // and behind it a fixed Go loop drives a model (OpenAI-compatible) with exactly
 // three tools — web_search, extract_url_as_markdown, respond — dispatched to the
 // in-process egress subsystem.  It holds no workspace and, verified by a boot

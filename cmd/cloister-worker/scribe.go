@@ -15,6 +15,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -24,6 +25,27 @@ import (
 	"github.com/jeffbstewart/cloister/internal/status/sink"
 	"github.com/jeffbstewart/cloister/internal/workspace"
 )
+
+// scribeRole parses the scribe's flag set and returns its bootstrap.
+func scribeRole(args []string) (func(), error) {
+	fs := flag.NewFlagSet("scribe", flag.ContinueOnError)
+	common := registerCommon(fs, ":9300")
+	wsDir := fs.String("workspace", "/workspace", "project bind mount; the tree the scribe edits")
+	stateURL := fs.String("state-url", envOr("STATE_URL", ""), "base URL of the state service")
+	stageDir := fs.String("scribe-stage-dir", "/scribe-state",
+		"durable staging dir for pending (approval-gated) changes")
+	approvals := fs.Bool("scribe-approvals", false,
+		"hold gated writes PENDING human approval instead of refusing them")
+	if err := fs.Parse(args); err != nil {
+		return nil, err
+	}
+	return common.runOrProbe(func() {
+		runScribe(scribeOptions{
+			Addr: *common.addr, Workspace: *wsDir, StateURL: *stateURL,
+			StageDir: *stageDir, Approvals: *approvals,
+		})
+	}), nil
+}
 
 // scribeOptions carries the scribe's bootstrap inputs.
 type scribeOptions struct {

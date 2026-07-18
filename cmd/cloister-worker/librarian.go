@@ -16,6 +16,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -29,6 +30,28 @@ import (
 	"github.com/jeffbstewart/cloister/internal/status/sink"
 	"github.com/jeffbstewart/cloister/internal/watch"
 )
+
+// librarianRole parses the librarian's flag set and returns its bootstrap.
+func librarianRole(args []string) (func(), error) {
+	fs := flag.NewFlagSet("librarian", flag.ContinueOnError)
+	common := registerCommon(fs, ":9400")
+	workspace := fs.String("workspace", "/workspace", "project bind mount; the tree the librarian serves")
+	stateURL := fs.String("state-url", envOr("STATE_URL", ""), "base URL of the state service")
+	budgetMB := fs.Int("repo-budget-mb", 256, "total resident-content cap for the in-memory model")
+	maxFileMB := fs.Int("repo-max-file-mb", 2, "per-file cap; larger files are metadata-only")
+	rescanInterval := fs.Duration("rescan-interval", 30*time.Minute,
+		"how often to re-walk the workspace for host edits the watcher misses")
+	if err := fs.Parse(args); err != nil {
+		return nil, err
+	}
+	return common.runOrProbe(func() {
+		runLibrarian(librarianOptions{
+			Addr: *common.addr, Workspace: *workspace, StateURL: *stateURL,
+			BudgetMB: *budgetMB, MaxFileMB: *maxFileMB,
+			RescanInterval: *rescanInterval,
+		})
+	}), nil
+}
 
 // librarianOptions carries the librarian's bootstrap inputs.
 type librarianOptions struct {
