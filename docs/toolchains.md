@@ -1,9 +1,11 @@
 # Toolchains — multi-ecosystem builder packaging
 
-Status: **design decision record (2026-07-18), not yet implemented**.
-Target ecosystems: the JVM toolchain we ship today (Java/Kotlin, JDK 25 +
-Gradle) plus Go, C++, Rust, and Node.  One toolchain per cell, selected at
-deploy time.
+Status: **decision record (2026-07-18); the split and the JVM toolchain
+are implemented** — slim `cloister-workers` (scratch) + `cloister-builder-jvm`,
+selected per cell via `TOOLCHAIN_IMAGE`, compose-lint pinning the image
+variables.  Go, C++, Rust, and Node remain design; the `toolchain.yaml`
+airlock metadata and `bin/update-deps` land with the second ecosystem.
+One toolchain per cell, selected at deploy time.
 
 ## Problem
 
@@ -179,14 +181,18 @@ not part of this design.
 - **Node here is the build toolchain**, unrelated to the node runtime the
   qwen agent image happens to ship.
 
-## Open decisions (need a call before execution)
+## Open decisions
 
-1. **Ecosystem id strings** — proposed: `jvm-jdk25-gradle9`, `go1.25`,
-   `rust-1.88`, `cpp-clang19-cmake`, `node22`.  Ids appear in every
-   project's manifest, so renames are churn: pick once.
-2. **C++ dependency manager** — vcpkg or conan, exactly one blessed in
-   the image.
-3. **Slim image base** — `scratch` (near-zero CVE feed, pure Apache-2.0
-   contents, no shell for an intruder) vs. a minimal distro (debuggable
-   with `docker exec`).  Leaning `scratch`; the operator loses in-container
-   shells either way of little value against a static Go binary.
+1. **Ecosystem id strings** — OPEN.  Proposed: `jvm-jdk25-gradle9`,
+   `go1.25`, `rust-1.88`, `cpp-clang19-cmake`, `node22`.  Ids appear in
+   every project's manifest, so renames are churn: pick once.  The
+   implemented jvm image deliberately kept the pre-split id
+   `jdk25-gradle` so no manifest broke; it renames when this decision
+   lands.
+2. **C++ dependency manager** — OPEN.  vcpkg or conan, exactly one
+   blessed in the image.
+3. **Slim image base** — RESOLVED with the implementation: `scratch`,
+   carrying only the static binary, role symlinks, a minimal
+   passwd/group, 1000-owned mount points, and the Mozilla CA bundle (the
+   scholar verifies kagi.com against the system pool).  Near-zero CVE
+   feed; no shell for an intruder.

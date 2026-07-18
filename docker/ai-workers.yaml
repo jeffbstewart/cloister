@@ -38,11 +38,12 @@
 #                  separately named one).  Published by images.yml with the
 #                  qwen version leading the tag: pin e.g.
 #                  cloister-agent:0.19.4-sha-<commit>, or track :latest
-#   WORKERS_IMAGE  e.g. cloister-workers:latest — ALL the cell's Go workers,
-#                  one multi-call binary linked per role, plus the
-#                  jdk25-gradle toolchain the builder role drives (a future
-#                  second toolchain will need per-toolchain image names or
-#                  toolchain-prefixed tags — one name holds one)
+#   WORKERS_IMAGE  e.g. cloister-workers:latest — the SLIM toolchain-free
+#                  multi-call worker image (scratch + the static binary);
+#                  every worker except the builder runs it
+#   TOOLCHAIN_IMAGE  the builder's toolchain image for THIS cell's
+#                  ecosystem, e.g. cloister-builder-jvm:latest (JDK 25 +
+#                  Gradle).  One toolchain per cell; docs/toolchains.md
 #   OPENAI_MODEL   a tag installed in infer, e.g. qwen3-coder:30b
 #   STATE_TOKEN    shared builder<->state secret; per project, e.g. [guid]::NewGuid().ToString("N")
 #   STATUS_PORT    host localhost port for the status pages (unique per project)
@@ -136,7 +137,10 @@ services:
       - researchnet                      # reach the scholar MCP (research)
 
   builder:
-    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${WORKERS_IMAGE:?set WORKERS_IMAGE, e.g. cloister-workers:latest}
+    # The ONLY service on a toolchain image: the builder executes the
+    # manifest's build/test actions, so the compilers live here and
+    # nowhere else (docs/toolchains.md).
+    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${TOOLCHAIN_IMAGE:?set TOOLCHAIN_IMAGE, the cell's builder toolchain image, e.g. cloister-builder-jvm:latest}
     container_name: ${PROJECT}-builder
     user: *wsuser
     restart: unless-stopped
@@ -177,7 +181,7 @@ services:
       - statenet                         # reach state (outbound sink); no egress
 
   scribe:
-    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${WORKERS_IMAGE}
+    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${WORKERS_IMAGE:?set WORKERS_IMAGE, the slim worker image, e.g. cloister-workers:latest}
     container_name: ${PROJECT}-scribe
     user: *wsuser
     restart: unless-stopped

@@ -120,7 +120,8 @@ deploy naming the variable):
 | `BUILD_HOME` | host dir for the builder's persistent toolchain caches (per **user**, shared across projects), pre-created user-owned, e.g. `/srv/home/alice/.cloister-cache` |
 | `SCRIBE_STATE` | host dir for the scribe's durable approval staging (per **project**), pre-created user-owned, e.g. `/srv/home/alice/cells/myproject/scribe` |
 | `AGENT_IMAGE` | `cloister-agent:<qwen>-sha-<commit>` — pin from [GHCR](https://github.com/jeffbstewart?tab=packages), or `cloister-agent:latest` |
-| `WORKERS_IMAGE` | `cloister-workers:sha-<commit>` or `cloister-workers:latest` — the multi-call image every Go worker in the cell runs |
+| `WORKERS_IMAGE` | `cloister-workers:sha-<commit>` or `cloister-workers:latest` — the slim toolchain-free image every Go worker except the builder runs |
+| `TOOLCHAIN_IMAGE` | `cloister-builder-jvm:25-sha-<commit>` or `cloister-builder-jvm:latest` — the builder's toolchain image for this cell's ecosystem ([toolchains.md](toolchains.md)) |
 | `OPENAI_MODEL` | the staged model the agent drives, as `ollama list` names it |
 | `STATE_TOKEN` | per-project secret, e.g. a fresh GUID; lives only here |
 | `STATUS_PORT` | localhost port for the status pages — unique per project |
@@ -201,25 +202,22 @@ changed — that is the entire upgrade procedure.  Notes:
   approvals pending.  Named volumes are keyed by `PROJECT`, so history,
   staged approvals, and caches survive redeploys.
 - Image updates are separate from compose updates: bump `AGENT_IMAGE` /
-  `WORKERS_IMAGE` in the stack env deliberately.  Pinned tags
+  `WORKERS_IMAGE` / `TOOLCHAIN_IMAGE` in the stack env deliberately.  Pinned tags
   (`cloister-agent:0.19.4-sha-<commit>`) never change contents underneath
   you; `latest` moves with main.
 
 ## Toolchains: Java + Kotlin today
 
-The published builder image is a **JDK 25 + Gradle** toolchain; the cell as
-shipped builds Java and Kotlin projects.  Supporting another ecosystem
-(Go, C++, Rust, …) is real work, not configuration, and lands in two
-parts:
+Toolchains are per-ecosystem builder images ([toolchains.md](toolchains.md)):
+only the builder service runs one, selected per cell by `TOOLCHAIN_IMAGE`.
+The one published toolchain today is **`cloister-builder-jvm`** (JDK 25 +
+Gradle-wrapper support) — the cell as shipped builds Java and Kotlin
+projects, and the project's `agent-harness.yaml` must declare
+`toolchain: jdk25-gradle` to match it (the builder refuses a mismatch).
 
-- **Per-toolchain packaging**: each toolchain needs its own workers image —
-  compilers and build tools baked in, the cloister-worker sidecar layered on
-  top, an offline-dependency warming path equivalent to the Gradle init
-  script, and a cache volume layout for its ecosystem.
-- **A refactor when the second toolchain arrives**: today "the workers
-  image" is a single name (`cloister-workers`); a second toolchain forces
-  per-toolchain image naming and publishing, and the manifest/caches
-  conventions will need to generalize with it.
-
-Until then, pointing a cell at a non-JVM project gives you a working agent,
-scribe, and scholar — but no build/test actions worth having.
+Supporting another ecosystem (Go, C++, Rust, Node) is a new
+`docker/toolchains/<ecosystem>` image satisfying the package contract in
+[toolchains.md](toolchains.md) — toolchain id, airlock warming hook,
+cache layout — plus its images.yml publish step.  Until one exists,
+pointing a cell at a non-JVM project gives you a working agent, scribe,
+and scholar — but no build/test actions worth having.

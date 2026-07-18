@@ -43,6 +43,7 @@ type compose struct {
 }
 
 type service struct {
+	Image       string   `yaml:"image"`
 	Entrypoint  []string `yaml:"entrypoint"`
 	Command     []string `yaml:"command"`
 	Volumes     []string `yaml:"volumes"`
@@ -202,6 +203,27 @@ func Check(data []byte) ([]string, error) {
 	for _, name := range []string{"librarian", "scribe", "builder"} {
 		if svc, ok := c.Services[name]; ok && svc.runsAsRoot() {
 			v = append(v, fmt.Sprintf("%s must run as a non-root user (the workspace owner's uid); user = %q", name, svc.User))
+		}
+	}
+
+	// The image split (docs/toolchains.md): the builder is the ONLY worker
+	// on a toolchain image; every other worker runs the slim toolchain-free
+	// image.  The linter sees the raw ${VAR} text, so pinning the variable
+	// NAME per service is the drift guard — a compiler can't quietly ride
+	// back into the scholar via a shared image reference.
+	for _, w := range []struct{ service, imageVar string }{
+		{"builder", "TOOLCHAIN_IMAGE"},
+		{"librarian", "WORKERS_IMAGE"},
+		{"scholar", "WORKERS_IMAGE"},
+		{"scribe", "WORKERS_IMAGE"},
+		{"state", "WORKERS_IMAGE"},
+	} {
+		svc, ok := c.Services[w.service]
+		if !ok {
+			continue // presence is the concern of the checks above
+		}
+		if !strings.Contains(svc.Image, "${"+w.imageVar) {
+			v = append(v, fmt.Sprintf("%s image must come from ${%s}; image = %q", w.service, w.imageVar, svc.Image))
 		}
 	}
 

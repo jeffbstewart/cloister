@@ -16,11 +16,11 @@ name: images
 
 # The authoritative image pipeline: on every push to main and on version
 # tags, cross-compile the static cloister-worker binary, then build and
-# push the workers and agent images to GHCR.  Tags carry the binary as a
-# GitHub Release asset.  This retires the private-registry batch build
-# scripts.
+# push the slim workers image, the per-ecosystem builder toolchain images
+# (docs/toolchains.md — jvm today), and the agent image to GHCR.  Tags
+# carry the binary as a GitHub Release asset.
 #
-# Distribution note: the workers image redistributes Amazon Corretto
+# Distribution note: the jvm toolchain image redistributes Amazon Corretto
 # (GPLv2 with the Classpath Exception); see THIRD_PARTY_NOTICES for the
 # corresponding-source pointer that obligation rides on.
 
@@ -35,7 +35,11 @@ permissions:
 
 env:
   WORKERS_IMAGE: ghcr.io/jeffbstewart/cloister-workers
+  JVM_IMAGE: ghcr.io/jeffbstewart/cloister-builder-jvm
   AGENT_IMAGE: ghcr.io/jeffbstewart/cloister-agent
+  # The toolchain version leading the jvm image tag (the corretto:25 pin in
+  # its Dockerfile).  Bump both together.
+  JVM_VERSION: "25"
   # Pins the qwen-code base (and therefore the CLI version inside the agent
   # image).  Bump deliberately; the Dockerfile default matches.
   QWEN_VERSION: "0.19.4"
@@ -67,6 +71,9 @@ jobs:
             go build -trimpath \
             -ldflags "-s -w -X main.version=${{ steps.ver.outputs.version }}" \
             -o docker/workers/cloister-worker ./cmd/cloister-worker
+          # Each image builds from its own context; the toolchain images
+          # layer the same binary.
+          cp docker/workers/cloister-worker docker/toolchains/jvm/cloister-worker
 
       # Buildx now so the platform list below is the only thing to touch
       # when arm64 joins (a Mac-hosted scholar, a D20 cell).
@@ -89,12 +96,15 @@ jobs:
         run: |
           V="${{ steps.ver.outputs.version }}"
           WORKERS="${WORKERS_IMAGE}:${V}"
+          JVM="${JVM_IMAGE}:${JVM_VERSION}-${V}"
           AGENT="${AGENT_IMAGE}:${QWEN_VERSION}-${V}"
           if [ "${GITHUB_REF_TYPE}" = "tag" ] || [ "${GITHUB_REF_NAME}" = "main" ]; then
             WORKERS="${WORKERS},${WORKERS_IMAGE}:latest"
+            JVM="${JVM},${JVM_IMAGE}:latest"
             AGENT="${AGENT},${AGENT_IMAGE}:latest"
           fi
           echo "workers=${WORKERS}" >> "$GITHUB_OUTPUT"
+          echo "jvm=${JVM}" >> "$GITHUB_OUTPUT"
           echo "agent=${AGENT}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push the workers image
@@ -104,6 +114,14 @@ jobs:
           push: true
           platforms: linux/amd64 # add linux/arm64 here when needed
           tags: ${{ steps.tags.outputs.workers }}
+
+      - name: Build and push the jvm toolchain image
+        uses: docker/build-push-action@v6
+        with:
+          context: docker/toolchains/jvm
+          push: true
+          platforms: linux/amd64 # add linux/arm64 here when needed
+          tags: ${{ steps.tags.outputs.jvm }}
 
       - name: Build and push the agent image
         uses: docker/build-push-action@v6

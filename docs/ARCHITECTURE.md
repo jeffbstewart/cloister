@@ -27,7 +27,7 @@ flowchart LR
 
   subgraph cell["Project cell (one per project)"]
     agent["agent<br/>cloister-agent"]
-    builder["builder<br/>cloister-workers :9200"]
+    builder["builder<br/>cloister-builder-jvm :9200"]
     scribe["scribe<br/>cloister-workers :9300"]
     scholar["scholar<br/>cloister-workers :9500"]
     state["state<br/>cloister-workers :9201"]
@@ -97,7 +97,7 @@ through the scribe, and the agent's working directory is a tmpfs stub.
 | Container | Worker role | Image | Listens | Mounts | Networks |
 |---|---|---|---|---|---|
 | `agent` | the coding agent: interactive qwen-code CLI (this IS the qwen image) | `cloister-agent:<qwen>-<ver>` | — (nothing inbound) | NO workspace (tmpfs cwd stub); `qwen_home` vol rw | infernet, buildnet, researchnet |
-| `builder` | `builder` role — executes manifest actions (build/test), streams logs | `cloister-workers:<ver>` | `:9200` MCP | workspace **rw**; `gradle` vol rw | buildnet, statenet |
+| `builder` | `builder` role — executes manifest actions (build/test), streams logs | `cloister-builder-jvm:<jdk>-<ver>` (the cell's ONE toolchain image, [toolchains.md](toolchains.md)) | `:9200` MCP | workspace **rw**; `gradle` vol rw | buildnet, statenet |
 | `scribe` | `scribe` role — the sole audited writer of workspace source | `cloister-workers:<ver>` | `:9300` MCP | workspace **rw**; `scribe_state` vol rw | buildnet, statenet |
 | `librarian` | `librarian` role — the read side: shield-filtered mechanical read tools from an in-memory model; denials audited | `cloister-workers:<ver>` | `:9400` MCP | workspace **ro** | buildnet, statenet |
 | `scholar` | `scholar` role — quarantined web research, one `research` tool | `cloister-workers:<ver>` | `:9500` MCP | policy yaml **ro**; `scholar_burn` vol rw | researchnet, infernet, scholarstate, kagiegress |
@@ -106,13 +106,18 @@ through the scribe, and the agent's working directory is a tmpfs stub.
 | `kagi-relay` | blind egress pipe hard-wired to `kagi.com:443` | `alpine/socat` | `:8443` (cell-internal) | — | kagiegress, egress |
 
 All the cell's Go workers — and the infra stack's agency below — are the
-same multi-call binary (`cloister-worker`): the workers image bakes one
-hard link per role, each compose service execs its own link, and the
-program name selects the role and its flag set (a flag from the wrong role
-is a startup error).  Under the generic name — including the image's
-`agent-builder` compat link — a leading `-worker-mode <role>` selects
-instead.  `cloister-workers` also carries the JDK 25 + Gradle toolchain
-the builder role drives.
+same multi-call binary (`cloister-worker`): each image bakes role links,
+each compose service execs its own link, and the program name selects the
+role and its flag set (a flag from the wrong role is a startup error).
+Under the generic name — including the images' `agent-builder` compat
+link — a leading `-worker-mode <role>` selects instead.
+
+Images split along the capability line ([toolchains.md](toolchains.md)):
+`cloister-workers` is slim and toolchain-free (scratch + the static
+binary + CA roots), and only the **builder** runs a per-ecosystem
+toolchain image (`cloister-builder-jvm` today: JDK 25 + Gradle-wrapper
+support) — the compilers live where the manifest actions execute and
+nowhere else.
 
 ## The shared inference stack
 
@@ -225,6 +230,7 @@ device reservation.
 |---|---|
 | The scholar holds no `egress` network; its only route out is the kagi-relay, pinned to `kagi.com` | `compose-lint` (CI, every PR) · the scholar's fail-closed boot self-check · `scripts/probe-scholar-egress.ps1` against a live cell |
 | All inference rides through the agency: `infer` sits on `modelnet` alone, consumers dial the door, the localhost relay fronts it | `compose-lint` on both compose files (CI, every PR) |
+| Only the builder carries a toolchain; every other worker runs the slim toolchain-free image | `compose-lint` image-variable pinning (builder ↔ `TOOLCHAIN_IMAGE`, others ↔ `WORKERS_IMAGE`) |
 | The agent cannot write source; every edit routes through the scribe's confined, audited ops | the `:ro` mount flag · the scribe's path confinement, gates, and approval holds |
 | The audit trail is one-way glass: subsystems append, never read; timestamps come from the state service's clock | token-gated append-only state API · no state mounts anywhere else · network absences above |
 | Web content and workspace content never share a mediator | topology: the scholar has no workspace mount and no route to builder/scribe |
