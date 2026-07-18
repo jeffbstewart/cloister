@@ -84,10 +84,11 @@ jobs:
           git fetch origin "${{ github.base_ref }}"
           git diff "origin/${{ github.base_ref }}...HEAD" | ./scripts/presubmit-check.sh
 
-      # The committed cell topology must satisfy the scholar containment
-      # invariants on every PR.
-      - name: Compose lint (scholar containment)
-        run: go run ./cmd/compose-lint docker/ai-workers.yaml
+      # The committed topology must satisfy the containment invariants on
+      # every PR: the cell's scholar/read-path rules and the inference
+      # stack's agency-fronts-infer rules.
+      - name: Compose lint (cell + inference containment)
+        run: go run ./cmd/compose-lint docker/ai-workers.yaml docker/inference.yaml
 
       # Header presence and third-party observation repo-wide; year currency
       # on the files the PR touches (main pushes re-verify presence only).

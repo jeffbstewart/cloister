@@ -1,8 +1,9 @@
 # The agency — inference gateway design
 
-Status: **design, not yet implemented**.  Decisions from the 2026-07-07
-design review.  Lives in the **shared inference stack** (machine-level,
-like `infer` itself), not in any cell.
+Status: **phase 1 (the pass-through door) implemented; phases 2–6 are
+design**.  Decisions from the 2026-07-07 design review.  Lives in the
+**shared inference stack** (machine-level, like `infer` itself), not in
+any cell.
 
 ## Problem
 
@@ -158,11 +159,11 @@ deep-think node: dialed by the agency via env-provided address
 
 ## Phasing
 
-1. Pass-through v1: agency fronts the local `infer` only; consumers
-   repoint `OPENAI_BASE_URL`; `infer` moves to `modelnet`; the localhost
-   relay flips to the agency (GETTING_STARTED's verification step changes
-   with it — `v1/models` instead of `api/tags`).  Behaviorally invisible,
-   topology proven.
+1. Pass-through v1 — **DONE** (internal/agency): agency fronts the local
+   `infer` only; consumers repoint `OPENAI_BASE_URL`; `infer` moves to
+   `modelnet`; the localhost relay flips to the agency (GETTING_STARTED's
+   verification step changed with it — `v1/models` instead of `api/tags`).
+   Behaviorally invisible, topology proven.
 2. Engine classes + fail-closed config + the two-class queue.
 3. The deep-think node: presence probes, fallback chains, affinity.
 4. The status volume + the state services' Inference panel.

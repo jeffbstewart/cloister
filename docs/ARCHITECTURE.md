@@ -8,9 +8,11 @@ ports that are the system's entire host-visible surface.  This is the *what*;
 Two compose stacks make up a running system:
 
 - **Shared inference stack** (`docker/inference.yaml`) — the GPU model
-  server and its localhost bridge.  Deploy once per machine, leave up.
+  server, the **agency** (the sole inference door fronting it), and the
+  localhost bridge.  Deploy once per machine, leave up.
 - **Project cell** (`docker/ai-workers.yaml`) — the agent and its workers.
-  Deploy one per project; each joins the shared `infernet` by name.
+  Deploy one per project; each joins the shared `infernet` by name and
+  reaches models only through the agency.
 
 ## Topology
 
@@ -37,9 +39,9 @@ flowchart LR
   end
 
   subgraph infra["Shared inference stack (one per machine)"]
+    agency["agency<br/>cloister-builder :11434"]
     infer["infer<br/>ollama/ollama"]
-    iproxy["infer-proxy<br/>alpine/socat"]
-    agency["agency<br/>PLANNED"]
+    iproxy["agency-proxy<br/>alpine/socat"]
   end
 
   kagi["kagi.com<br/>search + extract APIs"]
@@ -49,8 +51,9 @@ flowchart LR
   agent -- "buildnet · MCP" --> builder
   agent -- "buildnet · MCP" --> scribe
   agent -- "researchnet · MCP" --> scholar
-  agent -- "infernet · OpenAI API" --> infer
-  scholar -- "infernet · model loop" --> infer
+  agent -- "infernet · OpenAI API" --> agency
+  scholar -- "infernet · model loop" --> agency
+  agency -- "modelnet · pass-through" --> infer
   builder -- "statenet · logs + audit" --> state
   scribe -- "statenet · audit + diffs" --> state
   scholar -- "scholarstate · audit + approvals" --> state
@@ -59,7 +62,7 @@ flowchart LR
   op -- "frontend" --> status
   status -- "statepub" --> state
   dbg -- "frontend" --> iproxy
-  iproxy -- "infernet" --> infer
+  iproxy -- "infernet" --> agency
 
   ws -. "ro" .-> librarian
   ws -. "rw" .-> builder
@@ -68,21 +71,19 @@ flowchart LR
   librarian -- "statenet · denial audits" --> state
   models -. "ro" .-> infer
 
-  librarian -. "infernet (planned: comprehension ops)" .-> infer
-  librarian -. "infernet_big (planned)" .-> mac
+  librarian -. "infernet (planned: comprehension ops)" .-> agency
   agent -. "buildnet · MCP (planned)" .-> archivist
   ws -. "rw (planned)" .-> archivist
   archivist -. "statenet (planned)" .-> state
   archivist -. "gitegress · pinned relays (planned)" .-> gh
   corrector -. "buildnet · reads (planned)" .-> librarian
   corrector -. "buildnet · diffs + comments (planned)" .-> archivist
-  corrector -. "infernet (planned)" .-> infer
+  corrector -. "infernet (planned)" .-> agency
   corrector -. "statenet (planned)" .-> state
-  agency -. "modelnet (planned)" .-> infer
   agency -. "infernet_big (planned)" .-> mac
 
   classDef planned stroke-dasharray: 6 4;
-  class archivist,corrector,gh,mac,agency planned
+  class archivist,corrector,gh,mac planned
 ```
 
 Solid arrows are network edges (labeled with the compose network that
@@ -104,22 +105,25 @@ through the scribe, and the agent's working directory is a tmpfs stub.
 | `status` | blind relay publishing the status pages to the host | `alpine/socat` | `127.0.0.1:STATUS_PORT` | — | statepub, frontend |
 | `kagi-relay` | blind egress pipe hard-wired to `kagi.com:443` | `alpine/socat` | `:8443` (cell-internal) | — | kagiegress, egress |
 
-All four Go workers are the same binary (`agent-builder`) selected by the
-required `-worker-mode` flag; `cloister-builder` also carries the JDK 25 +
-Gradle toolchain the builder mode drives.
+All the cell's Go workers are the same binary (`agent-builder`) selected by
+the required `-worker-mode` flag — as is the infra stack's agency below;
+`cloister-builder` also carries the JDK 25 + Gradle toolchain the builder
+mode drives.
 
 ## The shared inference stack
 
 | Container | Role | Image | Listens | Mounts | Networks |
 |---|---|---|---|---|---|
-| `infer` | GPU model server (OpenAI-compatible API) | `ollama/ollama` | `:11434` (infernet only) | model weights **ro** (host dir) | infernet |
-| `infer-proxy` | blind relay for host staging/debugging | `alpine/socat` | `127.0.0.1:11434` | — | infernet, frontend |
+| `agency` | `-worker-mode agency` — the sole inference door: streaming OpenAI-compatible pass-through, `/v1` only ([agency.md](agency.md) phase 1) | `cloister-builder:<ver>` | `:11434` (infernet) | — | infernet, modelnet |
+| `infer` | GPU model server (OpenAI-compatible API), reachable only via the agency | `ollama/ollama` | `:11434` (modelnet only) | model weights **ro** (host dir) | modelnet |
+| `agency-proxy` | blind relay for host smoke tests, fronting the agency | `alpine/socat` | `127.0.0.1:11434` | — | infernet, frontend |
 
 ## Networks
 
 | Network | Carries | Members |
 |---|---|---|
-| `infernet` | model API traffic (internal: no internet; shared across stacks by name) | infer, infer-proxy, agent, scholar |
+| `infernet` | consumer → agency model API traffic (internal: no internet; shared across stacks by name) | agency, agency-proxy, agent, scholar |
+| `modelnet` | agency → infer (internal; the model server's ONLY edge) | agency, infer |
 | `buildnet` | agent → builder/scribe MCP | agent, builder, scribe |
 | `researchnet` | agent → scholar MCP | agent, scholar |
 | `statenet` | builder/scribe → state (token-gated) | builder, scribe, state |
@@ -127,12 +131,12 @@ Gradle toolchain the builder mode drives.
 | `statepub` | state → status relay | state, status |
 | `kagiegress` | scholar → kagi-relay (internal; no internet) | scholar, kagi-relay |
 | `egress` | the internet.  ONLY the kagi-relay holds it | kagi-relay |
-| `frontend` | host publishing | status, infer-proxy |
+| `frontend` | host publishing | status, agency-proxy |
 
 Every network except `egress` and `frontend` is `internal: true` — no
 route out.  Notable absences are the architecture: the agent has no route
-to `state` (it cannot touch the record of its own actions), `infer` never
-shares a network with builder or scribe, and the scholar has no route to
+to `state` (it cannot touch the record of its own actions), `infer` shares
+a network with nothing but the agency, and the scholar has no route to
 builder, scribe, or the workspace.
 
 ## Host surface
@@ -142,8 +146,10 @@ Exactly two localhost-only ports; nothing binds a routable interface:
 - `127.0.0.1:${STATUS_PORT}` — the cell's status pages and approvals UI,
   via the blind `status` relay.  The only externally visible piece of a
   cell.
-- `127.0.0.1:11434` — the inference stack's ollama API, for host-side
-  model staging and debugging, via the blind `infer-proxy`.
+- `127.0.0.1:11434` — the inference stack's OpenAI-compatible door (the
+  agency), for host smoke tests (`GET /v1/models`), via the blind
+  `agency-proxy`.  Raw ollama has no host port; model staging uses the
+  host-side ollama store directly.
 
 ## External dependencies
 
@@ -190,14 +196,14 @@ Dashed in the diagram; designed, not yet built (see
   reviewer: no mounts, no credential; composes librarian reads, archivist
   diffs/comments, and engine-routed inference into a ten-lens, grounded,
   advice-never-gate review of any PR or the agent's pending work.
-- **agency** (see [agency.md](agency.md)) — the sole inference door, in
-  the shared infra stack: OpenAI-compatible front for local + LAN ollama
-  nodes (frontier designed-for, unwired), engine-class fallback chains,
-  residency-aware two-class queueing, caller deadlines, and a read-only
-  status volume the cells' state services render.  When it lands,
-  `infer` retreats behind it (existing `infernet · OpenAI API` edges
-  reroute through the agency) and the localhost `11434` relay fronts the
-  agency instead of raw ollama.
+- **agency, phases 2+** (see [agency.md](agency.md)) — phase 1 (the
+  pass-through door, live above) proved the topology: `infer` sits behind
+  the agency on `modelnet` and the localhost `11434` relay fronts the
+  door.  Still to come: named engine classes over fail-closed config,
+  residency-aware two-class queueing, caller deadlines, presence-aware
+  fallback chains to the deep-think node, frontier slots (designed-for,
+  unwired), and a read-only status volume the cells' state services
+  render.
 
 ## The common hardening profile
 
@@ -214,6 +220,7 @@ device reservation.
 | Invariant | Enforced by |
 |---|---|
 | The scholar holds no `egress` network; its only route out is the kagi-relay, pinned to `kagi.com` | `compose-lint` (CI, every PR) · the scholar's fail-closed boot self-check · `scripts/probe-scholar-egress.ps1` against a live cell |
+| All inference rides through the agency: `infer` sits on `modelnet` alone, consumers dial the door, the localhost relay fronts it | `compose-lint` on both compose files (CI, every PR) |
 | The agent cannot write source; every edit routes through the scribe's confined, audited ops | the `:ro` mount flag · the scribe's path confinement, gates, and approval holds |
 | The audit trail is one-way glass: subsystems append, never read; timestamps come from the state service's clock | token-gated append-only state API · no state mounts anywhere else · network absences above |
 | Web content and workspace content never share a mediator | topology: the scholar has no workspace mount and no route to builder/scribe |

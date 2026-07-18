@@ -6,7 +6,7 @@ builds/tests through a **builder**, writes source only through an audited
 mode of one Go binary, wired into per-project "cells" (docker/ai-workers.yaml).
 
 ## Layout
-- `cmd/agent-builder` — the one binary (builder | -scribe | -scholar | -state-service).
+- `cmd/agent-builder` — the one binary (builder | scribe | scholar | librarian | state-service | agency).
 - `internal/*` — the packages. `cmd/compose-lint` — topology drift guard.
 - `docker/` — Dockerfiles + compose. `etc/` — config templates. `docs/` — design.
   `bin/` — operator tools. `scripts/` — repo plumbing.
@@ -18,7 +18,7 @@ mode of one Go binary, wired into per-project "cells" (docker/ai-workers.yaml).
     gofmt -l .              # must be empty
     go vet ./...
     go-licenses check ./... # deny copyleft
-    go run ./cmd/compose-lint docker/ai-workers.yaml
+    go run ./cmd/compose-lint docker/ai-workers.yaml docker/inference.yaml
     go run ./cmd/copyright-lint   # headers present + year current (policy embedded from cmd/copyright-lint/copyright.yaml)
 
 ## Conventions (do not regress)
@@ -34,6 +34,9 @@ mode of one Go binary, wired into per-project "cells" (docker/ai-workers.yaml).
 ## Security invariants (topology + tests, NOT prompt text)
 - The scholar holds no `egress` network; its only route out is the kagi-relay,
   pinned to kagi.com. compose-lint + the boot self-check enforce this.
+- All inference rides through the agency (the sole inference door): `infer` sits
+  on `modelnet` alone, consumers dial http://agency:11434/v1. compose-lint
+  enforces it on both compose files.
 - Research answers must be grounded in retrieved results, structurally — never
   the model's weights.
 - The audit trail is one-way glass: subsystems append, never read.
