@@ -38,6 +38,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -57,6 +58,32 @@ type Config struct {
 	// ToolchainID names the marker file, so toolchains sharing one cache
 	// home warm independently.
 	ToolchainID string
+	// Getenv is the environment seam for instruction templating; nil
+	// means os.Getenv.
+	Getenv func(string) string
+}
+
+// expandVars is the allowlist of variables an instructions template may
+// reference (docs/toolchains.md): the deployment identifiers the compose
+// stack forwards into the builder's environment, so the refusal can carry
+// a copy-paste airlock command.  An allowlist — never the whole
+// environment — so a toolchain's template cannot leak a secret
+// (STATE_TOKEN) into agent-visible text.
+var expandVars = []string{"PROJECT", "WORKSPACE"}
+
+// expandInstructions renders an instructions template.  A variable that
+// is off the allowlist or unset in the environment renders as a readable
+// <NAME> placeholder, so a cell that does not forward it degrades to
+// substitute-it-yourself instructions instead of a broken refusal.
+func expandInstructions(text string, getenv func(string) string) string {
+	return os.Expand(text, func(name string) string {
+		if slices.Contains(expandVars, name) {
+			if v := getenv(name); v != "" {
+				return v
+			}
+		}
+		return "<" + name + ">"
+	})
 }
 
 // MarkerPath is where a completed warm is recorded.
@@ -100,8 +127,13 @@ func (c Config) Check() error {
 	case err == nil:
 		return nil
 	case errors.Is(err, fs.ErrNotExist):
+		getenv := c.Getenv
+		if getenv == nil {
+			getenv = os.Getenv
+		}
 		return fmt.Errorf("toolchain %s has not been warmed for offline builds (marker %s is missing).\n\n%s",
-			c.ToolchainID, c.MarkerPath(), strings.TrimSpace(string(instructions)))
+			c.ToolchainID, c.MarkerPath(),
+			expandInstructions(strings.TrimSpace(string(instructions)), getenv))
 	default:
 		return fmt.Errorf("warming: stat marker %s: %w", c.MarkerPath(), err)
 	}

@@ -154,6 +154,12 @@ services:
       - STATE_TOKEN=${STATE_TOKEN:?set STATE_TOKEN, the shared worker-to-state secret}
       - HOME=/home/build                 # writable cache home on the BUILD_HOME bind below
       - GRADLE_USER_HOME=/home/build/.gradle
+      # Deployment identifiers the warming refusal interpolates into its
+      # copy-paste airlock command (internal/warming allowlist).  WORKSPACE
+      # is the HOST path — deliberately agent-visible in that refusal, a
+      # convenience-over-disclosure call.
+      - PROJECT=${PROJECT}
+      - WORKSPACE=${WORKSPACE}
     volumes:
       - *workspace                       # rw: SAME host dir as the agent; build outputs
       # The builder's HOME: persistent toolchain caches (go/gradle/npm/...), on a

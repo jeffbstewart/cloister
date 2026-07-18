@@ -63,16 +63,24 @@ COPY warm-deps.gradle /etc/cloister-worker/warm-deps.gradle
 # Warming contract (internal/warming): this file's PRESENCE makes the
 # builder refuse actions until the airlock has recorded a warm for this
 # toolchain, and its CONTENT is the instruction that refusal carries.
+# AUDIENCE: the refusal is read by the AGENT, so the text must route the
+# task to the human — warming needs host docker privileges and gated
+# egress the agent does not have, and must not attempt.
 COPY <<'EOF' /etc/cloister-worker/warming
-This cell's builds run offline: dependencies enter only through the
-human-gated airlock (docs/GETTING_STARTED.md, "Prime the Gradle cache").
-From the cloister repository on the host, run
+Build and test actions are refused: this cell's offline dependency cache
+has not been warmed.  Warming is a HUMAN OPERATOR task — it opens the
+host-side, human-gated airlock (temporary egress, docker privileges) and
+cannot be performed from inside the cell.  Do not attempt to warm, work
+around, or retry your way past this.
 
-    bin\update-gradle-deps.bat <PROJECT> <workspace-path>
+Report this to the human operator and ask them to run, from the cloister
+repository on the host:
 
-(<PROJECT> is the cell's short project id, <workspace-path> the host path
-of its repo).  The airlock warms the Gradle cache with temporary egress,
-closes it, and records the warm; then retry this action.
+    bin\update-gradle-deps.bat ${PROJECT} ${WORKSPACE}
+
+(any <NAME> above is an unexpanded placeholder: substitute that variable
+from the cell's docker-compose stack env; see docs/GETTING_STARTED.md,
+"Prime the Gradle cache").  Once they report it done, retry the action.
 EOF
 
 USER builder
