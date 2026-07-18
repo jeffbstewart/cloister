@@ -1,7 +1,9 @@
 # The agency — inference gateway design
 
-Status: **phase 1 (the pass-through door) implemented; phases 2–6 are
-design**.  Decisions from the 2026-07-07 design review.  Lives in the
+Status: **phase 1 (the pass-through door) and phase 2's router (engine
+classes, fail-closed config, chains, caller deadlines) implemented; the
+two-class queue and phases 3–6 are design**.  Decisions from the
+2026-07-07 design review.  Lives in the
 **shared inference stack** (machine-level, like `infer` itself), not in
 any cell.
 
@@ -164,7 +166,12 @@ deep-think node: dialed by the agency via env-provided address
    `modelnet`; the localhost relay flips to the agency (GETTING_STARTED's
    verification step changed with it — `v1/models` instead of `api/tags`).
    Behaviorally invisible, topology proven.
-2. Engine classes + fail-closed config + the two-class queue.
+2. Engine classes + fail-closed config — **DONE** (internal/agency
+   router: the request's model field names a class, chains advance past
+   unreachable links, caller deadlines ride the Agency-Deadline header,
+   etc/agency-routes.example.yaml is the config template; the deployed
+   door stays in pass-through mode until the operator mounts a config).
+   The two-class queue is next.
 3. The deep-think node: presence probes, fallback chains, affinity.
 4. The status volume + the state services' Inference panel.
 5. Librarian/corrector land their inference through classes (their docs'

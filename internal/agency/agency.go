@@ -13,19 +13,24 @@
 // limitations under the License.
 
 // Package agency is the sole inference door of the shared infra stack
-// (docs/agency.md).  This is phase 1 — a pass-through: every consumer's
-// OPENAI_BASE_URL dials the agency, and the agency forwards the
-// OpenAI-compatible /v1 API to the one model server behind it, which no
-// longer shares a network with any consumer.  Behaviorally invisible,
-// topology proven; engine classes, queueing, and fallback chains arrive in
-// later phases.
+// (docs/agency.md).  Every consumer's OPENAI_BASE_URL dials the agency; the
+// door serves the OpenAI-compatible /v1 API in one of two modes:
+//
+//   - Pass-through (phase 1): forward everything to the one model server
+//     behind the door, which no longer shares a network with any consumer.
+//     Behaviorally invisible, topology proven.
+//   - Class routing (phase 2, router.go): the request's model field names an
+//     engine CLASS, and fail-closed config maps each class to an ordered
+//     fallback chain of (node, model) links.  Unavailable means the next
+//     link, never a silent substitute; an exhausted chain is a distinct
+//     refusal; every response says which engine served.
 //
 // Containment: the agency sees every prompt, so it holds no capability
 // beyond forwarding — no workspace, no state access, no tools, and it
-// parses nothing beyond the request line it routes on.  Only /v1/ paths
-// pass: the raw model-server API (model pulls, deletes, ollama's native
-// endpoints) is not reachable through the door.  Streaming responses are
-// flushed token-by-token, never buffered whole.  Stdlib only.
+// parses requests minimally (top-level JSON fields, only to route).  Only
+// /v1/ paths pass: the raw model-server API (model pulls, deletes, ollama's
+// native endpoints) is not reachable through the door.  Streaming responses
+// are flushed token-by-token, never buffered whole.
 package agency
 
 import (
@@ -37,29 +42,38 @@ import (
 	"net/url"
 )
 
-// Config carries the agency's bootstrap inputs.
+// Config carries the agency's bootstrap inputs.  Exactly one of UpstreamURL
+// and Routes must be set — the door is either a pass-through or a router,
+// chosen deliberately at startup.
 type Config struct {
-	// UpstreamURL is the base URL of the model server the door fronts,
-	// e.g. http://infer:11434.  Required.
+	// UpstreamURL is the base URL of the model server a PASS-THROUGH door
+	// fronts, e.g. http://infer:11434.
 	UpstreamURL string
+	// Routes is the engine-class routing table of a ROUTING door, loaded
+	// via LoadRouterConfig.
+	Routes *RouterConfig
 }
 
-// Server forwards the OpenAI-compatible API to the configured upstream.
+// Server serves the OpenAI-compatible API in the configured mode.
 type Server struct {
-	// servedBy names the engine that answers, reported on every response
-	// so a reply is never silently attributable to nothing.  In phase 1
-	// there is exactly one engine: the upstream's hostname.
-	servedBy string
-	proxy    *httputil.ReverseProxy
+	// v1 handles everything under /v1/ — the pass-through proxy or the
+	// class router, fixed at construction.
+	v1 http.Handler
 }
 
-// New validates the config and builds the server.  It fails closed: a
-// missing or malformed upstream URL is a startup error, never a lazily
+// New validates the config and builds the server.  It fails closed: no mode,
+// both modes, or a malformed upstream URL is a startup error, never a lazily
 // discovered one.
 func New(cfg Config) (*Server, error) {
-	if cfg.UpstreamURL == "" {
-		return nil, fmt.Errorf("agency: UpstreamURL is required")
+	switch {
+	case cfg.UpstreamURL != "" && cfg.Routes != nil:
+		return nil, fmt.Errorf("agency: config sets both UpstreamURL and Routes: choose pass-through or class routing")
+	case cfg.Routes != nil:
+		return &Server{v1: newRouter(cfg.Routes, nil)}, nil
+	case cfg.UpstreamURL == "":
+		return nil, fmt.Errorf("agency: either UpstreamURL (pass-through) or Routes (class routing) is required")
 	}
+
 	upstream, err := url.Parse(cfg.UpstreamURL)
 	if err != nil {
 		return nil, fmt.Errorf("agency: parse upstream URL: %w", err)
@@ -71,8 +85,11 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("agency: upstream URL %q has no host", cfg.UpstreamURL)
 	}
 
-	s := &Server{servedBy: upstream.Hostname()}
-	s.proxy = &httputil.ReverseProxy{
+	// servedBy names the engine that answers, reported on every response so
+	// a reply is never silently attributable to nothing.  In pass-through
+	// mode there is exactly one engine: the upstream's hostname.
+	servedBy := upstream.Hostname()
+	return &Server{v1: &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
 			r.SetURL(upstream)
 			// Present the upstream's own name as the Host header — exactly
@@ -85,22 +102,21 @@ func New(cfg Config) (*Server, error) {
 		// whole response would turn decode time into dead air.
 		FlushInterval: -1,
 		ModifyResponse: func(resp *http.Response) error {
-			resp.Header.Set("Agency-Served-By", s.servedBy)
+			resp.Header.Set(servedByHeader, servedBy)
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			log.Printf("agency: forward %s %s: %v", r.Method, r.URL.Path, err)
 			http.Error(w, "agency: model server unreachable", http.StatusBadGateway)
 		},
-	}
-	return s, nil
+	}}, nil
 }
 
 // Handler serves the forwarded /v1 API and a liveness probe at /healthz.
 // Every other path is refused: the agency is a door, not a bypass.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/v1/", s.proxy)
+	mux.Handle("/v1/", s.v1)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		io.WriteString(w, "ok")
