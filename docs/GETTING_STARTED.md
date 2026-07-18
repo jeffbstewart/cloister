@@ -155,8 +155,11 @@ the **airlock** — a deliberate, human-gated moment of temporary egress,
 automated by [`bin/update-gradle-deps.bat`](../bin/update-gradle-deps.bat):
 
 ```
-bin\update-gradle-deps.bat <PROJECT> <workspace-path>
+bin\update-gradle-deps.bat <PROJECT> <WORKSPACE>
 ```
+
+`<PROJECT>` and `<WORKSPACE>` are the same values as the cell stack's
+`PROJECT` and `WORKSPACE` environment variables (step 4).
 
 What it does, in order — worth knowing because the airlock is a security
 boundary, and so you can perform the steps manually on a non-Windows host:

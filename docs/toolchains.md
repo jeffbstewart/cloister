@@ -82,10 +82,18 @@ Each `cloister-builder-<ecosystem>` image provides, at fixed paths:
    toolchains that require offline dependency warming.  Its presence
    makes the builder refuse actions until the airlock records a marker
    (`$HOME/.cloister-warmed/<toolchain-id>`, written via
-   `builder -mark-warmed`), and its CONTENT is the operator instruction
-   the refusal carries — each toolchain writes its own.  See
-   internal/warming; this file folds into `toolchain.yaml` (next item)
-   when that lands.
+   `builder -mark-warmed`), and its CONTENT is the instruction the
+   refusal carries — each toolchain writes its own.  AUDIENCE: the
+   refusal reaches the AGENT, so the text must direct it to hand the
+   task to the human operator — warming is a host-privilege airlock
+   operation the agent cannot perform and must not attempt.  The text is
+   a template: `${PROJECT}` and `${WORKSPACE}` (an allowlist, nothing
+   else — a template can never leak a secret) expand from the builder's
+   environment into a copy-paste command; unset values degrade to
+   readable `<NAME>` placeholders.  WORKSPACE is the host path,
+   deliberately agent-visible here — a convenience-over-disclosure call.
+   See internal/warming; this file folds into `toolchain.yaml` (next
+   item) when that lands.
 4. **`/etc/cloister-worker/toolchain.yaml`** — NEW: machine-readable
    airlock metadata.  Three things:
    - the **warm command** — argv to run with temporary egress attached;

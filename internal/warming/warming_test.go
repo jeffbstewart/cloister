@@ -83,6 +83,39 @@ func TestMarkLiftsTheGate(t *testing.T) {
 	}
 }
 
+// TestInstructionsTemplate: the refusal interpolates the allowlisted
+// deployment identifiers into a copy-paste command, degrades unset ones
+// to readable placeholders, and never expands off-allowlist variables —
+// even ones present in the environment (the secret-leak guard).
+func TestInstructionsTemplate(t *testing.T) {
+	c := newConfig(t, true)
+	template := "run: update-deps.bat ${PROJECT} ${WORKSPACE}\nnever: ${STATE_TOKEN}"
+	if err := os.WriteFile(c.InstructionsPath, []byte(template), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{
+		"PROJECT":     "myproject",
+		"STATE_TOKEN": "sekrit",
+	}
+	c.Getenv = func(k string) string { return env[k] }
+
+	err := c.Check()
+	if err == nil {
+		t.Fatal("Check before warming = nil, want a refusal")
+	}
+	for _, want := range []string{
+		"update-deps.bat myproject <WORKSPACE>", // set expands; unset degrades
+		"never: <STATE_TOKEN>",                  // off-allowlist never expands
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal %q missing %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "sekrit") {
+		t.Errorf("refusal leaked an off-allowlist environment value: %q", err)
+	}
+}
+
 // TestFailsClosed: a config that cannot name a marker refuses rather than
 // passing, and only when warming is actually required.
 func TestFailsClosed(t *testing.T) {
