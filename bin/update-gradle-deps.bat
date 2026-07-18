@@ -30,7 +30,7 @@ REM same set the scribe's build-logic write gate governs. Override only when
 REM you know why, with -force.
 REM
 REM NOTE: the refresh runs `gradlew` directly via `docker exec`, deliberately
-REM bypassing the agent-builder server. So it does NOT stream to the state
+REM bypassing the builder worker. So it does NOT stream to the state
 REM service's audit/logs; the airlock is a manual human act and THIS script is
 REM its record. The builder holds no /state mount either way.
 REM
@@ -106,12 +106,12 @@ REM JARs, runs no test task and loads no test classes - safer than
 REM --test-dry-run and it also reaches coverage's JaCoCo tooling, which a test
 REM run alone would miss.
 REM
-REM The init script is BAKED into the published builder image at
-REM /etc/agent-builder/warm-deps.gradle (a platform artifact, not
+REM The init script is BAKED into the published workers image at
+REM /etc/cloister-worker/warm-deps.gradle (a platform artifact, not
 REM agent-writable). The read-only rootfs deliberately blocks runtime
 REM injection (docker cp / writes), so changing it means rebuilding the image.
 echo Warming offline dependencies in %CONTAINER% ...
-docker exec %CONTAINER% ./gradlew --refresh-dependencies --no-daemon --init-script /etc/agent-builder/warm-deps.gradle build -x test warmAllDeps
+docker exec %CONTAINER% ./gradlew --refresh-dependencies --no-daemon --init-script /etc/cloister-worker/warm-deps.gradle build -x test warmAllDeps
 set WARMUP_RC=%ERRORLEVEL%
 
 echo Closing airlock: disconnecting %CONTAINER% from %NETWORK% ...

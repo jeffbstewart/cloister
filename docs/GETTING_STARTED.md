@@ -66,9 +66,9 @@ Once per machine, before any cell.
      `c:/ai_models` if unset).
    - `AGENCY_IMAGE` = the image serving the **agency**, the inference door
      every consumer dials (see [agency.md](agency.md)):
-     `cloister-builder:sha-<commit>` pinned from
+     `cloister-workers:sha-<commit>` pinned from
      [GHCR](https://github.com/jeffbstewart?tab=packages), or
-     `cloister-builder:latest`.
+     `cloister-workers:latest`.
 7. Deploy, then verify from the host — this proxy port is one of the only
    two localhost ports the whole system publishes:
 
@@ -120,7 +120,7 @@ deploy naming the variable):
 | `BUILD_HOME` | host dir for the builder's persistent toolchain caches (per **user**, shared across projects), pre-created user-owned, e.g. `/srv/home/alice/.cloister-cache` |
 | `SCRIBE_STATE` | host dir for the scribe's durable approval staging (per **project**), pre-created user-owned, e.g. `/srv/home/alice/cells/myproject/scribe` |
 | `AGENT_IMAGE` | `cloister-agent:<qwen>-sha-<commit>` — pin from [GHCR](https://github.com/jeffbstewart?tab=packages), or `cloister-agent:latest` |
-| `BUILDER_IMAGE` | `cloister-builder:sha-<commit>` or `cloister-builder:latest` |
+| `WORKERS_IMAGE` | `cloister-workers:sha-<commit>` or `cloister-workers:latest` — the multi-call image every Go worker in the cell runs |
 | `OPENAI_MODEL` | the staged model the agent drives, as `ollama list` names it |
 | `STATE_TOKEN` | per-project secret, e.g. a fresh GUID; lives only here |
 | `STATUS_PORT` | localhost port for the status pages — unique per project |
@@ -169,7 +169,7 @@ boundary, and so you can perform the steps manually on a non-Windows host:
 2. **Open**: attaches `<PROJECT>-builder` to a network with egress
    (docker's default `bridge`).
 3. **Warm**: `docker exec`s `./gradlew --refresh-dependencies --no-daemon
-   --init-script /etc/agent-builder/warm-deps.gradle build -x test
+   --init-script /etc/cloister-worker/warm-deps.gradle build -x test
    warmAllDeps` — the init script is baked into the builder image (a
    platform artifact the agent cannot write) and resolves every
    configuration: test runtimes, coverage tooling, annotation processors.
@@ -201,7 +201,7 @@ changed — that is the entire upgrade procedure.  Notes:
   approvals pending.  Named volumes are keyed by `PROJECT`, so history,
   staged approvals, and caches survive redeploys.
 - Image updates are separate from compose updates: bump `AGENT_IMAGE` /
-  `BUILDER_IMAGE` in the stack env deliberately.  Pinned tags
+  `WORKERS_IMAGE` in the stack env deliberately.  Pinned tags
   (`cloister-agent:0.19.4-sha-<commit>`) never change contents underneath
   you; `latest` moves with main.
 
@@ -212,12 +212,12 @@ shipped builds Java and Kotlin projects.  Supporting another ecosystem
 (Go, C++, Rust, …) is real work, not configuration, and lands in two
 parts:
 
-- **Per-toolchain packaging**: each toolchain needs its own builder image —
-  compilers and build tools baked in, the agent-builder sidecar layered on
+- **Per-toolchain packaging**: each toolchain needs its own workers image —
+  compilers and build tools baked in, the cloister-worker sidecar layered on
   top, an offline-dependency warming path equivalent to the Gradle init
   script, and a cache volume layout for its ecosystem.
-- **A refactor when the second toolchain arrives**: today "the builder
-  image" is a single name (`cloister-builder`); a second toolchain forces
+- **A refactor when the second toolchain arrives**: today "the workers
+  image" is a single name (`cloister-workers`); a second toolchain forces
   per-toolchain image naming and publishing, and the manifest/caches
   conventions will need to generalize with it.
 

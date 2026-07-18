@@ -15,12 +15,27 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
 
 	"github.com/jeffbstewart/cloister/internal/agency"
 )
+
+// agencyRole parses the agency's flag set and returns its bootstrap.
+func agencyRole(args []string) (func(), error) {
+	fs := flag.NewFlagSet("agency", flag.ContinueOnError)
+	common := registerCommon(fs, ":11434")
+	upstream := fs.String("upstream", "http://infer:11434",
+		"base URL of the model server the inference door fronts")
+	if err := fs.Parse(args); err != nil {
+		return nil, err
+	}
+	return common.runOrProbe(func() {
+		runAgency(agencyOptions{Addr: *common.addr, Upstream: *upstream})
+	}), nil
+}
 
 // agencyOptions carries the agency's bootstrap inputs.
 type agencyOptions struct {

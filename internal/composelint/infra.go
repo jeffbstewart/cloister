@@ -73,6 +73,7 @@ func CheckInfra(data []byte) ([]string, error) {
 	if !ok {
 		v = append(v, "no `agency` service defined — the sole inference door is missing")
 	} else {
+		v = append(v, wantsRoleEntrypoint(c, "agency", "agency")...)
 		for _, n := range agency.egressCapable() {
 			v = append(v, fmt.Sprintf("agency holds %q — the inference door gets no egress-capable network", n))
 		}

@@ -56,6 +56,7 @@ networks:
   egress: {}
 services:
   scholar:
+    entrypoint: ["/usr/local/bin/scholar"]
     networks: ` + scholarNets + `
     volumes: ` + scholarVols + `
   kagi-relay:
@@ -72,6 +73,7 @@ services:
 	kagiCmd := `["TCP-LISTEN:8443,fork,reuseaddr", "TCP:kagi.com:443"]`
 	librarianClean := `  librarian:
     user: "1000:1000"
+    entrypoint: ["/usr/local/bin/librarian"]
     networks: [buildnet, statenet]
     volumes: ["/host:/workspace:ro"]
 `
@@ -111,6 +113,17 @@ services:
     volumes: ["/host:/workspace:ro"]
 `, ""),
 		"agent mounts workspace": base(clean, noVols, kagiCmd, `["/host:/workspace:ro"]`, librarianClean, ""),
+		// The multi-call cutover: a worker must exec its own role link.
+		"librarian runs another role's link": base(clean, noVols, kagiCmd, agentClean, `  librarian:
+    user: "1000:1000"
+    entrypoint: ["/usr/local/bin/scribe"]
+    networks: [buildnet, statenet]
+    volumes: ["/host:/workspace:ro"]
+`, ""),
+		"scribe missing its role entrypoint": base(clean, noVols, kagiCmd, agentClean, librarianClean, `  scribe:
+    user: "1000:1000"
+    networks: [buildnet, statenet]
+`),
 	}
 	for name, yaml := range cases {
 		t.Run(name, func(t *testing.T) {

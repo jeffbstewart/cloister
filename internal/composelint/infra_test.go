@@ -74,6 +74,7 @@ networks:
   frontend: {}
 services:
   agency:
+    entrypoint: ["/usr/local/bin/agency"]
     networks: ` + agencyNets + `
   infer:
     networks: ` + inferNets + `
@@ -107,6 +108,8 @@ services:
 		"proxy missing":           strings.Replace(cleanCompose, "proxy:", "not-the-proxy:", 1),
 		"egress inside infra stack": base(agencyClean, inferClean, proxyClean, modelnetClean, `  leaky:
     networks: [egress]`),
+		"agency not on its role link": strings.Replace(cleanCompose,
+			`entrypoint: ["/usr/local/bin/agency"]`, `entrypoint: ["/usr/local/bin/scholar"]`, 1),
 	}
 	for name, yaml := range cases {
 		t.Run(name, func(t *testing.T) {

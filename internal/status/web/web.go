@@ -124,7 +124,7 @@ var tmplFuncs = template.FuncMap{
 const pageHead = `<!doctype html>
 <html><head><meta charset="utf-8">
 <meta http-equiv="refresh" content="5">
-<title>agent-builder status</title>
+<title>cloister status</title>
 <style>
 body{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;margin:2em;background:#111;color:#ddd}
 a{color:#8cf}
@@ -166,7 +166,7 @@ const auditTable = `<table>
 `
 
 var dashboardTmpl = template.Must(template.New("dashboard").Funcs(tmplFuncs).Parse(pageHead + `
-<h1>agent-builder &mdash; builder cell</h1>
+<h1>cloister &mdash; builder cell</h1>
 {{if not .HaveStatus}}
 <p>no runs recorded yet</p>
 {{else if .Status.Busy}}{{with .Status.Active}}
@@ -181,12 +181,12 @@ as of {{local .Status.UpdatedAt}}</p>
 <h2>recent action calls (newest first)</h2>
 ` + auditTable + `
 <p><a href="/audit">longer audit tail</a> &middot; <a href="/approvals">pending approvals</a></p>
-<footer>agent-builder {{.Version}} &mdash; read-only view of /state; refreshes every 5s</footer>
+<footer>cloister {{.Version}} &mdash; read-only view of /state; refreshes every 5s</footer>
 </body></html>
 `))
 
 var auditTmpl = template.Must(template.New("audit").Funcs(tmplFuncs).Parse(pageHead + `
-<h1>agent-builder &mdash; audit tail</h1>
+<h1>cloister &mdash; audit tail</h1>
 <p><a href="/">back to status</a></p>
 ` + auditTable + `</body></html>
 `))

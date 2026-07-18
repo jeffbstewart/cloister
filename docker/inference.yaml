@@ -23,8 +23,8 @@
 # Stack env vars:
 #   MODELS_DIR    host directory holding ollama's model store (default
 #                 c:/ai_models); see docs/GETTING_STARTED.md for staging it
-#   AGENCY_IMAGE  the agent-builder image serving the agency, e.g.
-#                 cloister-builder:latest or a pinned cloister-builder:sha-<commit>
+#   AGENCY_IMAGE  the workers image serving the agency, e.g.
+#                 cloister-workers:latest or a pinned cloister-workers:sha-<commit>
 #   TZ            timezone for the agency's log timestamps (default UTC)
 
 services:
@@ -34,11 +34,14 @@ services:
     # consumer-reachable network of its own — cells dial
     # http://agency:11434/v1 and only /v1/ paths pass (ollama's native
     # API, pulls included, is unreachable through the door).
-    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${AGENCY_IMAGE:?set AGENCY_IMAGE, the agent-builder image serving the agency, e.g. cloister-builder:latest}
+    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${AGENCY_IMAGE:?set AGENCY_IMAGE, the workers image serving the agency, e.g. cloister-workers:latest}
     container_name: agency
     user: "1000:1000"
     restart: unless-stopped
-    command: ["-worker-mode", "agency", "-addr", ":11434", "-upstream", "http://infer:11434"]
+    # The agency role link of the multi-call worker binary; -addr defaults
+    # to the role's :11434.
+    entrypoint: ["/usr/local/bin/agency"]
+    command: ["-upstream", "http://infer:11434"]
     environment:
       - TZ=${TZ:-UTC}
     read_only: true
@@ -49,7 +52,7 @@ services:
     pids_limit: 256
     mem_limit: 256m
     healthcheck:
-      test: ["CMD", "/usr/local/bin/agent-builder", "-healthcheck", "-addr", ":11434"]
+      test: ["CMD", "/usr/local/bin/agency", "-healthcheck"]
       interval: 30s
     networks:
       - infernet                         # consumers (cells) dial in here

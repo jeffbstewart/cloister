@@ -27,19 +27,19 @@ flowchart LR
 
   subgraph cell["Project cell (one per project)"]
     agent["agent<br/>cloister-agent"]
-    builder["builder<br/>cloister-builder :9200"]
-    scribe["scribe<br/>cloister-builder :9300"]
-    scholar["scholar<br/>cloister-builder :9500"]
-    state["state<br/>cloister-builder :9201"]
+    builder["builder<br/>cloister-workers :9200"]
+    scribe["scribe<br/>cloister-workers :9300"]
+    scholar["scholar<br/>cloister-workers :9500"]
+    state["state<br/>cloister-workers :9201"]
     status["status<br/>alpine/socat"]
     krelay["kagi-relay<br/>alpine/socat :8443"]
-    librarian["librarian<br/>cloister-builder :9400"]
+    librarian["librarian<br/>cloister-workers :9400"]
     archivist["archivist :9600<br/>PLANNED"]
     corrector["corrector :9700<br/>PLANNED"]
   end
 
   subgraph infra["Shared inference stack (one per machine)"]
-    agency["agency<br/>cloister-builder :11434"]
+    agency["agency<br/>cloister-workers :11434"]
     infer["infer<br/>ollama/ollama"]
     iproxy["agency-proxy<br/>alpine/socat"]
   end
@@ -97,24 +97,28 @@ through the scribe, and the agent's working directory is a tmpfs stub.
 | Container | Worker role | Image | Listens | Mounts | Networks |
 |---|---|---|---|---|---|
 | `agent` | the coding agent: interactive qwen-code CLI (this IS the qwen image) | `cloister-agent:<qwen>-<ver>` | — (nothing inbound) | NO workspace (tmpfs cwd stub); `qwen_home` vol rw | infernet, buildnet, researchnet |
-| `builder` | `-worker-mode builder` — executes manifest actions (build/test), streams logs | `cloister-builder:<ver>` | `:9200` MCP | workspace **rw**; `gradle` vol rw | buildnet, statenet |
-| `scribe` | `-worker-mode scribe` — the sole audited writer of workspace source | `cloister-builder:<ver>` | `:9300` MCP | workspace **rw**; `scribe_state` vol rw | buildnet, statenet |
-| `librarian` | `-worker-mode librarian` — the read side: shield-filtered mechanical read tools from an in-memory model; denials audited | `cloister-builder:<ver>` | `:9400` MCP | workspace **ro** | buildnet, statenet |
-| `scholar` | `-worker-mode scholar` — quarantined web research, one `research` tool | `cloister-builder:<ver>` | `:9500` MCP | policy yaml **ro**; `scholar_burn` vol rw | researchnet, infernet, scholarstate, kagiegress |
-| `state` | `-worker-mode state-service` — sole owner of durable logs/audit/status | `cloister-builder:<ver>` | `:9201` token-gated API + pages | `state` vol rw | statenet, scholarstate, statepub |
+| `builder` | `builder` role — executes manifest actions (build/test), streams logs | `cloister-workers:<ver>` | `:9200` MCP | workspace **rw**; `gradle` vol rw | buildnet, statenet |
+| `scribe` | `scribe` role — the sole audited writer of workspace source | `cloister-workers:<ver>` | `:9300` MCP | workspace **rw**; `scribe_state` vol rw | buildnet, statenet |
+| `librarian` | `librarian` role — the read side: shield-filtered mechanical read tools from an in-memory model; denials audited | `cloister-workers:<ver>` | `:9400` MCP | workspace **ro** | buildnet, statenet |
+| `scholar` | `scholar` role — quarantined web research, one `research` tool | `cloister-workers:<ver>` | `:9500` MCP | policy yaml **ro**; `scholar_burn` vol rw | researchnet, infernet, scholarstate, kagiegress |
+| `state` | `state-service` role — sole owner of durable logs/audit/status | `cloister-workers:<ver>` | `:9201` token-gated API + pages | `state` vol rw | statenet, scholarstate, statepub |
 | `status` | blind relay publishing the status pages to the host | `alpine/socat` | `127.0.0.1:STATUS_PORT` | — | statepub, frontend |
 | `kagi-relay` | blind egress pipe hard-wired to `kagi.com:443` | `alpine/socat` | `:8443` (cell-internal) | — | kagiegress, egress |
 
-All the cell's Go workers are the same binary (`agent-builder`) selected by
-the required `-worker-mode` flag — as is the infra stack's agency below;
-`cloister-builder` also carries the JDK 25 + Gradle toolchain the builder
-mode drives.
+All the cell's Go workers — and the infra stack's agency below — are the
+same multi-call binary (`cloister-worker`): the workers image bakes one
+hard link per role, each compose service execs its own link, and the
+program name selects the role and its flag set (a flag from the wrong role
+is a startup error).  Under the generic name — including the image's
+`agent-builder` compat link — a leading `-worker-mode <role>` selects
+instead.  `cloister-workers` also carries the JDK 25 + Gradle toolchain
+the builder role drives.
 
 ## The shared inference stack
 
 | Container | Role | Image | Listens | Mounts | Networks |
 |---|---|---|---|---|---|
-| `agency` | `-worker-mode agency` — the sole inference door: streaming OpenAI-compatible pass-through, `/v1` only ([agency.md](agency.md) phase 1) | `cloister-builder:<ver>` | `:11434` (infernet) | — | infernet, modelnet |
+| `agency` | `agency` role — the sole inference door: streaming OpenAI-compatible pass-through, `/v1` only ([agency.md](agency.md) phase 1) | `cloister-workers:<ver>` | `:11434` (infernet) | — | infernet, modelnet |
 | `infer` | GPU model server (OpenAI-compatible API), reachable only via the agency | `ollama/ollama` | `:11434` (modelnet only) | model weights **ro** (host dir) | modelnet |
 | `agency-proxy` | blind relay for host smoke tests, fronting the agency | `alpine/socat` | `127.0.0.1:11434` | — | infernet, frontend |
 

@@ -38,9 +38,11 @@
 #                  separately named one).  Published by images.yml with the
 #                  qwen version leading the tag: pin e.g.
 #                  cloister-agent:0.19.4-sha-<commit>, or track :latest
-#   BUILDER_IMAGE  e.g. cloister-builder:latest (the jdk25-gradle toolchain;
-#                  a future second toolchain will need per-toolchain image
-#                  names or toolchain-prefixed tags — one name holds one)
+#   WORKERS_IMAGE  e.g. cloister-workers:latest — ALL the cell's Go workers,
+#                  one multi-call binary linked per role, plus the
+#                  jdk25-gradle toolchain the builder role drives (a future
+#                  second toolchain will need per-toolchain image names or
+#                  toolchain-prefixed tags — one name holds one)
 #   OPENAI_MODEL   a tag installed in infer, e.g. qwen3-coder:30b
 #   STATE_TOKEN    shared builder<->state secret; per project, e.g. [guid]::NewGuid().ToString("N")
 #   STATUS_PORT    host localhost port for the status pages (unique per project)
@@ -134,11 +136,14 @@ services:
       - researchnet                      # reach the scholar MCP (research)
 
   builder:
-    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${BUILDER_IMAGE:?set BUILDER_IMAGE, e.g. cloister-builder:latest}
+    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${WORKERS_IMAGE:?set WORKERS_IMAGE, e.g. cloister-workers:latest}
     container_name: ${PROJECT}-builder
     user: *wsuser
     restart: unless-stopped
-    command: ["-worker-mode", "builder"]
+    # Role links: each worker execs its own name (multi-call binary), so the
+    # entrypoint SAYS what the container is and the binary parses only that
+    # role's flags.  Defaults (addr, workspace) live with the role.
+    entrypoint: ["/usr/local/bin/builder"]
     environment:
       - *tz
       - STATE_URL=http://state:9201
@@ -165,22 +170,23 @@ services:
     pids_limit: 1024
     mem_limit: 8g
     healthcheck:
-      test: ["CMD", "/usr/local/bin/agent-builder", "-healthcheck", "-addr", ":9200"]
+      test: ["CMD", "/usr/local/bin/builder", "-healthcheck"]
       interval: 30s
     networks:
       - buildnet                         # reachable by agent (inbound MCP)
       - statenet                         # reach state (outbound sink); no egress
 
   scribe:
-    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${BUILDER_IMAGE}
+    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${WORKERS_IMAGE}
     container_name: ${PROJECT}-scribe
     user: *wsuser
     restart: unless-stopped
-    # Same binary, scribe mode: the sole audited writer of /workspace, serving
+    # The scribe role: the sole audited writer of /workspace, serving
     # confined write ops as MCP tools on :9300 and auditing to the state service.
     # -scribe-approvals: build-logic / binary / non-UTF-8 writes are held
     # PENDING human approval on the status page instead of refused.
-    command: ["-worker-mode", "scribe", "-addr", ":9300", "-workspace", "/workspace", "-scribe-approvals"]
+    entrypoint: ["/usr/local/bin/scribe"]
+    command: ["-scribe-approvals"]
     environment:
       - *tz
       - STATE_URL=http://state:9201
@@ -200,24 +206,24 @@ services:
     pids_limit: 512
     mem_limit: 1g
     healthcheck:
-      test: ["CMD", "/usr/local/bin/agent-builder", "-healthcheck", "-addr", ":9300"]
+      test: ["CMD", "/usr/local/bin/scribe", "-healthcheck"]
       interval: 30s
     networks:
       - buildnet                         # reachable by the agent (inbound MCP)
       - statenet                         # reach state (audit + diff store); internal -> no egress
 
   librarian:
-    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${BUILDER_IMAGE}
+    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${WORKERS_IMAGE}
     container_name: ${PROJECT}-librarian
     user: *wsuser
     restart: unless-stopped
-    # Same binary, librarian mode: the read side of the cell — mechanical read
+    # The librarian role: the read side of the cell — mechanical read
     # tools AND inference-backed comprehension tools on :9400, served from an
     # in-memory, shield-filtered model of the workspace (docs/librarian.md).
     # Comprehension pushes only shield-cleared content to the agency over infernet;
     # with OPENAI_* unset the librarian still boots mechanical-only.  Read
     # DENIALS (only) are audited to state.
-    command: ["-worker-mode", "librarian", "-addr", ":9400", "-workspace", "/workspace"]
+    entrypoint: ["/usr/local/bin/librarian"]
     environment:
       - *tz
       - STATE_URL=http://state:9201
@@ -235,7 +241,7 @@ services:
     pids_limit: 256
     mem_limit: 1g                        # in-memory model budget (256 MiB default) + headroom
     healthcheck:
-      test: ["CMD", "/usr/local/bin/agent-builder", "-healthcheck", "-addr", ":9400"]
+      test: ["CMD", "/usr/local/bin/librarian", "-healthcheck"]
       interval: 30s
     networks:
       - buildnet                         # reachable by the agent (inbound MCP)
@@ -243,11 +249,11 @@ services:
       - infernet                         # reach the agency for the comprehension ops (shared infra stack)
 
   state:
-    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${BUILDER_IMAGE}
+    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${WORKERS_IMAGE}
     container_name: ${PROJECT}-state
     user: "1000:1000"                    # fixed service uid: state touches no workspace; its ledger stays in a Docker volume
     restart: unless-stopped
-    command: ["-worker-mode", "state-service", "-addr", ":9201", "-state-dir", "/state"]
+    entrypoint: ["/usr/local/bin/state-service"]
     environment:
       - *tz
       - STATE_TOKEN=${STATE_TOKEN}
@@ -261,7 +267,7 @@ services:
     pids_limit: 128
     mem_limit: 512m
     healthcheck:
-      test: ["CMD", "/usr/local/bin/agent-builder", "-healthcheck", "-addr", ":9201"]
+      test: ["CMD", "/usr/local/bin/state-service", "-healthcheck"]
       interval: 30s
     networks:
       - statenet                         # reachable by builder/scribe; internal -> no egress
@@ -291,11 +297,11 @@ services:
       - frontend                         # publish to host; parses nothing
 
   scholar:
-    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${BUILDER_IMAGE}
+    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${WORKERS_IMAGE}
     container_name: ${PROJECT}-scholar
     user: "1000:1000"
     restart: unless-stopped
-    # Same binary, scholar mode: a quarantined research service. Serves ONE MCP
+    # The scholar role: a quarantined research service. Serves ONE MCP
     # tool research(query) on :9500 and internally drives a model (over the
     # agency's OpenAI API) with a FIXED three-tool menu (web_search / extract_url_as_markdown
     # / respond) whose only egress is Kagi via the kagi-relay. It handles UNTRUSTED
@@ -303,7 +309,8 @@ services:
     # no `egress` network — its sole internet path is the relay. On boot it
     # TCP-probes public IPs and refuses to start if any connect (fail-closed
     # self-check).
-    command: ["-worker-mode", "scholar", "-addr", ":9500", "-policy", "/etc/scholar/policy.yaml"]
+    entrypoint: ["/usr/local/bin/scholar"]
+    command: ["-policy", "/etc/scholar/policy.yaml"]
     environment:
       - *tz
       - STATE_URL=http://state:9201
@@ -325,7 +332,7 @@ services:
     pids_limit: 256
     mem_limit: 512m
     healthcheck:
-      test: ["CMD", "/usr/local/bin/agent-builder", "-healthcheck", "-addr", ":9500"]
+      test: ["CMD", "/usr/local/bin/scholar", "-healthcheck"]
       interval: 30s
     networks:
       - researchnet                      # reachable by the agent ONLY (inbound MCP)

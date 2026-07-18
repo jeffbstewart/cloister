@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# builder-jdk25-gradle — JDK 25 toolchain + the agent-builder MCP sidecar.
-# The build pipeline (images.yml) cross-compiles the static agent-builder
-# binary into this directory before `docker build`; the binary itself is
-# never committed (.gitignore).
+# cloister-workers — every cell worker role (one multi-call binary) + the
+# JDK 25 Gradle toolchain the builder role drives.  The build pipeline
+# (images.yml) cross-compiles the static cloister-worker binary into this
+# directory before `docker build`; the binary itself is never committed
+# (.gitignore).
 FROM amazoncorretto:25
 
 # UTF-8 locale. Kotlin allows backtick-quoted test names with any Unicode, so the
@@ -35,7 +36,16 @@ RUN dnf install -y findutils \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 
-COPY agent-builder /usr/local/bin/agent-builder
+COPY cloister-worker /usr/local/bin/cloister-worker
+
+# Multi-call: each worker role is a hard link to the one binary, and the
+# program name (argv[0]) selects the role and its flag set.  The extra
+# `agent-builder` link keeps pre-rename compose files working — their
+# entrypoint and HEALTHCHECKs name that path, which falls through to the
+# generic -worker-mode form.
+RUN for role in builder scribe scholar librarian state-service agency agent-builder; do \
+      ln /usr/local/bin/cloister-worker "/usr/local/bin/${role}"; \
+    done
 
 # amazoncorretto's AL2023 base has no shadow-utils (useradd), and pulling
 # it in just to make one static user is more package surface than the jail
@@ -46,16 +56,19 @@ COPY agent-builder /usr/local/bin/agent-builder
 # root-owned volume the non-root user cannot write (gradlew then fails to create
 # its dist/lock dirs under /gradle-home; the scribe fails to stage under
 # /scribe-state; the scholar fails to open its burn ledger under /burn).
-RUN mkdir -p /etc/agent-builder /home/builder /spool /state /gradle-home /scribe-state /burn \
-    && echo "jdk25-gradle" > /etc/agent-builder/toolchain \
+RUN mkdir -p /etc/cloister-worker /home/builder /spool /state /gradle-home /scribe-state /burn \
+    && echo "jdk25-gradle" > /etc/cloister-worker/toolchain \
     && echo "builder:x:1000:1000::/home/builder:/sbin/nologin" >> /etc/passwd \
     && echo "builder:x:1000:" >> /etc/group \
     && chown 1000:1000 /home/builder /spool /state /gradle-home /scribe-state /burn
 
 # Platform dependency-warmer init script used by the airlock (world-readable;
 # not agent-writable). Resolves all configs so offline build/test/coverage work.
-COPY warm-deps.gradle /etc/agent-builder/warm-deps.gradle
+COPY warm-deps.gradle /etc/cloister-worker/warm-deps.gradle
 
 USER builder
 EXPOSE 9200
-ENTRYPOINT ["/usr/local/bin/agent-builder"]
+# The generic entrypoint: compose overrides it per service with a role link
+# (entrypoint: ["/usr/local/bin/scribe"]); under this default, a leading
+# -worker-mode selects the role.
+ENTRYPOINT ["/usr/local/bin/cloister-worker"]

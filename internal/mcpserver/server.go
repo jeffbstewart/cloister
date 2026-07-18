@@ -88,7 +88,7 @@ type Server struct {
 // harness_info, reporting the precise reason.
 func New(cfg Config) *Server {
 	s := &Server{cfg: cfg}
-	s.mcp = mcp.NewServer(&mcp.Implementation{Name: "agent-builder", Version: cfg.Version}, nil)
+	s.mcp = mcp.NewServer(&mcp.Implementation{Name: "cloister-worker", Version: cfg.Version}, nil)
 	s.addHarnessInfo()
 
 	m, err := s.loadManifest()

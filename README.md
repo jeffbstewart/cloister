@@ -40,7 +40,7 @@ invariants with their enforcers — is in
 The step-by-step Portainer walkthrough — git-backed stacks, model staging,
 cache priming — is [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md).
 Prebuilt images are on GHCR (`ghcr.io/jeffbstewart/cloister-agent`,
-`ghcr.io/jeffbstewart/cloister-builder`); see THIRD_PARTY_NOTICES for what
+`ghcr.io/jeffbstewart/cloister-workers`); see THIRD_PARTY_NOTICES for what
 they bundle.
 
 1. **Deploy the inference stack once**: `docker/inference.yaml` (ollama + a
@@ -59,9 +59,10 @@ they bundle.
 
 ## Layout
 
-- `cmd/agent-builder` — the one binary (`-worker-mode` builder |
-  state-service | scribe | scholar).  `cmd/compose-lint` — topology drift
-  guard, run by CI against the committed cell file.
+- `cmd/cloister-worker` — the one multi-call binary; the program name (a
+  role link: builder | state-service | scribe | scholar | librarian |
+  agency) picks the role and its flag set.  `cmd/compose-lint` — topology
+  drift guard, run by CI against the committed compose files.
 - `internal/*` — the packages.  `docker/` — Dockerfiles + compose files.
   `etc/` — config templates.  `docs/` — design + onboarding docs.
   `bin/` — operator tools (the dependency airlock).  `scripts/` — repo
