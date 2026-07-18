@@ -23,18 +23,28 @@ import (
 func TestParseRouterConfig(t *testing.T) {
 	cfg, err := parseRouterConfig([]byte(`
 nodes:
-  infer: http://infer:11434
-  macbook: http://deep-think-node:11434
+  infer:
+    url: http://infer:11434
+    maxInFlight: 4
+  macbook:
+    url: http://deep-think-node:11434
+    maxInFlight: 2
 classes:
   interactive-code:
+    priority: interactive
     deadline: 90s
     maxDeadline: 5m
+    queueWait: 10s
+    maxQueueWait: 1m
     chain:
       - node: infer
         model: coder-model:30b
   deep-think:
+    priority: batch
     deadline: 2m
     maxDeadline: 10m
+    queueWait: 30s
+    maxQueueWait: 5m
     chain:
       - node: macbook
         model: big-moe:latest
@@ -47,14 +57,23 @@ classes:
 	if got := len(cfg.classes); got != 2 {
 		t.Fatalf("classes = %d, want 2", got)
 	}
+	if node := cfg.nodes["macbook"]; node.maxInFlight != 2 || node.url.Host != "deep-think-node:11434" {
+		t.Errorf("macbook node = %+v, want maxInFlight 2 at deep-think-node:11434", node)
+	}
 
 	name, err := ParseClassName("deep-think")
 	if err != nil {
 		t.Fatal(err)
 	}
 	route := cfg.classes[name]
+	if route.priority != PriorityBatch {
+		t.Errorf("deep-think priority = %q, want batch", route.priority)
+	}
 	if route.deadline != 2*time.Minute || route.maxDeadline != 10*time.Minute {
 		t.Errorf("deep-think deadlines = %s/%s, want 2m/10m", route.deadline, route.maxDeadline)
+	}
+	if route.queueWait != 30*time.Second || route.maxQueueWait != 5*time.Minute {
+		t.Errorf("deep-think queue budgets = %s/%s, want 30s/5m", route.queueWait, route.maxQueueWait)
 	}
 	if len(route.links) != 2 {
 		t.Fatalf("deep-think chain = %d links, want 2", len(route.links))
@@ -70,6 +89,19 @@ classes:
 }
 
 func TestParseRouterConfigFailsClosed(t *testing.T) {
+	// validClass covers every required class field; each case below breaks
+	// exactly one thing.
+	const validNodes = `
+nodes:
+  infer:
+    url: http://infer:11434
+    maxInFlight: 4`
+	const validClassFields = `
+    priority: interactive
+    deadline: 90s
+    maxDeadline: 5m
+    queueWait: 10s
+    maxQueueWait: 1m`
 	const validChain = `
     chain:
       - node: infer
@@ -78,103 +110,126 @@ func TestParseRouterConfigFailsClosed(t *testing.T) {
 		name string
 		yaml string
 	}{
-		{"unknown key", `
-nodes:
-  infer: http://infer:11434
+		{"unknown key", validNodes + `
 surprise: true
 classes:
-  chat:
-    deadline: 90s
-    maxDeadline: 5m` + validChain},
+  chat:` + validClassFields + validChain},
 		{"no nodes", `
 classes:
-  chat:
-    deadline: 90s
-    maxDeadline: 5m` + validChain},
-		{"no classes", `
+  chat:` + validClassFields + validChain},
+		{"no classes", validNodes},
+		{"node missing maxInFlight", `
 nodes:
-  infer: http://infer:11434`},
+  infer:
+    url: http://infer:11434
+classes:
+  chat:` + validClassFields + validChain},
 		{"node URL unparseable", `
 nodes:
-  infer: "http://bad url"
+  infer:
+    url: "http://bad url"
+    maxInFlight: 4
 classes:
-  chat:
-    deadline: 90s
-    maxDeadline: 5m` + validChain},
+  chat:` + validClassFields + validChain},
 		{"node URL bad scheme", `
 nodes:
-  infer: ftp://infer:11434
+  infer:
+    url: ftp://infer:11434
+    maxInFlight: 4
 classes:
-  chat:
-    deadline: 90s
-    maxDeadline: 5m` + validChain},
+  chat:` + validClassFields + validChain},
 		{"node URL with path", `
 nodes:
-  infer: http://infer:11434/v1
+  infer:
+    url: http://infer:11434/v1
+    maxInFlight: 4
+classes:
+  chat:` + validClassFields + validChain},
+		{"missing priority", validNodes + `
 classes:
   chat:
     deadline: 90s
-    maxDeadline: 5m` + validChain},
-		{"missing deadline", `
-nodes:
-  infer: http://infer:11434
+    maxDeadline: 5m
+    queueWait: 10s
+    maxQueueWait: 1m` + validChain},
+		{"unknown priority", validNodes + `
 classes:
   chat:
-    maxDeadline: 5m` + validChain},
-		{"missing maxDeadline", `
-nodes:
-  infer: http://infer:11434
+    priority: urgent
+    deadline: 90s
+    maxDeadline: 5m
+    queueWait: 10s
+    maxQueueWait: 1m` + validChain},
+		{"missing deadline", validNodes + `
 classes:
   chat:
-    deadline: 90s` + validChain},
-		{"deadline exceeds maxDeadline", `
-nodes:
-  infer: http://infer:11434
+    priority: interactive
+    maxDeadline: 5m
+    queueWait: 10s
+    maxQueueWait: 1m` + validChain},
+		{"missing maxDeadline", validNodes + `
 classes:
   chat:
+    priority: interactive
+    deadline: 90s
+    queueWait: 10s
+    maxQueueWait: 1m` + validChain},
+		{"deadline exceeds maxDeadline", validNodes + `
+classes:
+  chat:
+    priority: interactive
     deadline: 10m
-    maxDeadline: 5m` + validChain},
-		{"deadline as bare number", `
-nodes:
-  infer: http://infer:11434
+    maxDeadline: 5m
+    queueWait: 10s
+    maxQueueWait: 1m` + validChain},
+		{"deadline as bare number", validNodes + `
 classes:
   chat:
+    priority: interactive
     deadline: 90
-    maxDeadline: 5m` + validChain},
-		{"empty chain", `
-nodes:
-  infer: http://infer:11434
+    maxDeadline: 5m
+    queueWait: 10s
+    maxQueueWait: 1m` + validChain},
+		{"missing queueWait", validNodes + `
 classes:
   chat:
+    priority: interactive
     deadline: 90s
     maxDeadline: 5m
+    maxQueueWait: 1m` + validChain},
+		{"missing maxQueueWait", validNodes + `
+classes:
+  chat:
+    priority: interactive
+    deadline: 90s
+    maxDeadline: 5m
+    queueWait: 10s` + validChain},
+		{"queueWait exceeds maxQueueWait", validNodes + `
+classes:
+  chat:
+    priority: interactive
+    deadline: 90s
+    maxDeadline: 5m
+    queueWait: 2m
+    maxQueueWait: 1m` + validChain},
+		{"empty chain", validNodes + `
+classes:
+  chat:` + validClassFields + `
     chain: []`},
-		{"chain names unknown node", `
-nodes:
-  infer: http://infer:11434
+		{"chain names unknown node", validNodes + `
 classes:
-  chat:
-    deadline: 90s
-    maxDeadline: 5m
+  chat:` + validClassFields + `
     chain:
       - node: ghost
         model: coder-model:30b`},
-		{"chain link missing model", `
-nodes:
-  infer: http://infer:11434
+		{"chain link missing model", validNodes + `
 classes:
-  chat:
-    deadline: 90s
-    maxDeadline: 5m
+  chat:` + validClassFields + `
     chain:
       - node: infer`},
-		{"invalid class name", `
-nodes:
-  infer: http://infer:11434
+		{"invalid class name", validNodes + `
 classes:
-  "bad name":
-    deadline: 90s
-    maxDeadline: 5m` + validChain},
+  "bad name":` + validClassFields + validChain},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

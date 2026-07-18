@@ -76,24 +76,53 @@ func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
 // Std returns the standard-library time.Duration.
 func (d Duration) Std() time.Duration { return time.Duration(d) }
 
+// Priority is the queueing class of an engine class.  When a node slot
+// frees, interactive waiters are granted ahead of batch — and batch drains
+// whenever no interactive request is waiting, so it never starves forever.
+type Priority string
+
+const (
+	PriorityInteractive Priority = "interactive"
+	PriorityBatch       Priority = "batch"
+)
+
 // routerFile is the on-disk YAML shape of the routing config.  It is decoded
 // with KnownFields so a typo'd key is a startup error, then resolved into the
 // validated RouterConfig — the file shape never routes a request directly.
 type routerFile struct {
-	// Nodes maps a node name to the base URL of its model server,
-	// scheme://host[:port] only — no path, query, or credentials.
-	Nodes map[string]string `yaml:"nodes"`
+	// Nodes maps a node name to its model server.
+	Nodes map[string]nodeFile `yaml:"nodes"`
 	// Classes maps an engine-class name to its route.
 	Classes map[string]classFile `yaml:"classes"`
 }
 
+type nodeFile struct {
+	// URL is the node's base URL, scheme://host[:port] only — no path,
+	// query, or credentials.  Required.
+	URL string `yaml:"url"`
+	// MaxInFlight is how many requests the agency lets run on the node at
+	// once; beyond it, requests wait in the door's priority queue rather
+	// than piling into the model server's blind FIFO.  Required, > 0.
+	MaxInFlight int `yaml:"maxInFlight"`
+}
+
 type classFile struct {
+	// Priority is the class's queueing class: interactive or batch.
+	// Required.
+	Priority Priority `yaml:"priority"`
 	// Deadline is the default total operation budget (queue + decode) when
 	// the caller sends none.  Required.
 	Deadline Duration `yaml:"deadline"`
 	// MaxDeadline is the hard cap: a caller may tighten its budget below
 	// Deadline but never stretch it past MaxDeadline.  Required.
 	MaxDeadline Duration `yaml:"maxDeadline"`
+	// QueueWait is the default per-link queue budget when the caller sends
+	// none: waiting longer than this for a node slot advances the chain —
+	// a too-busy link is an unavailable link.  Required.
+	QueueWait Duration `yaml:"queueWait"`
+	// MaxQueueWait is the hard cap on the caller's queue budget, like
+	// MaxDeadline for Deadline.  Required.
+	MaxQueueWait Duration `yaml:"maxQueueWait"`
 	// Chain is the ordered fallback chain; exhausting it is a refusal,
 	// never a silent substitute.  Required, at least one link.
 	Chain []chainLinkFile `yaml:"chain"`
@@ -108,15 +137,25 @@ type chainLinkFile struct {
 // constructed only by LoadRouterConfig, so holding one means every class
 // names a full chain of resolvable links.
 type RouterConfig struct {
+	nodes   map[string]nodeInfo
 	classes map[ClassName]classRoute
+}
+
+// nodeInfo is one resolved node.
+type nodeInfo struct {
+	url         *url.URL
+	maxInFlight int
 }
 
 // classRoute is one resolved engine class.
 type classRoute struct {
-	name        ClassName
-	deadline    time.Duration // default total operation budget
-	maxDeadline time.Duration // hard cap a caller may not exceed
-	links       []engineLink  // ordered fallback chain
+	name         ClassName
+	priority     Priority
+	deadline     time.Duration // default total operation budget
+	maxDeadline  time.Duration // hard cap a caller may not exceed
+	queueWait    time.Duration // default per-link queue budget
+	maxQueueWait time.Duration // hard cap on the queue budget
+	links        []engineLink  // ordered fallback chain
 }
 
 // engineLink is one resolved (node, model) chain link.
@@ -179,21 +218,24 @@ func parseRouterConfig(raw []byte) (*RouterConfig, error) {
 	if len(f.Nodes) == 0 {
 		return nil, fmt.Errorf("nodes must list at least one node")
 	}
-	nodes := make(map[string]*url.URL, len(f.Nodes))
-	for name, rawURL := range f.Nodes {
+	nodes := make(map[string]nodeInfo, len(f.Nodes))
+	for name, nf := range f.Nodes {
 		if name == "" {
 			return nil, fmt.Errorf("nodes: a node name must not be empty")
 		}
-		u, err := parseNodeURL(rawURL)
+		u, err := parseNodeURL(nf.URL)
 		if err != nil {
 			return nil, fmt.Errorf("nodes.%s: %w", name, err)
 		}
-		nodes[name] = u
+		if nf.MaxInFlight <= 0 {
+			return nil, fmt.Errorf("nodes.%s: maxInFlight is required and must be > 0", name)
+		}
+		nodes[name] = nodeInfo{url: u, maxInFlight: nf.MaxInFlight}
 	}
 	if len(f.Classes) == 0 {
 		return nil, fmt.Errorf("classes must list at least one engine class")
 	}
-	cfg := &RouterConfig{classes: make(map[ClassName]classRoute, len(f.Classes))}
+	cfg := &RouterConfig{nodes: nodes, classes: make(map[ClassName]classRoute, len(f.Classes))}
 	for rawName, cf := range f.Classes {
 		name, err := ParseClassName(rawName)
 		if err != nil {
@@ -230,7 +272,14 @@ func parseNodeURL(rawURL string) (*url.URL, error) {
 
 // resolveClass validates one class and resolves its chain against the node
 // table.
-func resolveClass(name ClassName, cf classFile, nodes map[string]*url.URL) (classRoute, error) {
+func resolveClass(name ClassName, cf classFile, nodes map[string]nodeInfo) (classRoute, error) {
+	switch cf.Priority {
+	case PriorityInteractive, PriorityBatch:
+	case "":
+		return classRoute{}, fmt.Errorf("priority is required (interactive or batch)")
+	default:
+		return classRoute{}, fmt.Errorf("priority %q: want interactive or batch", cf.Priority)
+	}
 	if cf.Deadline <= 0 {
 		return classRoute{}, fmt.Errorf("deadline is required and must be > 0 (e.g. \"90s\")")
 	}
@@ -240,24 +289,36 @@ func resolveClass(name ClassName, cf classFile, nodes map[string]*url.URL) (clas
 	if cf.Deadline > cf.MaxDeadline {
 		return classRoute{}, fmt.Errorf("deadline %s exceeds maxDeadline %s", cf.Deadline.Std(), cf.MaxDeadline.Std())
 	}
+	if cf.QueueWait <= 0 {
+		return classRoute{}, fmt.Errorf("queueWait is required and must be > 0 (e.g. \"10s\")")
+	}
+	if cf.MaxQueueWait <= 0 {
+		return classRoute{}, fmt.Errorf("maxQueueWait is required and must be > 0 (e.g. \"1m\")")
+	}
+	if cf.QueueWait > cf.MaxQueueWait {
+		return classRoute{}, fmt.Errorf("queueWait %s exceeds maxQueueWait %s", cf.QueueWait.Std(), cf.MaxQueueWait.Std())
+	}
 	if len(cf.Chain) == 0 {
 		return classRoute{}, fmt.Errorf("chain must list at least one link")
 	}
 	route := classRoute{
-		name:        name,
-		deadline:    cf.Deadline.Std(),
-		maxDeadline: cf.MaxDeadline.Std(),
-		links:       make([]engineLink, 0, len(cf.Chain)),
+		name:         name,
+		priority:     cf.Priority,
+		deadline:     cf.Deadline.Std(),
+		maxDeadline:  cf.MaxDeadline.Std(),
+		queueWait:    cf.QueueWait.Std(),
+		maxQueueWait: cf.MaxQueueWait.Std(),
+		links:        make([]engineLink, 0, len(cf.Chain)),
 	}
 	for i, link := range cf.Chain {
-		u, ok := nodes[link.Node]
+		node, ok := nodes[link.Node]
 		if !ok {
 			return classRoute{}, fmt.Errorf("chain[%d]: unknown node %q", i, link.Node)
 		}
 		if link.Model == "" {
 			return classRoute{}, fmt.Errorf("chain[%d]: model is required", i)
 		}
-		route.links = append(route.links, engineLink{node: link.Node, url: u, model: link.Model})
+		route.links = append(route.links, engineLink{node: link.Node, url: node.url, model: link.Model})
 	}
 	return route, nil
 }

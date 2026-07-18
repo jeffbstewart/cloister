@@ -25,6 +25,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"sync"
 	"time"
 )
 
@@ -34,6 +35,13 @@ import (
 // (fail-closed: asking for more is a refusal, not a clamp).  The header is a
 // control channel to the agency and is stripped before forwarding.
 const DeadlineHeader = "Agency-Deadline"
+
+// QueueWaitHeader is the caller's max tolerated PER-LINK queue wait as a Go
+// duration string, e.g. "10s".  Waiting longer than this for a node slot
+// advances the fallback chain — a too-busy link is an unavailable link.
+// Same semantics as DeadlineHeader: class default when absent, tighten-only
+// against the class maxQueueWait, stripped before forwarding.
+const QueueWaitHeader = "Agency-Queue-Wait"
 
 // servedByHeader reports which engine actually answered, as node/model —
 // a reply is never silently attributable to nothing (docs/agency.md).
@@ -61,6 +69,8 @@ var errChainExhausted = errors.New("no engine in the chain is reachable")
 // chain transport, via the request context.
 type routeState struct {
 	class classRoute
+	// queueWait is the resolved per-link queue budget for this request.
+	queueWait time.Duration
 	// fields is the request body as raw top-level JSON fields; the model
 	// field is swapped per chain link, everything else is forwarded intact.
 	fields map[string]json.RawMessage
@@ -98,6 +108,12 @@ func newRouter(cfg *RouterConfig, base http.RoundTripper) *router {
 			IdleConnTimeout: 90 * time.Second,
 		}
 	}
+	// One admission gate per node, shared by every class that chains
+	// through it — the door is the one queue in front of each model server.
+	gates := make(map[string]*priorityGate, len(cfg.nodes))
+	for name, node := range cfg.nodes {
+		gates[name] = newPriorityGate(node.maxInFlight)
+	}
 	rt := &router{cfg: cfg}
 	rt.proxy = &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
@@ -106,12 +122,13 @@ func newRouter(cfg *RouterConfig, base http.RoundTripper) *router {
 			st := stateFrom(pr.Out.Context())
 			pr.SetURL(st.class.links[0].url)
 			pr.Out.Header.Del(DeadlineHeader)
+			pr.Out.Header.Del(QueueWaitHeader)
 		},
 		// Negative: flush every write through immediately.  A streaming
 		// completion must reach the consumer token-by-token; buffering a
 		// whole response would turn decode time into dead air.
 		FlushInterval: -1,
-		Transport:     &chainTransport{base: base},
+		Transport:     &chainTransport{base: base, gates: gates},
 		ErrorHandler:  routeErrorHandler,
 	}
 	return rt
@@ -162,12 +179,17 @@ func (rt *router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("agency: %v", err), http.StatusBadRequest)
 		return
 	}
+	queueWait, err := requestQueueWait(route, r.Header.Get(QueueWaitHeader))
+	if err != nil {
+		http.Error(w, fmt.Sprintf("agency: %v", err), http.StatusBadRequest)
+		return
+	}
 
 	// The budget rides context.WithTimeout — one bound covering the whole
 	// forward, never a parallel manual clock check.
 	ctx, cancel := context.WithTimeout(r.Context(), budget)
 	defer cancel()
-	st := &routeState{class: route, fields: fields}
+	st := &routeState{class: route, queueWait: queueWait, fields: fields}
 	r = r.WithContext(context.WithValue(ctx, routeStateKey{}, st))
 	// The body is consumed into fields; the chain transport builds each
 	// attempt's body from there.
@@ -176,23 +198,35 @@ func (rt *router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rt.proxy.ServeHTTP(w, r)
 }
 
-// requestDeadline resolves the caller's budget against the class policy:
-// absent means the class default, present may tighten but never exceed the
-// class cap (fail-closed — over-asking is refused, not clamped, so a caller
-// finds out its assumption is wrong instead of silently running on less).
+// requestDeadline resolves the caller's total budget against the class
+// policy.
 func requestDeadline(route classRoute, header string) (time.Duration, error) {
+	return resolveBudget(DeadlineHeader, header, route.deadline, route.maxDeadline, route.name)
+}
+
+// requestQueueWait resolves the caller's per-link queue budget against the
+// class policy.
+func requestQueueWait(route classRoute, header string) (time.Duration, error) {
+	return resolveBudget(QueueWaitHeader, header, route.queueWait, route.maxQueueWait, route.name)
+}
+
+// resolveBudget resolves one caller-supplied budget header: absent means the
+// class default, present may tighten but never exceed the class cap
+// (fail-closed — over-asking is refused, not clamped, so a caller finds out
+// its assumption is wrong instead of silently running on less).
+func resolveBudget(headerName, header string, def, max time.Duration, class ClassName) (time.Duration, error) {
 	if header == "" {
-		return route.deadline, nil
+		return def, nil
 	}
 	d, err := time.ParseDuration(header)
 	if err != nil {
-		return 0, fmt.Errorf("%s %q: want a Go duration like \"90s\": %w", DeadlineHeader, header, err)
+		return 0, fmt.Errorf("%s %q: want a Go duration like \"90s\": %w", headerName, header, err)
 	}
 	if d <= 0 {
-		return 0, fmt.Errorf("%s %q must be > 0", DeadlineHeader, header)
+		return 0, fmt.Errorf("%s %q must be > 0", headerName, header)
 	}
-	if d > route.maxDeadline {
-		return 0, fmt.Errorf("%s %s exceeds class %q cap %s", DeadlineHeader, d, route.name, route.maxDeadline)
+	if d > max {
+		return 0, fmt.Errorf("%s %s exceeds class %q cap %s", headerName, d, class, max)
 	}
 	return d, nil
 }
@@ -220,11 +254,16 @@ func (rt *router) serveModels(w http.ResponseWriter) {
 
 // chainTransport walks the class's fallback chain: each link gets the request
 // with the model field rewritten to that link's model; a transport error
-// (unreachable, refused, dial timeout) advances to the next link — an HTTP
-// response of any status is an answer from that engine and is returned as-is,
-// because masking a served error behind a fallback would hide misconfig.
+// (unreachable, refused, dial timeout) or an exhausted queue wait advances to
+// the next link — an HTTP response of any status is an answer from that
+// engine and is returned as-is, because masking a served error behind a
+// fallback would hide misconfig.
 type chainTransport struct {
 	base http.RoundTripper
+	// gates admit requests to each node up to its maxInFlight, interactive
+	// ahead of batch.  A slot is held from admission until the response
+	// body is fully consumed — decode time included.
+	gates map[string]*priorityGate
 }
 
 func (t *chainTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -236,8 +275,17 @@ func (t *chainTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if err := req.Context().Err(); err != nil {
 			return nil, err
 		}
+		gate := t.gates[link.node]
+		if err := t.admit(req.Context(), gate, st); err != nil {
+			if ctxErr := req.Context().Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			linkErrs = append(linkErrs, fmt.Errorf("%s: queue wait %s exhausted", link.servedBy(), st.queueWait))
+			continue // a too-busy link is an unavailable link
+		}
 		body, err := bodyForLink(st.fields, link.model)
 		if err != nil {
+			gate.release()
 			return nil, err
 		}
 		out := req.Clone(req.Context())
@@ -253,6 +301,7 @@ func (t *chainTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		out.TransferEncoding = nil
 		resp, err := t.base.RoundTrip(out)
 		if err != nil {
+			gate.release()
 			if ctxErr := req.Context().Err(); ctxErr != nil {
 				return nil, ctxErr
 			}
@@ -261,9 +310,34 @@ func (t *chainTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 		st.servedBy = link.servedBy()
 		resp.Header.Set(servedByHeader, st.servedBy)
+		// The slot stays held while the answer streams; the proxy closes
+		// the body after the copy, releasing it.
+		resp.Body = &releasingBody{ReadCloser: resp.Body, gate: gate}
 		return resp, nil
 	}
 	return nil, fmt.Errorf("%w: %v", errChainExhausted, errors.Join(linkErrs...))
+}
+
+// admit waits for a slot on the link's gate, bounded by the request's queue
+// budget and by whatever remains of its total budget.
+func (t *chainTransport) admit(ctx context.Context, gate *priorityGate, st *routeState) error {
+	waitCtx, cancel := context.WithTimeout(ctx, st.queueWait)
+	defer cancel()
+	return gate.acquire(waitCtx, st.class.priority)
+}
+
+// releasingBody hands the node slot back when the response body is closed —
+// the end of the stream, not the start, is when the node's capacity frees.
+type releasingBody struct {
+	io.ReadCloser
+	gate *priorityGate
+	once sync.Once
+}
+
+func (b *releasingBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.once.Do(b.gate.release)
+	return err
 }
 
 // bodyForLink re-serializes the request fields with the model field swapped
