@@ -93,8 +93,9 @@ func stateFrom(ctx context.Context) *routeState {
 // (containment): top-level JSON fields only, and only the model field is
 // touched.
 type router struct {
-	cfg   *RouterConfig
-	proxy *httputil.ReverseProxy
+	cfg      *RouterConfig
+	presence *presenceTracker
+	proxy    *httputil.ReverseProxy
 }
 
 // newRouter builds the router.  base is the per-link round-tripper seam; nil
@@ -114,7 +115,7 @@ func newRouter(cfg *RouterConfig, base http.RoundTripper) *router {
 	for name, node := range cfg.nodes {
 		gates[name] = newPriorityGate(node.maxInFlight)
 	}
-	rt := &router{cfg: cfg}
+	rt := &router{cfg: cfg, presence: newPresenceTracker(cfg)}
 	rt.proxy = &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			// The chain transport picks the real target per attempt; point
@@ -128,7 +129,7 @@ func newRouter(cfg *RouterConfig, base http.RoundTripper) *router {
 		// completion must reach the consumer token-by-token; buffering a
 		// whole response would turn decode time into dead air.
 		FlushInterval: -1,
-		Transport:     &chainTransport{base: base, gates: gates},
+		Transport:     &chainTransport{base: base, gates: gates, presence: rt.presence},
 		ErrorHandler:  routeErrorHandler,
 	}
 	return rt
@@ -264,6 +265,9 @@ type chainTransport struct {
 	// ahead of batch.  A slot is held from admission until the response
 	// body is fully consumed — decode time included.
 	gates map[string]*priorityGate
+	// presence marks which nodes answered the last probe; an absent node's
+	// links are skipped without a dial.
+	presence *presenceTracker
 }
 
 func (t *chainTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -274,6 +278,12 @@ func (t *chainTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		// exhausted", not "chain exhausted".
 		if err := req.Context().Err(); err != nil {
 			return nil, err
+		}
+		// An absent node is an unavailable link, skipped without a dial —
+		// neither a queue slot nor a dial timeout is spent on it.
+		if !t.presence.present(link.node) {
+			linkErrs = append(linkErrs, fmt.Errorf("%s: node absent at last probe", link.servedBy()))
+			continue
 		}
 		gate := t.gates[link.node]
 		if err := t.admit(req.Context(), gate, st); err != nil {

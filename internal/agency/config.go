@@ -90,10 +90,20 @@ const (
 // with KnownFields so a typo'd key is a startup error, then resolved into the
 // validated RouterConfig — the file shape never routes a request directly.
 type routerFile struct {
+	// Probe governs node presence detection.
+	Probe probeFile `yaml:"probe"`
 	// Nodes maps a node name to its model server.
 	Nodes map[string]nodeFile `yaml:"nodes"`
 	// Classes maps an engine-class name to its route.
 	Classes map[string]classFile `yaml:"classes"`
+}
+
+type probeFile struct {
+	// Interval is how often every node is probed for presence.  Required.
+	Interval Duration `yaml:"interval"`
+	// Timeout bounds one node's probe; an unanswered probe marks the node
+	// absent.  Required, at most Interval.
+	Timeout Duration `yaml:"timeout"`
 }
 
 type nodeFile struct {
@@ -137,8 +147,10 @@ type chainLinkFile struct {
 // constructed only by LoadRouterConfig, so holding one means every class
 // names a full chain of resolvable links.
 type RouterConfig struct {
-	nodes   map[string]nodeInfo
-	classes map[ClassName]classRoute
+	probeInterval time.Duration
+	probeTimeout  time.Duration
+	nodes         map[string]nodeInfo
+	classes       map[ClassName]classRoute
 }
 
 // nodeInfo is one resolved node.
@@ -215,6 +227,15 @@ func parseRouterConfig(raw []byte) (*RouterConfig, error) {
 	if err := dec.Decode(&f); err != nil {
 		return nil, fmt.Errorf("parse: %w", err)
 	}
+	if f.Probe.Interval <= 0 {
+		return nil, fmt.Errorf("probe.interval is required and must be > 0 (e.g. \"15s\")")
+	}
+	if f.Probe.Timeout <= 0 {
+		return nil, fmt.Errorf("probe.timeout is required and must be > 0 (e.g. \"3s\")")
+	}
+	if f.Probe.Timeout > f.Probe.Interval {
+		return nil, fmt.Errorf("probe.timeout %s exceeds probe.interval %s", f.Probe.Timeout.Std(), f.Probe.Interval.Std())
+	}
 	if len(f.Nodes) == 0 {
 		return nil, fmt.Errorf("nodes must list at least one node")
 	}
@@ -235,7 +256,12 @@ func parseRouterConfig(raw []byte) (*RouterConfig, error) {
 	if len(f.Classes) == 0 {
 		return nil, fmt.Errorf("classes must list at least one engine class")
 	}
-	cfg := &RouterConfig{nodes: nodes, classes: make(map[ClassName]classRoute, len(f.Classes))}
+	cfg := &RouterConfig{
+		probeInterval: f.Probe.Interval.Std(),
+		probeTimeout:  f.Probe.Timeout.Std(),
+		nodes:         nodes,
+		classes:       make(map[ClassName]classRoute, len(f.Classes)),
+	}
 	for rawName, cf := range f.Classes {
 		name, err := ParseClassName(rawName)
 		if err != nil {

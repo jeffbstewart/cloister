@@ -26,6 +26,13 @@
 # request with the Agency-Deadline and Agency-Queue-Wait headers (Go
 # duration strings, e.g. "45s") up to the class's maxima.
 
+probe:
+  interval: 15s   # how often every node is probed for presence; a node that
+                  # leaves (a laptop, a desktop asleep) is skipped by chains
+                  # until a probe sees it again — detection only, the door
+                  # NEVER wakes a node
+  timeout: 3s     # bound on one probe (GET /v1/models); unanswered = absent
+
 nodes:
   # Addresses beyond the infra stack (a LAN node) belong here in your copy,
   # not in the repo.
