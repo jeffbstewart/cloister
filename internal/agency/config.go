@@ -114,6 +114,13 @@ type nodeFile struct {
 	// once; beyond it, requests wait in the door's priority queue rather
 	// than piling into the model server's blind FIFO.  Required, > 0.
 	MaxInFlight int `yaml:"maxInFlight"`
+	// Models is the CLOSED set of model tags allowed on this node —
+	// typically one on a single-GPU node, a few on a node with room for
+	// them.  Every chain link naming this node must pick from the set, so
+	// nothing routable can ever trigger an eviction: the never-evict rule
+	// is enforced by construction at config load, not arbitrated at
+	// request time.  Required, at least one tag.
+	Models []string `yaml:"models"`
 }
 
 type classFile struct {
@@ -157,6 +164,7 @@ type RouterConfig struct {
 type nodeInfo struct {
 	url         *url.URL
 	maxInFlight int
+	models      []string // the pinned model set, in config order
 }
 
 // classRoute is one resolved engine class.
@@ -251,7 +259,18 @@ func parseRouterConfig(raw []byte) (*RouterConfig, error) {
 		if nf.MaxInFlight <= 0 {
 			return nil, fmt.Errorf("nodes.%s: maxInFlight is required and must be > 0", name)
 		}
-		nodes[name] = nodeInfo{url: u, maxInFlight: nf.MaxInFlight}
+		if len(nf.Models) == 0 {
+			return nil, fmt.Errorf("nodes.%s: models must pin at least one model tag", name)
+		}
+		for i, model := range nf.Models {
+			if model == "" {
+				return nil, fmt.Errorf("nodes.%s: models[%d] is empty", name, i)
+			}
+			if slices.Contains(nf.Models[:i], model) {
+				return nil, fmt.Errorf("nodes.%s: models lists %q twice", name, model)
+			}
+		}
+		nodes[name] = nodeInfo{url: u, maxInFlight: nf.MaxInFlight, models: nf.Models}
 	}
 	if len(f.Classes) == 0 {
 		return nil, fmt.Errorf("classes must list at least one engine class")
@@ -343,6 +362,13 @@ func resolveClass(name ClassName, cf classFile, nodes map[string]nodeInfo) (clas
 		}
 		if link.Model == "" {
 			return classRoute{}, fmt.Errorf("chain[%d]: model is required", i)
+		}
+		// The never-evict invariant: a chain may only ask a node for a
+		// model pinned there, so no routable request can force a load
+		// that displaces another resident.
+		if !slices.Contains(node.models, link.Model) {
+			return classRoute{}, fmt.Errorf("chain[%d]: model %q is not pinned on node %q (pinned: %s)",
+				i, link.Model, link.Node, strings.Join(node.models, ", "))
 		}
 		route.links = append(route.links, engineLink{node: link.Node, url: node.url, model: link.Model})
 	}

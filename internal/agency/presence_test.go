@@ -20,6 +20,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -36,9 +38,13 @@ nodes:
   up:
     url: %s
     maxInFlight: 4
+    models:
+      - coder-model:30b
   down:
     url: %s
     maxInFlight: 4
+    models:
+      - coder-model:30b
 classes:
   chat:
     priority: interactive
@@ -62,14 +68,25 @@ func TestPresenceStartsOptimistic(t *testing.T) {
 	}
 }
 
-// TestProbeAllMarksReachability: an answering node is present, an
-// unreachable one absent, and the probe asks the OpenAI surface the door
-// forwards — GET /v1/models.
+// TestProbeAllMarksReachability: an answering node is present (asked on the
+// OpenAI surface the door forwards, GET /v1/models), an unreachable one is
+// absent with unknown residency, and the present node's /api/ps answer
+// becomes its recorded resident set.
 func TestProbeAllMarksReachability(t *testing.T) {
-	var probedPath atomic.Value
+	var mu sync.Mutex
+	var probedPaths []string
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		probedPath.Store(r.URL.Path)
-		io.WriteString(w, `{"object":"list","data":[]}`)
+		mu.Lock()
+		probedPaths = append(probedPaths, r.URL.Path)
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/v1/models":
+			io.WriteString(w, `{"object":"list","data":[]}`)
+		case "/api/ps":
+			io.WriteString(w, `{"models":[{"name":"coder-model:30b"}]}`)
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	defer up.Close()
 
@@ -82,8 +99,70 @@ func TestProbeAllMarksReachability(t *testing.T) {
 	if tr.present("down") {
 		t.Error("unreachable node marked present")
 	}
-	if got, _ := probedPath.Load().(string); got != "/v1/models" {
-		t.Errorf("probe hit %q, want /v1/models", got)
+	mu.Lock()
+	paths := slices.Clone(probedPaths)
+	mu.Unlock()
+	if !slices.Equal(paths, []string{"/v1/models", "/api/ps"}) {
+		t.Errorf("probe hit %v, want the health check then the residency check", paths)
+	}
+	resident, known := tr.residency("up")
+	if !known || !slices.Equal(resident, []string{"coder-model:30b"}) {
+		t.Errorf("up residency = %v (known %t), want the /api/ps answer", resident, known)
+	}
+	if _, known := tr.residency("down"); known {
+		t.Error("absent node's residency is known, want unknown")
+	}
+}
+
+// TestProbeAssertsResidencyDrift: the recorded resident set follows what
+// /api/ps reports — a foreign resident and a missing pinned model both show
+// up, and a later probe sees the correction.
+func TestProbeAssertsResidencyDrift(t *testing.T) {
+	var psBody atomic.Value
+	psBody.Store(`{"models":[{"name":"stray:7b"}]}`)
+	node := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/ps" {
+			io.WriteString(w, psBody.Load().(string))
+			return
+		}
+		io.WriteString(w, `{"object":"list","data":[]}`)
+	}))
+	defer node.Close()
+
+	tr := newPresenceTracker(presenceConfig(t, node.URL, deadServerURL(t)))
+	tr.probeAll(context.Background())
+	resident, known := tr.residency("up")
+	if !known || !slices.Equal(resident, []string{"stray:7b"}) {
+		t.Errorf("residency = %v (known %t), want the drifted set [stray:7b]", resident, known)
+	}
+
+	psBody.Store(`{"models":[{"name":"coder-model:30b"}]}`)
+	tr.probeAll(context.Background())
+	if resident, _ := tr.residency("up"); !slices.Equal(resident, []string{"coder-model:30b"}) {
+		t.Errorf("residency = %v after correction, want [coder-model:30b]", resident)
+	}
+}
+
+// TestResidencyUnknownWhenPsFails: a node whose /api/ps is unavailable (a
+// non-ollama engine, say) stays PRESENT with unknown residency — the drift
+// alarm goes quiet, routing is untouched.
+func TestResidencyUnknownWhenPsFails(t *testing.T) {
+	node := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/ps" {
+			http.NotFound(w, r)
+			return
+		}
+		io.WriteString(w, `{"object":"list","data":[]}`)
+	}))
+	defer node.Close()
+
+	tr := newPresenceTracker(presenceConfig(t, node.URL, deadServerURL(t)))
+	tr.probeAll(context.Background())
+	if !tr.present("up") {
+		t.Error("node with no /api/ps marked absent, want present")
+	}
+	if _, known := tr.residency("up"); known {
+		t.Error("residency known despite /api/ps failing, want unknown")
 	}
 }
 

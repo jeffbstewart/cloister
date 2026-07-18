@@ -16,12 +16,16 @@ package agency
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -42,10 +46,22 @@ type presenceTracker struct {
 	nodes  map[string]*nodePresence
 }
 
-// nodePresence is one node's mutable reachability flag.
+// nodePresence is one node's mutable observed state: the reachability flag
+// the hot path reads, and the resident-model set the probes assert against
+// the pinned config.
 type nodePresence struct {
 	url     *url.URL
+	pinned  []string // the node's configured model set
 	present atomic.Bool
+
+	mu sync.Mutex
+	// resident is the model set the last probe saw loaded (sorted);
+	// meaningful only while residencyKnown.  Residency is unknown when the
+	// node is absent or its /api/ps is unreachable — a non-ollama node
+	// stays permanently unknown, which costs nothing: routing never reads
+	// this, it exists to assert the pinned config against reality.
+	resident       []string
+	residencyKnown bool
 }
 
 // newPresenceTracker builds the tracker over the configured nodes.  Every
@@ -67,7 +83,7 @@ func newPresenceTracker(cfg *RouterConfig) *presenceTracker {
 		nodes: make(map[string]*nodePresence, len(cfg.nodes)),
 	}
 	for name, node := range cfg.nodes {
-		p := &nodePresence{url: node.url}
+		p := &nodePresence{url: node.url, pinned: node.models}
 		p.present.Store(true)
 		t.nodes[name] = p
 	}
@@ -93,7 +109,116 @@ func (t *presenceTracker) probeAll(ctx context.Context) {
 				log.Printf("agency: node %s is absent (probe: %v)", name, err)
 			}
 		}
+		if present {
+			t.probeResidency(ctx, name, node)
+		} else {
+			// An absent node's residency is unknown, and recovery gets a
+			// fresh residency line rather than trusting stale state.
+			node.setResidency(nil, false)
+		}
 	}
+}
+
+// probeResidency asserts the node's pinned config against what its /api/ps
+// says is actually resident.  Residency never steers routing (the pinned
+// config already makes a bad ask unroutable); this is the drift alarm — a
+// pinned model not yet loaded, or a foreign model that something other than
+// the door put there.
+func (t *presenceTracker) probeResidency(ctx context.Context, name string, node *nodePresence) {
+	resident, err := t.fetchResident(ctx, node.url)
+	if err != nil {
+		if node.setResidency(nil, false) {
+			log.Printf("agency: node %s residency unknown (api/ps: %v)", name, err)
+		}
+		return
+	}
+	if node.setResidency(resident, true) {
+		log.Printf("agency: node %s %s", name, describeResidency(resident, node.pinned))
+	}
+}
+
+// setResidency records the observed resident set and reports whether it
+// changed since the last observation.
+func (n *nodePresence) setResidency(resident []string, known bool) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	changed := known != n.residencyKnown || !slices.Equal(resident, n.resident)
+	n.resident, n.residencyKnown = resident, known
+	return changed
+}
+
+// residency returns the last observed resident set and whether it is known.
+func (t *presenceTracker) residency(node string) ([]string, bool) {
+	n := t.nodes[node]
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return slices.Clone(n.resident), n.residencyKnown
+}
+
+// describeResidency renders one residency observation against the pinned
+// set: what is loaded, which pinned models are not (a cold start or a
+// keep-alive lapse — they load on their next request), and which residents
+// are FOREIGN (nothing the door routes can have loaded them, so someone
+// else reached the node).
+func describeResidency(resident, pinned []string) string {
+	msg := "resident models: " + joinOrNone(resident)
+	if cold := subtract(pinned, resident); len(cold) > 0 {
+		msg += "; pinned but not loaded: " + joinOrNone(cold)
+	}
+	if foreign := subtract(resident, pinned); len(foreign) > 0 {
+		msg += "; FOREIGN, not pinned here: " + joinOrNone(foreign)
+	}
+	return msg
+}
+
+func joinOrNone(models []string) string {
+	if len(models) == 0 {
+		return "(none)"
+	}
+	return strings.Join(models, ", ")
+}
+
+// subtract returns the members of a not present in b, preserving a's order.
+func subtract(a, b []string) []string {
+	var out []string
+	for _, s := range a {
+		if !slices.Contains(b, s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// fetchResident asks ollama's native /api/ps which models are loaded.  The
+// consumer-facing door never exposes this path; only the probe dials it.
+func (t *presenceTracker) fetchResident(ctx context.Context, u *url.URL) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.JoinPath("api", "ps").String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("status %s", resp.Status)
+	}
+	var ps struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&ps); err != nil {
+		return nil, fmt.Errorf("parse api/ps: %w", err)
+	}
+	resident := make([]string, 0, len(ps.Models))
+	for _, m := range ps.Models {
+		resident = append(resident, m.Name)
+	}
+	slices.Sort(resident)
+	return resident, nil
 }
 
 // probe asks one node for its model list — the same OpenAI-compatible

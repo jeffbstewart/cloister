@@ -58,10 +58,29 @@ The **agency**: the sole inference door.
   chain; every response carries which engine actually served it.  The
   librarian's and corrector's engine-routing designs collapse into this
   one config.
-- **Residency-aware scheduling.**  Route to where the model is already
-  loaded; prefer queueing over eviction; model loads are deliberate,
-  rare events.  Session affinity keeps a conversation on the node whose
-  prompt cache is warm.
+- **Residency by construction, not arbitration** (2026-07-18 refinement
+  of the original route-to-loaded/queue-over-evict design).  Each node's
+  config pins the CLOSED set of models allowed there — typically one on
+  a single-GPU node, a few where memory holds them — and config
+  validation refuses any chain link asking a node for an unpinned model.
+  Eviction is not prevented at request time; it is unrequestable: the
+  door cannot be asked for anything that would displace a resident.  The
+  operator sizes each node's OLLAMA_MAX_LOADED_MODELS to its pinned set.
+  Probes assert the pinned set against the node's /api/ps and log
+  drift — a pinned model not yet loaded (cold start or keep-alive lapse;
+  it loads on its next request) or a FOREIGN resident (something other
+  than the door reached the node).  Residency never steers routing.
+- **Session affinity: a non-goal** (2026-07-18).  Ollama's "prompt
+  cache" is the per-slot KV cache in GPU memory: llama.cpp reuses the
+  longest matching token prefix when a request lands on a slot, so
+  "warm" means "this node still holds a slot whose tokens prefix the
+  resent transcript" — nothing persists, nothing is shared across
+  nodes.  Affinity would only pay when one class load-balances across
+  nodes holding the same model; our chains are ordered fallbacks (the
+  first present link always serves), and with pinned model sets a model
+  rarely lives on two nodes at all.  A conversation changes nodes only
+  when a link flaps or is saturated — and then availability beats
+  warmth.  Revisit only if a class ever genuinely load-balances.
 - **Presence.**  Sometimes-there nodes (a laptop) are probed; chains
   degrade when a node leaves and recover without operator action when it
   returns.
@@ -177,8 +196,11 @@ deep-think node: dialed by the agency via env-provided address
    presence: every node probed via GET /v1/models on a configured
    interval; chains skip a node marked absent without a dial and pick it
    back up at the next probe after it returns; detection only, never
-   wake-on-LAN).  Residency arbitration and session affinity remain, and
-   the node itself is wired in at turn-on via its env-provided address.
+   wake-on-LAN).  Residency — **DONE** as pinned per-node model sets
+   (never-evict by construction; probes assert the sets against /api/ps
+   and log drift); session affinity recorded as a non-goal (see Shape).
+   The deep-think node itself is wired in at turn-on via its
+   env-provided address.
 4. The status volume + the state services' Inference panel.
 5. Librarian/corrector land their inference through classes (their docs'
    engine-routing sections become agency config).

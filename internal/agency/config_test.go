@@ -15,6 +15,7 @@
 package agency
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -29,9 +30,14 @@ nodes:
   infer:
     url: http://infer:11434
     maxInFlight: 4
+    models:
+      - coder-model:30b
   macbook:
     url: http://deep-think-node:11434
     maxInFlight: 2
+    models:
+      - big-moe:latest
+      - big-moe:small
 classes:
   interactive-code:
     priority: interactive
@@ -63,8 +69,9 @@ classes:
 	if cfg.probeInterval != 15*time.Second || cfg.probeTimeout != 3*time.Second {
 		t.Errorf("probe = %s/%s, want 15s/3s", cfg.probeInterval, cfg.probeTimeout)
 	}
-	if node := cfg.nodes["macbook"]; node.maxInFlight != 2 || node.url.Host != "deep-think-node:11434" {
-		t.Errorf("macbook node = %+v, want maxInFlight 2 at deep-think-node:11434", node)
+	if node := cfg.nodes["macbook"]; node.maxInFlight != 2 || node.url.Host != "deep-think-node:11434" ||
+		!slices.Equal(node.models, []string{"big-moe:latest", "big-moe:small"}) {
+		t.Errorf("macbook node = %+v, want maxInFlight 2 at deep-think-node:11434 pinning both big-moe tags", node)
 	}
 
 	name, err := ParseClassName("deep-think")
@@ -105,7 +112,9 @@ probe:
 nodes:
   infer:
     url: http://infer:11434
-    maxInFlight: 4`
+    maxInFlight: 4
+    models:
+      - coder-model:30b`
 	const validClassFields = `
     priority: interactive
     deadline: 90s
@@ -172,6 +181,38 @@ nodes:
     maxInFlight: 4
 classes:
   chat:` + validClassFields + validChain},
+		{"node missing models", validProbe + `
+nodes:
+  infer:
+    url: http://infer:11434
+    maxInFlight: 4
+classes:
+  chat:` + validClassFields + validChain},
+		{"node model empty", validProbe + `
+nodes:
+  infer:
+    url: http://infer:11434
+    maxInFlight: 4
+    models:
+      - ""
+classes:
+  chat:` + validClassFields + validChain},
+		{"node model duplicated", validProbe + `
+nodes:
+  infer:
+    url: http://infer:11434
+    maxInFlight: 4
+    models:
+      - coder-model:30b
+      - coder-model:30b
+classes:
+  chat:` + validClassFields + validChain},
+		{"chain model not pinned on node", validNodes + `
+classes:
+  chat:` + validClassFields + `
+    chain:
+      - node: infer
+        model: unpinned-model:7b`},
 		{"missing priority", validNodes + `
 classes:
   chat:
