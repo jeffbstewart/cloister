@@ -38,5 +38,8 @@ alpine/socat:1.8.0.3
 test-token-abc123
 
 # Placeholder the local inference path requires (ollama ignores the key, but
-# the OpenAI client wants one set) — not a credential.
+# the OpenAI client wants one set) — not a credential.  The Bearer form is
+# the same placeholder as internal/agency's tests assert it passes the door
+# untouched.
 OPENAI_API_KEY=ignored-for-local-use
+Bearer ignored-for-local-use

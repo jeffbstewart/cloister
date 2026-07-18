@@ -13,13 +13,47 @@
 # limitations under the License.
 
 # ── Shared infrastructure stack ─────────────────────────────────────────────
-# The GPU inference node and its localhost bridge. LONG-LIVED: deploy once and
-# leave up (model reloads are expensive). It knows nothing about any project.
+# The GPU inference node, the agency (the sole inference door fronting it),
+# and the localhost bridge. LONG-LIVED: deploy once and leave up (model
+# reloads are expensive). It knows nothing about any project.
 #
-# Per-project cells (cell-stack.yaml) attach to the `infernet` network this
-# stack publishes, to reach `infer`. Deploy this first.
+# Per-project cells (ai-workers.yaml) attach to the `infernet` network this
+# stack publishes, to reach the `agency`. Deploy this first.
+#
+# Stack env vars:
+#   MODELS_DIR    host directory holding ollama's model store (default
+#                 c:/ai_models); see docs/GETTING_STARTED.md for staging it
+#   AGENCY_IMAGE  the agent-builder image serving the agency, e.g.
+#                 cloister-builder:latest or a pinned cloister-builder:sha-<commit>
+#   TZ            timezone for the agency's log timestamps (default UTC)
 
 services:
+  agency:
+    # The sole inference door (docs/agency.md).  Phase 1: a streaming
+    # OpenAI-compatible pass-through fronting `infer`, which holds no
+    # consumer-reachable network of its own — cells dial
+    # http://agency:11434/v1 and only /v1/ paths pass (ollama's native
+    # API, pulls included, is unreachable through the door).
+    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${AGENCY_IMAGE:?set AGENCY_IMAGE, the agent-builder image serving the agency, e.g. cloister-builder:latest}
+    container_name: agency
+    user: "1000:1000"
+    restart: unless-stopped
+    command: ["-worker-mode", "agency", "-addr", ":11434", "-upstream", "http://infer:11434"]
+    environment:
+      - TZ=${TZ:-UTC}
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/agent-builder", "-healthcheck", "-addr", ":11434"]
+      interval: 30s
+    networks:
+      - infernet                         # consumers (cells) dial in here
+      - modelnet                         # the only route to infer
   infer:
     image: ollama/ollama:0.24.0          # pin a version; avoid :latest for reproducibility
     container_name: infer
@@ -62,16 +96,20 @@ services:
     security_opt: ["no-new-privileges:true"]
     pids_limit: 256
     networks:
-      - infernet
+      - modelnet                         # reachable ONLY via the agency; no consumer net
 
   proxy:
     image: alpine/socat:1.8.0.3
-    container_name: infer-proxy
+    container_name: agency-proxy
     restart: unless-stopped
     user: "65534:65534"                  # nobody
-    command: ["TCP-LISTEN:11434,fork,reuseaddr", "TCP:infer:11434"]
+    # Fronts the AGENCY, not raw ollama: host smoke tests hit the same door
+    # the cells do (GET /v1/models), and direct host access to the model
+    # server is gone.  Model staging is unaffected — weights enter via the
+    # host-side ollama store (docs/GETTING_STARTED.md).
+    command: ["TCP-LISTEN:11434,fork,reuseaddr", "TCP:agency:11434"]
     ports:
-      - "127.0.0.1:11434:11434"          # host reaches ollama for staging/debugging
+      - "127.0.0.1:11434:11434"          # host reaches the agency for smoke tests
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     read_only: true
@@ -84,4 +122,6 @@ networks:
   infernet:
     internal: true                       # NO route to the internet => no egress
     name: infernet                       # stable name so per-project cells join as external
+  modelnet:
+    internal: true                       # agency <-> infer; the model server's ONLY edge
   frontend: {}

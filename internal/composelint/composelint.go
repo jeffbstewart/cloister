@@ -12,8 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package composelint statically checks the cell-stack compose file
-// (docker/ai-workers.yaml) for the cell's containment invariants.
+// Package composelint statically checks the compose files for the
+// containment invariants: Check covers the cell stack
+// (docker/ai-workers.yaml), CheckInfra the shared inference stack
+// (docker/inference.yaml, see infra.go), and Identify tells them apart.
 //
 // Scholar: holds no `egress` network and no route to
 // builder/scribe/workspace, every network it IS on is internal (no
@@ -41,10 +43,11 @@ type compose struct {
 }
 
 type service struct {
-	Command  []string `yaml:"command"`
-	Volumes  []string `yaml:"volumes"`
-	Networks []string `yaml:"networks"`
-	User     string   `yaml:"user"`
+	Command     []string `yaml:"command"`
+	Volumes     []string `yaml:"volumes"`
+	Networks    []string `yaml:"networks"`
+	Environment []string `yaml:"environment"`
+	User        string   `yaml:"user"`
 }
 
 type networkDef struct {
@@ -183,6 +186,23 @@ func Check(data []byte) ([]string, error) {
 	for _, name := range []string{"librarian", "scribe", "builder"} {
 		if svc, ok := c.Services[name]; ok && svc.runsAsRoot() {
 			v = append(v, fmt.Sprintf("%s must run as a non-root user (the workspace owner's uid); user = %q", name, svc.User))
+		}
+	}
+
+	// The inference door: every consumer's model endpoint is the agency
+	// (docs/agency.md).  An env var dialing `infer` directly is drift back
+	// to the pre-agency topology — it would bypass the door (and fail at
+	// runtime, since infer no longer shares a network with any cell).
+	var svcNames []string
+	for name := range c.Services {
+		svcNames = append(svcNames, name)
+	}
+	sort.Strings(svcNames)
+	for _, name := range svcNames {
+		for _, env := range c.Services[name].Environment {
+			if strings.Contains(env, "//infer:") {
+				v = append(v, fmt.Sprintf("%s dials `infer` directly (%s) — consumers reach models only through the agency", name, env))
+			}
 		}
 	}
 

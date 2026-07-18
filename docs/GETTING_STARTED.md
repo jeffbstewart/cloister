@@ -61,14 +61,25 @@ Once per machine, before any cell.
    authentication.
 4. Repository reference: `refs/heads/main`.
 5. Compose path: `docker/inference.yaml`.
-6. Environment variables: `MODELS_DIR` = your staging directory from step 1
-   (defaults to `c:/ai_models` if unset).
+6. Environment variables:
+   - `MODELS_DIR` = your staging directory from step 1 (defaults to
+     `c:/ai_models` if unset).
+   - `AGENCY_IMAGE` = the image serving the **agency**, the inference door
+     every consumer dials (see [agency.md](agency.md)):
+     `cloister-builder:sha-<commit>` pinned from
+     [GHCR](https://github.com/jeffbstewart?tab=packages), or
+     `cloister-builder:latest`.
 7. Deploy, then verify from the host — this proxy port is one of the only
    two localhost ports the whole system publishes:
 
 ```
-curl http://127.0.0.1:11434/api/tags     # lists your staged models
+curl -i http://127.0.0.1:11434/v1/models     # lists your staged models
 ```
+
+The `Agency-Served-By` response header proves the request went through the
+agency door rather than raw ollama.  (Ollama's native API, `/api/tags`
+included, is deliberately not reachable through the door — staging still
+works because it uses the host-side ollama store directly.)
 
 The stack is long-lived: deploy once and leave it up (model loads are
 expensive, and every project cell shares it).

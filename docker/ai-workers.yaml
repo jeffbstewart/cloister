@@ -64,13 +64,15 @@
 #       "librarian": { "httpUrl": "http://librarian:9400/mcp", "timeout": 2400000 } } }
 #
 # Least-privilege network map (every edge is a network hop or token-gated API):
-#   agent   ── infernet ────> infer         agent   ── buildnet ─────> builder + scribe + librarian (MCP)
+#   agent   ── infernet ────> agency        agent   ── buildnet ─────> builder + scribe + librarian (MCP)
 #   librarian ─ statenet ───> state (denial audit); ro workspace — the agent's ONLY source view
-#   agent   ── researchnet ─> scholar (MCP)  scholar ── infernet ────> infer (model)
+#   agent   ── researchnet ─> scholar (MCP)  scholar ── infernet ────> agency (model)
 #   builder ── statenet ───> state (sink)    scribe  ── statenet ─────> state (audit + diffs)
 #   scholar ── scholarstate > state (audit)  scholar ── kagiegress ──> kagi-relay ── egress ─> kagi.com
 #   state   ── statepub ───> status relay    status  ── frontend ────> host publish
-# So: infer never shares a net with builder/scribe; the agent cannot reach state;
+# So: all inference rides through the agency (raw `infer` sits behind it on the
+# infra stack's private modelnet); infer never shares a net with builder/scribe;
+# the agent cannot reach state;
 # the scholar handles untrusted web content and has NO route to builder/scribe/
 # workspace and NO `egress` net — only the kagi-relay touches the internet, pinned
 # to kagi.com. Neither the state service, scribe, nor scholar holds open egress.
@@ -107,7 +109,7 @@ services:
     command: ["sleep", "infinity"]
     environment:
       - *tz
-      - OPENAI_BASE_URL=http://infer:11434/v1
+      - OPENAI_BASE_URL=http://agency:11434/v1
       - OPENAI_API_KEY=ignored-for-local-use
       - OPENAI_MODEL=${OPENAI_MODEL:?set OPENAI_MODEL, the model the agent drives}
       # - BUILDER_MCP_URL=http://builder:9200/mcp   # default; override only for a nonstandard builder
@@ -127,7 +129,7 @@ services:
     pids_limit: 512
     mem_limit: 2g
     networks:
-      - infernet                         # reach infer (shared infra stack)
+      - infernet                         # reach the agency (shared infra stack)
       - buildnet                         # reach the builder MCP; NOT infer's peers
       - researchnet                      # reach the scholar MCP (research)
 
@@ -212,7 +214,7 @@ services:
     # Same binary, librarian mode: the read side of the cell — mechanical read
     # tools AND inference-backed comprehension tools on :9400, served from an
     # in-memory, shield-filtered model of the workspace (docs/librarian.md).
-    # Comprehension pushes only shield-cleared content to `infer` over infernet;
+    # Comprehension pushes only shield-cleared content to the agency over infernet;
     # with OPENAI_* unset the librarian still boots mechanical-only.  Read
     # DENIALS (only) are audited to state.
     command: ["-worker-mode", "librarian", "-addr", ":9400", "-workspace", "/workspace"]
@@ -220,7 +222,7 @@ services:
       - *tz
       - STATE_URL=http://state:9201
       - STATE_TOKEN=${STATE_TOKEN}
-      - OPENAI_BASE_URL=http://infer:11434/v1
+      - OPENAI_BASE_URL=http://agency:11434/v1
       - OPENAI_MODEL=${OPENAI_MODEL}
     volumes:
       - *workspace-ro                    # ro: the sole workspace view on the agent's side of the cell
@@ -238,7 +240,7 @@ services:
     networks:
       - buildnet                         # reachable by the agent (inbound MCP)
       - statenet                         # denial audits to state; internal -> no egress
-      - infernet                         # reach infer for the comprehension ops (shared infra stack)
+      - infernet                         # reach the agency for the comprehension ops (shared infra stack)
 
   state:
     image: ${REGISTRY:-ghcr.io/jeffbstewart}/${BUILDER_IMAGE}
@@ -294,8 +296,8 @@ services:
     user: "1000:1000"
     restart: unless-stopped
     # Same binary, scholar mode: a quarantined research service. Serves ONE MCP
-    # tool research(query) on :9500 and internally drives a model (over the infer
-    # OpenAI API) with a FIXED three-tool menu (web_search / extract_url_as_markdown
+    # tool research(query) on :9500 and internally drives a model (over the
+    # agency's OpenAI API) with a FIXED three-tool menu (web_search / extract_url_as_markdown
     # / respond) whose only egress is Kagi via the kagi-relay. It handles UNTRUSTED
     # web content, so it holds no /workspace mount, no route to builder/scribe, and
     # no `egress` network — its sole internet path is the relay. On boot it
@@ -306,7 +308,7 @@ services:
       - *tz
       - STATE_URL=http://state:9201
       - STATE_TOKEN=${STATE_TOKEN}
-      - OPENAI_BASE_URL=http://infer:11434/v1
+      - OPENAI_BASE_URL=http://agency:11434/v1
       - OPENAI_API_KEY=ignored-for-local-use
       - OPENAI_MODEL=${OPENAI_MODEL}
       - KAGI_API_KEY=${KAGI_API_KEY:?set KAGI_API_KEY, the scholar search/extract token}
@@ -327,7 +329,7 @@ services:
       interval: 30s
     networks:
       - researchnet                      # reachable by the agent ONLY (inbound MCP)
-      - infernet                         # reach the model (infer); internal -> no internet
+      - infernet                         # reach the model (via the agency); internal -> no internet
       - scholarstate                     # reach state (audit + approvals + transcripts).
                                          # NOT statenet: keeps the scholar off builder/scribe
       - kagiegress                       # to the kagi-relay ONLY (internal; no internet)

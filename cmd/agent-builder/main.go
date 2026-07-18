@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// agent-builder is the one binary of the Cloister cell — every worker is a
-// mode of it, selected by the REQUIRED -worker-mode flag:
+// agent-builder is the one binary of Cloister — every worker, in the cell
+// or the shared infra stack, is a mode of it, selected by the REQUIRED
+// -worker-mode flag:
 //
 //	builder        reads /workspace/agent-harness.yaml, serves the declared
 //	               actions as MCP tools on :9200, and streams
@@ -33,11 +34,15 @@
 //	librarian      the read side of the cell: mechanical read tools on
 //	               :9400 served from an in-memory, shield-filtered model
 //	               of the workspace; denials (only) audited to state.
+//	agency         the sole inference door, in the shared infra stack
+//	               (not the cell): a streaming pass-through of the
+//	               OpenAI-compatible /v1 API to the model server, which
+//	               consumers can no longer reach directly.
 //
 // This file is only the front door: flags and the mode dispatch.  Each
 // worker's bootstrap lives in its own file (builder.go, scribe.go,
-// scholar.go, statesvc.go, librarian.go); shared serving plumbing in
-// serve.go.
+// scholar.go, statesvc.go, librarian.go, agency.go); shared serving
+// plumbing in serve.go.
 package main
 
 import (
@@ -61,9 +66,10 @@ const (
 	modeScribe       workerMode = "scribe"
 	modeScholar      workerMode = "scholar"
 	modeLibrarian    workerMode = "librarian"
+	modeAgency       workerMode = "agency"
 )
 
-const workerModes = "builder | state-service | scribe | scholar | librarian"
+const workerModes = "builder | state-service | scribe | scholar | librarian | agency"
 
 func main() {
 	mode := flag.String("worker-mode", "", "REQUIRED: which worker this process is — "+workerModes)
@@ -90,6 +96,8 @@ func main() {
 		"librarian: per-file cap; larger files are metadata-only")
 	rescanInterval := flag.Duration("rescan-interval", 30*time.Minute,
 		"librarian: how often to re-walk the workspace for host edits the watcher misses")
+	agencyUpstream := flag.String("upstream", "http://infer:11434",
+		"agency: base URL of the model server the inference door fronts")
 	healthcheck := flag.Bool("healthcheck", false,
 		"probe the local /healthz and exit 0/1 (container HEALTHCHECK)")
 	flag.Parse()
@@ -127,6 +135,8 @@ func main() {
 			BudgetMB: *repoBudgetMB, MaxFileMB: *repoMaxFileMB,
 			RescanInterval: *rescanInterval,
 		})
+	case modeAgency:
+		runAgency(agencyOptions{Addr: *addr, Upstream: *agencyUpstream})
 	case "":
 		log.Fatalf("-worker-mode is required: %s", workerModes)
 	default:
