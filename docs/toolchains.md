@@ -78,7 +78,15 @@ Each `cloister-builder-<ecosystem>` image provides, at fixed paths:
    the manifest must match (e.g. `jvm-jdk25-gradle9`, `go1.25`,
    `rust-1.88`, `cpp-clang19-cmake`, `node22`; exact strings are an open
    decision below).
-3. **`/etc/cloister-worker/toolchain.yaml`** — NEW: machine-readable
+3. **`/etc/cloister-worker/warming`** — implemented: present only in
+   toolchains that require offline dependency warming.  Its presence
+   makes the builder refuse actions until the airlock records a marker
+   (`$HOME/.cloister-warmed/<toolchain-id>`, written via
+   `builder -mark-warmed`), and its CONTENT is the operator instruction
+   the refusal carries — each toolchain writes its own.  See
+   internal/warming; this file folds into `toolchain.yaml` (next item)
+   when that lands.
+4. **`/etc/cloister-worker/toolchain.yaml`** — NEW: machine-readable
    airlock metadata.  Three things:
    - the **warm command** — argv to run with temporary egress attached;
    - the **gate globs** — build-affecting files that must be committed
@@ -91,11 +99,11 @@ Each `cloister-builder-<ecosystem>` image provides, at fixed paths:
    metadata, always disconnect.  The warm logic stays a platform artifact
    baked into a read-only rootfs, exactly like `warm-deps.gradle` today —
    never agent-writable, never injectable at runtime.
-4. **Cache layout under `$HOME`** (the `BUILD_HOME` bind): `~/.gradle`,
+5. **Cache layout under `$HOME`** (the `BUILD_HOME` bind): `~/.gradle`,
    `~/go/pkg/mod`, `~/.cargo`, `~/.npm`, `~/.conan2`.  This keeps the
    per-user, cross-project cache sharing; `BUILD_HOME` is per user, so
    caches from different toolchains coexist naturally under one home.
-5. **Arbitrary-uid, read-only-rootfs compatibility** — the same jail
+6. **Arbitrary-uid, read-only-rootfs compatibility** — the same jail
    profile every worker runs today.
 
 ## Per-ecosystem notes

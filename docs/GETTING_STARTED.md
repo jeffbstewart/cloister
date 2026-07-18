@@ -176,11 +176,20 @@ boundary, and so you can perform the steps manually on a non-Windows host:
    configuration: test runtimes, coverage tooling, annotation processors.
 4. **Close — always**, even when the warm fails:
    `docker network disconnect bridge <PROJECT>-builder`.
+5. **Record** (on success only): `docker exec <PROJECT>-builder
+   /usr/local/bin/builder -mark-warmed` drops a marker in the cache home.
+   Until that marker exists, the builder **refuses every action** with
+   these same instructions — a fresh, never-warmed cell fails fast and
+   tells you what to run, instead of dying inside offline dependency
+   resolution.
 
 The cache persists in the builder's `BUILD_HOME` (at `~/.gradle`), which is
 per-**user** and shared across that user's projects — so a dependency warmed
 for one project is already present for the next.  Per-dependency-change, not
-per-session or per-project.
+per-session or per-project.  The warm marker has the same scope (per user
+and toolchain): a second project with new dependencies still needs its own
+airlock run, which surfaces as offline-resolution failures in the build,
+not as the marker refusal.
 
 ## 6. Work
 
