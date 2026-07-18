@@ -22,6 +22,9 @@ import (
 
 func TestParseRouterConfig(t *testing.T) {
 	cfg, err := parseRouterConfig([]byte(`
+probe:
+  interval: 15s
+  timeout: 3s
 nodes:
   infer:
     url: http://infer:11434
@@ -57,6 +60,9 @@ classes:
 	if got := len(cfg.classes); got != 2 {
 		t.Fatalf("classes = %d, want 2", got)
 	}
+	if cfg.probeInterval != 15*time.Second || cfg.probeTimeout != 3*time.Second {
+		t.Errorf("probe = %s/%s, want 15s/3s", cfg.probeInterval, cfg.probeTimeout)
+	}
 	if node := cfg.nodes["macbook"]; node.maxInFlight != 2 || node.url.Host != "deep-think-node:11434" {
 		t.Errorf("macbook node = %+v, want maxInFlight 2 at deep-think-node:11434", node)
 	}
@@ -89,9 +95,13 @@ classes:
 }
 
 func TestParseRouterConfigFailsClosed(t *testing.T) {
-	// validClass covers every required class field; each case below breaks
-	// exactly one thing.
-	const validNodes = `
+	// validProbe/validNodes/validClassFields/validChain cover every required
+	// field; each case below breaks exactly one thing.
+	const validProbe = `
+probe:
+  interval: 15s
+  timeout: 3s`
+	const validNodes = validProbe + `
 nodes:
   infer:
     url: http://infer:11434
@@ -114,31 +124,48 @@ nodes:
 surprise: true
 classes:
   chat:` + validClassFields + validChain},
-		{"no nodes", `
+		{"no nodes", validProbe + `
 classes:
   chat:` + validClassFields + validChain},
 		{"no classes", validNodes},
-		{"node missing maxInFlight", `
+		{"missing probe", `
+nodes:
+  infer:
+    url: http://infer:11434
+    maxInFlight: 4
+classes:
+  chat:` + validClassFields + validChain},
+		{"probe timeout exceeds interval", `
+probe:
+  interval: 3s
+  timeout: 15s
+nodes:
+  infer:
+    url: http://infer:11434
+    maxInFlight: 4
+classes:
+  chat:` + validClassFields + validChain},
+		{"node missing maxInFlight", validProbe + `
 nodes:
   infer:
     url: http://infer:11434
 classes:
   chat:` + validClassFields + validChain},
-		{"node URL unparseable", `
+		{"node URL unparseable", validProbe + `
 nodes:
   infer:
     url: "http://bad url"
     maxInFlight: 4
 classes:
   chat:` + validClassFields + validChain},
-		{"node URL bad scheme", `
+		{"node URL bad scheme", validProbe + `
 nodes:
   infer:
     url: ftp://infer:11434
     maxInFlight: 4
 classes:
   chat:` + validClassFields + validChain},
-		{"node URL with path", `
+		{"node URL with path", validProbe + `
 nodes:
   infer:
     url: http://infer:11434/v1

@@ -173,7 +173,12 @@ deep-think node: dialed by the agency via env-provided address
    maxInFlight admission with interactive queued ahead of batch,
    etc/agency-routes.example.yaml is the config template; the deployed
    door stays in pass-through mode until the operator mounts a config).
-3. The deep-think node: presence probes, fallback chains, affinity.
+3. The deep-think node: presence probes — **DONE** (internal/agency
+   presence: every node probed via GET /v1/models on a configured
+   interval; chains skip a node marked absent without a dial and pick it
+   back up at the next probe after it returns; detection only, never
+   wake-on-LAN).  Residency arbitration and session affinity remain, and
+   the node itself is wired in at turn-on via its env-provided address.
 4. The status volume + the state services' Inference panel.
 5. Librarian/corrector land their inference through classes (their docs'
    engine-routing sections become agency config).

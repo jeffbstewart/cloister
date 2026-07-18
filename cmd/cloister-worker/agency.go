@@ -15,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -72,5 +73,8 @@ func runAgency(o agencyOptions) {
 	if err != nil {
 		log.Fatalf("agency: %v", err)
 	}
+	// Node presence probes ride the process lifetime: a no-op in
+	// pass-through mode, and the goroutine dies with the process.
+	go srv.ProbePresence(context.Background())
 	serveHTTP(&http.Server{Addr: o.Addr, Handler: srv.Handler()}, label)
 }

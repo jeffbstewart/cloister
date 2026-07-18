@@ -52,6 +52,9 @@ func newRoutingServer(t *testing.T, yaml string) *httptest.Server {
 // budgets these tests share.
 func chatClassYAML(nodeURL string) string {
 	return fmt.Sprintf(`
+probe:
+  interval: 15s
+  timeout: 3s
 nodes:
   infer:
     url: %s
@@ -150,6 +153,9 @@ func TestRouterAdvancesPastDeadLink(t *testing.T) {
 	defer live.Close()
 
 	ts := newRoutingServer(t, fmt.Sprintf(`
+probe:
+  interval: 15s
+  timeout: 3s
 nodes:
   gone:
     url: %s
@@ -205,6 +211,9 @@ func TestRouterAdvancesPastBusyLink(t *testing.T) {
 	defer backup.Close()
 
 	ts := newRoutingServer(t, fmt.Sprintf(`
+probe:
+  interval: 15s
+  timeout: 3s
 nodes:
   busy:
     url: %s
@@ -256,6 +265,84 @@ classes:
 	}
 }
 
+// hostRecordingTransport answers 200 and records each host attempted, so a
+// test can assert which links were dialed at all.
+type hostRecordingTransport struct {
+	hosts []string
+}
+
+func (h *hostRecordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	h.hosts = append(h.hosts, req.URL.Host)
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader("{}")),
+		Request:    req,
+	}, nil
+}
+
+// TestRouterSkipsAbsentNode: a node the last probe marked absent is never
+// dialed — the chain advances straight past it, and the node serves again
+// once a probe marks it back.
+func TestRouterSkipsAbsentNode(t *testing.T) {
+	rec := &hostRecordingTransport{}
+	rt := newRouter(routerConfig(t, `
+probe:
+  interval: 15s
+  timeout: 3s
+nodes:
+  gone:
+    url: http://gone-node:11434
+    maxInFlight: 4
+  backup:
+    url: http://backup-node:11434
+    maxInFlight: 4
+classes:
+  chat:
+    priority: interactive
+    deadline: 90s
+    maxDeadline: 5m
+    queueWait: 10s
+    maxQueueWait: 1m
+    chain:
+      - node: gone
+        model: big-model:x
+      - node: backup
+        model: small-model:y
+`), rec)
+	rt.presence.nodes["gone"].present.Store(false)
+	ts := httptest.NewServer(rt)
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json",
+		strings.NewReader(`{"model":"chat"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200 from the fallback link", resp.StatusCode)
+	}
+	if served := resp.Header.Get(servedByHeader); served != "backup/small-model:y" {
+		t.Errorf("%s = %q, want the fallback past the absent node", servedByHeader, served)
+	}
+	if len(rec.hosts) != 1 || rec.hosts[0] != "backup-node:11434" {
+		t.Errorf("dialed hosts = %v, want only the backup — an absent node must never be dialed", rec.hosts)
+	}
+
+	// The node returns: the next probe marks it present and it serves again.
+	rt.presence.nodes["gone"].present.Store(true)
+	resp, err = http.Post(ts.URL+"/v1/chat/completions", "application/json",
+		strings.NewReader(`{"model":"chat"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if served := resp.Header.Get(servedByHeader); served != "gone/big-model:x" {
+		t.Errorf("%s = %q, want the recovered node serving again", servedByHeader, served)
+	}
+}
+
 // TestRouterFreesSlotAfterResponse: a completed response hands its node slot
 // back.  With maxInFlight 1 and a 5ms queue budget, a leaked slot would turn
 // the second request into a fast chain-exhausted refusal.
@@ -266,6 +353,9 @@ func TestRouterFreesSlotAfterResponse(t *testing.T) {
 	defer node.Close()
 
 	ts := newRoutingServer(t, fmt.Sprintf(`
+probe:
+  interval: 15s
+  timeout: 3s
 nodes:
   infer:
     url: %s
@@ -329,6 +419,9 @@ func TestRouterRefusesBadRequests(t *testing.T) {
 	defer node.Close()
 
 	ts := newRoutingServer(t, fmt.Sprintf(`
+probe:
+  interval: 15s
+  timeout: 3s
 nodes:
   infer:
     url: %s
@@ -525,6 +618,9 @@ func (blockedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 // certainty rather than sleeping.
 func TestRouterDeadlineExhaustedRefusal(t *testing.T) {
 	rt := newRouter(routerConfig(t, `
+probe:
+  interval: 15s
+  timeout: 3s
 nodes:
   infer:
     url: http://infer:11434
@@ -562,6 +658,9 @@ classes:
 // discover classes, never what lies behind the door.
 func TestRouterServesModelList(t *testing.T) {
 	ts := newRoutingServer(t, `
+probe:
+  interval: 15s
+  timeout: 3s
 nodes:
   infer:
     url: http://infer:11434

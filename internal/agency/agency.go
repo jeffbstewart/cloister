@@ -34,12 +34,14 @@
 package agency
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"time"
 )
 
 // Config carries the agency's bootstrap inputs.  Exactly one of UpstreamURL
@@ -59,6 +61,10 @@ type Server struct {
 	// v1 handles everything under /v1/ — the pass-through proxy or the
 	// class router, fixed at construction.
 	v1 http.Handler
+	// presence and probeInterval drive ProbePresence in routing mode; both
+	// zero for a pass-through door.
+	presence      *presenceTracker
+	probeInterval time.Duration
 }
 
 // New validates the config and builds the server.  It fails closed: no mode,
@@ -69,7 +75,8 @@ func New(cfg Config) (*Server, error) {
 	case cfg.UpstreamURL != "" && cfg.Routes != nil:
 		return nil, fmt.Errorf("agency: config sets both UpstreamURL and Routes: choose pass-through or class routing")
 	case cfg.Routes != nil:
-		return &Server{v1: newRouter(cfg.Routes, nil)}, nil
+		rt := newRouter(cfg.Routes, nil)
+		return &Server{v1: rt, presence: rt.presence, probeInterval: cfg.Routes.probeInterval}, nil
 	case cfg.UpstreamURL == "":
 		return nil, fmt.Errorf("agency: either UpstreamURL (pass-through) or Routes (class routing) is required")
 	}
@@ -110,6 +117,16 @@ func New(cfg Config) (*Server, error) {
 			http.Error(w, "agency: model server unreachable", http.StatusBadGateway)
 		},
 	}}, nil
+}
+
+// ProbePresence sweeps node presence on the configured interval until ctx
+// ends, starting with an immediate sweep.  It is a no-op for a pass-through
+// door.  Callers run it on its own goroutine beside the HTTP server.
+func (s *Server) ProbePresence(ctx context.Context) {
+	if s.presence == nil {
+		return
+	}
+	s.presence.run(ctx, s.probeInterval)
 }
 
 // Handler serves the forwarded /v1 API and a liveness probe at /healthz.
