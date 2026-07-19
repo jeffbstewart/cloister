@@ -58,12 +58,14 @@ services:
   scholar:
     image: ${REGISTRY:-x}/${WORKERS_IMAGE}
     entrypoint: ["/usr/local/bin/scholar"]
+    dns: "127.0.0.1"
     networks: ` + scholarNets + `
     volumes: ` + scholarVols + `
   kagi-relay:
     command: ` + relayCmd + `
     networks: [kagiegress, egress]
   agent:
+    dns: "127.0.0.1"
     networks: [buildnet]
     volumes: ` + agentVols + `
 ` + librarianYaml + extra
@@ -76,6 +78,7 @@ services:
     user: "1000:1000"
     image: ${REGISTRY:-x}/${WORKERS_IMAGE}
     entrypoint: ["/usr/local/bin/librarian"]
+    dns: "127.0.0.1"
     networks: [buildnet, statenet]
     volumes: ["/host:/workspace:ro"]
 `
@@ -155,6 +158,17 @@ services:
     networks: [statenet]
     volumes: ["state:/state"]
 `),
+		// The DNS discipline: an all-internal service must pin the dead
+		// upstream, and pin it to exactly the loopback black hole.
+		"jailed worker missing the dns pin": base(clean, noVols, kagiCmd, agentClean, `  librarian:
+    user: "1000:1000"
+    image: ${REGISTRY:-x}/${WORKERS_IMAGE}
+    entrypoint: ["/usr/local/bin/librarian"]
+    networks: [buildnet, statenet]
+    volumes: ["/host:/workspace:ro"]
+`, ""),
+		"jailed worker dns not the dead loopback": strings.Replace(cleanCompose(),
+			`dns: "127.0.0.1"`, `dns: "8.8.8.8"`, 1),
 	}
 	for name, yaml := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -177,6 +191,7 @@ services:
     user: "1000:1000"
     image: ${REGISTRY:-x}/${WORKERS_IMAGE}
     entrypoint: ["/usr/local/bin/state-service"]
+    dns: "127.0.0.1"
     networks: [statenet]
     volumes: ["state:/state", "agency_status:/agency-status:ro"]
 `)

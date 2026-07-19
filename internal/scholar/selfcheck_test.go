@@ -15,6 +15,8 @@
 package scholar
 
 import (
+	"context"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -38,5 +40,28 @@ func TestSelfCheckDetectsEgress(t *testing.T) {
 func TestSelfCheckPassesWhenContained(t *testing.T) {
 	if err := assertNoPublicEgress([]string{"192.0.2.1:443"}, 500*time.Millisecond); err != nil {
 		t.Errorf("want nil when probes fail to connect, got %v", err)
+	}
+}
+
+// TestDNSSelfCheckDetectsResolution: a lookup that SUCCEEDS means the
+// resolver's upstream is live — an exfiltration channel — so the check
+// must fail (refuse to start).  The lookup is injected: no real DNS.
+func TestDNSSelfCheckDetectsResolution(t *testing.T) {
+	resolves := func(context.Context, string) ([]string, error) {
+		return []string{"192.0.2.1"}, nil // TEST-NET-1 (RFC 5737)
+	}
+	if err := assertNoExternalDNS([]string{"example.com"}, time.Second, resolves); err == nil {
+		t.Error("want an error when a public name resolves (external DNS alive)")
+	}
+}
+
+// TestDNSSelfCheckPassesWhenDead: a failing lookup is the expected,
+// contained result of the dead `dns: 127.0.0.1` upstream → nil.
+func TestDNSSelfCheckPassesWhenDead(t *testing.T) {
+	dead := func(context.Context, string) ([]string, error) {
+		return nil, errors.New("SERVFAIL")
+	}
+	if err := assertNoExternalDNS([]string{"example.com", "example.org"}, time.Second, dead); err != nil {
+		t.Errorf("want nil when lookups fail, got %v", err)
 	}
 }

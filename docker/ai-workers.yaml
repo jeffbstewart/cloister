@@ -135,6 +135,14 @@ services:
     security_opt: ["no-new-privileges:true"]
     pids_limit: 512
     mem_limit: 2g
+    # Dead DNS upstream: every network below is internal, and on engines with
+    # daemon-side DNS forwarding (CVE-2024-29018) name resolution alone
+    # exfiltrates from an internal network.  127.0.0.1 black-holes the
+    # embedded resolver's upstream; container names (agency, builder, ...)
+    # are answered authoritatively and never consult it.  compose-lint
+    # requires this pin on every all-internal service; only the relays
+    # (egress/frontend holders) keep real DNS.
+    dns: 127.0.0.1
     networks:
       - infernet                         # reach the agency (shared infra stack)
       - buildnet                         # reach the builder MCP; NOT infer's peers
@@ -186,6 +194,7 @@ services:
     healthcheck:
       test: ["CMD", "/usr/local/bin/builder", "-healthcheck"]
       interval: 30s
+    dns: 127.0.0.1                       # dead upstream — see the agent's dns note
     networks:
       - buildnet                         # reachable by agent (inbound MCP)
       - statenet                         # reach state (outbound sink); no egress
@@ -222,6 +231,7 @@ services:
     healthcheck:
       test: ["CMD", "/usr/local/bin/scribe", "-healthcheck"]
       interval: 30s
+    dns: 127.0.0.1                       # dead upstream — see the agent's dns note
     networks:
       - buildnet                         # reachable by the agent (inbound MCP)
       - statenet                         # reach state (audit + diff store); internal -> no egress
@@ -258,6 +268,7 @@ services:
     healthcheck:
       test: ["CMD", "/usr/local/bin/librarian", "-healthcheck"]
       interval: 30s
+    dns: 127.0.0.1                       # dead upstream — see the agent's dns note
     networks:
       - buildnet                         # reachable by the agent (inbound MCP)
       - statenet                         # denial audits to state; internal -> no egress
@@ -288,6 +299,7 @@ services:
     healthcheck:
       test: ["CMD", "/usr/local/bin/state-service", "-healthcheck"]
       interval: 30s
+    dns: 127.0.0.1                       # dead upstream — see the agent's dns note
     networks:
       - statenet                         # reachable by builder/scribe; internal -> no egress
       - scholarstate                     # reachable by the scholar (audit/approvals/transcripts)
@@ -354,6 +366,9 @@ services:
     healthcheck:
       test: ["CMD", "/usr/local/bin/scholar", "-healthcheck"]
       interval: 30s
+    # Dead upstream (see the agent's dns note); the scholar's boot
+    # self-check probes this independently of the TCP route.
+    dns: 127.0.0.1
     networks:
       - researchnet                      # reachable by the agent ONLY (inbound MCP)
       - infernet                         # reach the model (via the agency); internal -> no internet

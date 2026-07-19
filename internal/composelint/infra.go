@@ -169,6 +169,7 @@ func CheckInfra(data []byte) ([]string, error) {
 	for _, name := range egressHolders {
 		v = append(v, fmt.Sprintf("%s holds `egress` — nothing in the inference stack may reach the internet", name))
 	}
+	v = append(v, dnsPinViolations(c)...)
 	return v, nil
 }
 
