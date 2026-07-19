@@ -93,12 +93,14 @@ func New(cfg Config) *Server {
 	return s
 }
 
-// Handler serves the dashboard at /, the audit tail at /audit, run logs at
-// /log/{runId}, and a liveness probe at /healthz.
+// Handler serves the dashboard at /, the audit tail at /audit, the agency's
+// Inference tab at /inference, run logs at /log/{runId}, and a liveness
+// probe at /healthz.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.dashboard)
 	mux.HandleFunc("GET /audit", s.auditPage)
+	mux.HandleFunc("GET /inference", s.inferencePage)
 	mux.HandleFunc("GET /log/{runId}", s.logPage)
 	mux.HandleFunc("GET /diff/{opId}", s.diffPage)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -136,9 +138,12 @@ var tmplFuncs = template.FuncMap{
 	"join": func(items []string) string { return strings.Join(items, ", ") },
 }
 
-const pageHead = `<!doctype html>
+// pageHead renders the shared page chrome; refreshSeconds paces the
+// browser's auto-reload per tab.
+func pageHead(refreshSeconds int) string {
+	return `<!doctype html>
 <html><head><meta charset="utf-8">
-<meta http-equiv="refresh" content="5">
+<meta http-equiv="refresh" content="` + strconv.Itoa(refreshSeconds) + `">
 <title>cloister status</title>
 <style>
 body{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;margin:2em;background:#111;color:#ddd}
@@ -159,9 +164,19 @@ h1{font-size:1.2em}h2{font-size:1em;margin-top:1.5em}
 footer{margin-top:2em;color:#777;font-size:.8em}
 .pendingbanner{background:#3a2c00;border:1px solid #fc6;color:#fc6;padding:.6em 1em;margin-bottom:1em}
 .pendingbanner a{color:#fc6}
+nav{margin-bottom:1.2em;border-bottom:1px solid #444;padding-bottom:.5em}
+nav a{margin-right:1.4em}
+nav a.active{color:#fff;font-weight:bold}
 </style></head><body>
 {{if .PendingApprovals}}<div class="pendingbanner">&#9888; {{.PendingApprovals}} change(s) awaiting your approval &mdash; <a href="/approvals">review &amp; approve/reject</a></div>{{end}}
+<nav>
+<a {{if eq .Page "status"}}class="active" {{end}}href="/">status</a>
+<a {{if eq .Page "audit"}}class="active" {{end}}href="/audit">audit</a>
+<a {{if eq .Page "inference"}}class="active" {{end}}href="/inference">inference</a>
+<a href="/approvals">approvals</a>
+</nav>
 `
+}
 
 const auditTable = `<table>
 <tr><th>time</th><th>tool</th><th>target</th><th>decision</th><th>status</th><th>exit / &plusmn;</th><th>ms</th><th>params</th><th>log / diff</th></tr>
@@ -180,7 +195,7 @@ const auditTable = `<table>
 </table>
 `
 
-var dashboardTmpl = template.Must(template.New("dashboard").Funcs(tmplFuncs).Parse(pageHead + `
+var dashboardTmpl = template.Must(template.New("dashboard").Funcs(tmplFuncs).Parse(pageHead(5) + `
 <h1>cloister &mdash; builder cell</h1>
 {{if not .HaveStatus}}
 <p>no runs recorded yet</p>
@@ -195,12 +210,25 @@ as of {{local .Status.UpdatedAt}}</p>
 {{end}}
 <h2>recent action calls (newest first)</h2>
 ` + auditTable + `
-<p><a href="/audit">longer audit tail</a> &middot; <a href="/approvals">pending approvals</a></p>
-<h2>inference (agency)</h2>
+<footer>cloister {{.Version}} &mdash; read-only view of /state; refreshes every 5s</footer>
+</body></html>
+`))
+
+var auditTmpl = template.Must(template.New("audit").Funcs(tmplFuncs).Parse(pageHead(5) + `
+<h1>cloister &mdash; audit tail</h1>
+` + auditTable + `</body></html>
+`))
+
+// The inference tab reloads at 10s: the snapshot behind it rewrites every
+// 5s, but machine-level state moves slowly and the slower cadence keeps the
+// operator's browser (often parked on this tab) gentler on the relay.
+var inferenceTmpl = template.Must(template.New("inference").Funcs(tmplFuncs).Parse(pageHead(10) + `
+<h1>cloister &mdash; inference (agency)</h1>
 {{if not .HaveInference}}
-<p>no agency snapshot &mdash; the door is in pass-through mode or the status volume is not mounted</p>
+<p>no agency snapshot &mdash; the status volume is not mounted or the door has not written one yet</p>
 {{else}}
 <p>as of {{local .Inference.WrittenAt}}</p>
+<h2>nodes</h2>
 <table>
 <tr><th>node</th><th>presence</th><th>pinned</th><th>resident</th><th>in-flight</th><th>queued i/b</th></tr>
 {{range $name, $n := .Inference.Nodes}}<tr>
@@ -212,6 +240,7 @@ as of {{local .Status.UpdatedAt}}</p>
 <td>{{$n.QueuedInteractive}}/{{$n.QueuedBatch}}</td>
 </tr>{{end}}
 </table>
+<h2>engine classes</h2>
 <table>
 <tr><th>class</th><th>priority</th><th>deadline def/max</th><th>queue wait def/max</th><th>chain</th></tr>
 {{range $name, $c := .Inference.Classes}}<tr>
@@ -222,6 +251,7 @@ as of {{local .Status.UpdatedAt}}</p>
 <td class="argv">{{range $c.Chain}}{{.Node}}/{{.Model}} &rarr; {{end}}refuse</td>
 </tr>{{end}}
 </table>
+<h2>recent operations (newest first)</h2>
 <table>
 <tr><th>time</th><th>caller</th><th>class</th><th>served by</th><th>status</th><th>queued</th><th>total</th><th>tokens</th></tr>
 {{range .InferenceOps}}<tr>
@@ -237,18 +267,15 @@ as of {{local .Status.UpdatedAt}}</p>
 {{if not .InferenceOps}}<tr><td colspan="8">no operations yet</td></tr>{{end}}
 </table>
 {{end}}
-<footer>cloister {{.Version}} &mdash; read-only view of /state; refreshes every 5s</footer>
+<footer>cloister {{.Version}} &mdash; read-only view of the agency status volume; refreshes every 5s</footer>
 </body></html>
 `))
 
-var auditTmpl = template.Must(template.New("audit").Funcs(tmplFuncs).Parse(pageHead + `
-<h1>cloister &mdash; audit tail</h1>
-<p><a href="/">back to status</a></p>
-` + auditTable + `</body></html>
-`))
-
 type pageData struct {
-	Version          string
+	Version string
+	// Page names the current tab so the nav can highlight it: "status",
+	// "audit", or "inference".
+	Page             string
 	HaveStatus       bool
 	Status           cellstate.Status
 	Records          []audit.Record
@@ -260,14 +287,21 @@ type pageData struct {
 }
 
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
-	data := pageData{Version: s.cfg.Version, PendingApprovals: s.countPending()}
+	data := pageData{Version: s.cfg.Version, Page: "status", PendingApprovals: s.countPending()}
 	if st, err := cellstate.Read(s.statusPath); err == nil {
 		data.HaveStatus = true
 		data.Status = st
 	}
 	data.Records = s.readAuditTail(dashboardRecords)
-	s.readInference(&data)
 	renderHTML(w, dashboardTmpl, data)
+}
+
+// inferencePage renders the agency's status snapshot as its own tab — the
+// machine-level view beside the cell-level ones.
+func (s *Server) inferencePage(w http.ResponseWriter, r *http.Request) {
+	data := pageData{Version: s.cfg.Version, Page: "inference", PendingApprovals: s.countPending()}
+	s.readInference(&data)
+	renderHTML(w, inferenceTmpl, data)
 }
 
 // readInference loads the agency's status snapshot if the volume is mounted
@@ -318,7 +352,12 @@ func (s *Server) countPending() int {
 }
 
 func (s *Server) auditPage(w http.ResponseWriter, r *http.Request) {
-	renderHTML(w, auditTmpl, pageData{Records: s.readAuditTail(auditPageRecords), PendingApprovals: s.countPending()})
+	renderHTML(w, auditTmpl, pageData{
+		Version:          s.cfg.Version,
+		Page:             "audit",
+		Records:          s.readAuditTail(auditPageRecords),
+		PendingApprovals: s.countPending(),
+	})
 }
 
 // logPage serves a run log verbatim as text/plain (optionally only the
