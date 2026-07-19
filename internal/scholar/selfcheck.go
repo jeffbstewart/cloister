@@ -15,6 +15,7 @@
 package scholar
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"time"
@@ -23,6 +24,10 @@ import (
 // defaultEgressProbes are stable public anycast IPs used ONLY to prove the
 // absence of egress.  They are not liveness targets.
 var defaultEgressProbes = []string{"1.1.1.1:443", "8.8.8.8:53"}
+
+// defaultDNSProbes are well-known public names used ONLY to prove that
+// external name resolution is dead.  Resolution SUCCESS is the failure.
+var defaultDNSProbes = []string{"cloudflare.com", "google.com"}
 
 // AssertNoPublicEgress is the fail-closed boot self-check: it tries to
 // TCP-connect to fixed public IPs and returns an error if ANY connects — the
@@ -41,6 +46,29 @@ func assertNoPublicEgress(probes []string, timeout time.Duration) error {
 		if err == nil {
 			_ = conn.Close()
 			return fmt.Errorf("egress self-check FAILED: reached public %s — the scholar must have no route to the arbitrary internet (only the relay); refusing to start", addr)
+		}
+	}
+	return nil
+}
+
+// AssertNoExternalDNS is the DNS half of the fail-closed boot self-check.
+// The TCP probe proves no packet route out; this proves the embedded
+// resolver's upstream is dead (`dns: 127.0.0.1` in the compose file) — on
+// engines with daemon-side DNS forwarding (CVE-2024-29018), name
+// resolution alone exfiltrates from an internal network, so the two paths
+// must be probed independently.  Like the TCP probe it is NEGATIVE-ONLY:
+// a lookup failure is the expected, contained result.
+func AssertNoExternalDNS() error {
+	return assertNoExternalDNS(defaultDNSProbes, 3*time.Second, net.DefaultResolver.LookupHost)
+}
+
+func assertNoExternalDNS(names []string, timeout time.Duration, lookup func(context.Context, string) ([]string, error)) error {
+	for _, name := range names {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		addrs, err := lookup(ctx, name)
+		cancel()
+		if err == nil && len(addrs) > 0 {
+			return fmt.Errorf("dns self-check FAILED: resolved public name %q (%s) — external DNS must be dead (`dns: 127.0.0.1`); refusing to start", name, addrs[0])
 		}
 	}
 	return nil

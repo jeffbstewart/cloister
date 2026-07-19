@@ -71,6 +71,13 @@ services:
     healthcheck:
       test: ["CMD", "/usr/local/bin/agency", "-healthcheck"]
       interval: 30s
+    # Dead DNS upstream: both networks below are internal, and on engines
+    # with daemon-side DNS forwarding (CVE-2024-29018) name resolution
+    # alone exfiltrates from an internal network.  127.0.0.1 black-holes
+    # the embedded resolver's upstream; container names (infer) resolve
+    # authoritatively without it.  compose-lint requires this pin on every
+    # all-internal service.
+    dns: 127.0.0.1
     networks:
       - infernet                         # consumers (cells) dial in here
       - modelnet                         # the only route to infer
@@ -120,6 +127,7 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     pids_limit: 256
+    dns: 127.0.0.1                       # dead upstream — see the agency's dns note
     networks:
       - modelnet                         # reachable ONLY via the agency; no consumer net
 

@@ -75,9 +75,11 @@ networks:
 services:
   agency:
     entrypoint: ["/usr/local/bin/agency"]
+    dns: "127.0.0.1"
     networks: ` + agencyNets + `
     volumes: ["agency_status:/status"]
   infer:
+    dns: "127.0.0.1"
     networks: ` + inferNets + `
   proxy:
     command: ` + proxyCmd + `
@@ -122,6 +124,10 @@ services:
 			`entrypoint: ["/usr/local/bin/agency"]`,
 			`entrypoint: ["/usr/local/bin/agency"]
     command: ["-upstream", "http://infer:11434"]`, 1),
+		// The DNS discipline holds in the infra stack too: the first
+		// dns line in the fixture is the agency's.
+		"jailed infra service missing the dns pin": strings.Replace(cleanCompose,
+			`dns: "127.0.0.1"`, ``, 1),
 	}
 	for name, yaml := range cases {
 		t.Run(name, func(t *testing.T) {

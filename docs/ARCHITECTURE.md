@@ -234,5 +234,6 @@ device reservation.
 | The agent cannot write source; every edit routes through the scribe's confined, audited ops | the `:ro` mount flag · the scribe's path confinement, gates, and approval holds |
 | The audit trail is one-way glass: subsystems append, never read; timestamps come from the state service's clock | token-gated append-only state API · no state mounts anywhere else · network absences above |
 | Web content and workspace content never share a mediator | topology: the scholar has no workspace mount and no route to builder/scribe |
+| A jailed worker cannot resolve external names — DNS is not an exfiltration channel (CVE-2024-29018) | `dns: 127.0.0.1` (dead upstream) on every all-internal service in both compose files · `compose-lint`'s DNS-pin rule (CI, every PR) · the scholar's fail-closed boot DNS probe |
 | Builds run offline; dependency refresh is a deliberate human act | no builder egress · the dependency airlock refuses to open over uncommitted build logic |
 | No secrets, keys, or LAN addresses in the repo | presubmit hook + the same scan server-side in CI |

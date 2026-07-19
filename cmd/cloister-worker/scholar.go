@@ -63,12 +63,16 @@ type scholarOptions struct {
 }
 
 func runScholar(o scholarOptions) {
-	// The fail-closed egress self-check runs FIRST: if the scholar can
-	// reach the arbitrary internet, it must not start.
+	// The fail-closed egress self-checks run FIRST: if the scholar can
+	// reach the arbitrary internet — by packet route or by name
+	// resolution alone (the two fail independently) — it must not start.
 	if err := scholar.AssertNoPublicEgress(); err != nil {
 		log.Fatalf("scholar: %v", err)
 	}
-	log.Printf("scholar: egress self-check passed — no arbitrary internet route (relay=%s)", os.Getenv("KAGI_RELAY_ADDR"))
+	if err := scholar.AssertNoExternalDNS(); err != nil {
+		log.Fatalf("scholar: %v", err)
+	}
+	log.Printf("scholar: egress self-checks passed — no arbitrary internet route, external DNS dead (relay=%s)", os.Getenv("KAGI_RELAY_ADDR"))
 
 	token := os.Getenv("STATE_TOKEN")
 	if o.StateURL == "" || token == "" {

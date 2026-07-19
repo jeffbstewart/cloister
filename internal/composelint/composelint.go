@@ -26,6 +26,12 @@
 // Read path (docs/librarian.md): the agent mounts NO workspace at all —
 // reads go through the librarian, writes through the scribe — and the
 // librarian's workspace mount is `:ro` with no egress-capable network.
+//
+// DNS discipline (both stacks): every service whose networks are all
+// internal pins `dns: 127.0.0.1`, so the embedded resolver's upstream is
+// dead and name resolution cannot become an exfiltration channel
+// (CVE-2024-29018); only the relays, which hold a NAT-routed network,
+// keep real DNS.
 package composelint
 
 import (
@@ -43,13 +49,35 @@ type compose struct {
 }
 
 type service struct {
-	Image       string   `yaml:"image"`
-	Entrypoint  []string `yaml:"entrypoint"`
-	Command     []string `yaml:"command"`
-	Volumes     []string `yaml:"volumes"`
-	Networks    []string `yaml:"networks"`
-	Environment []string `yaml:"environment"`
-	User        string   `yaml:"user"`
+	Image       string       `yaml:"image"`
+	Entrypoint  []string     `yaml:"entrypoint"`
+	Command     []string     `yaml:"command"`
+	Volumes     []string     `yaml:"volumes"`
+	Networks    []string     `yaml:"networks"`
+	Environment []string     `yaml:"environment"`
+	User        string       `yaml:"user"`
+	DNS         stringOrList `yaml:"dns"`
+}
+
+// stringOrList accepts a compose field that YAML allows as either a scalar
+// or a sequence (`dns: 127.0.0.1` and `dns: [127.0.0.1]` are both legal).
+type stringOrList []string
+
+func (l *stringOrList) UnmarshalYAML(node *yaml.Node) error {
+	switch node.Kind {
+	case yaml.ScalarNode:
+		*l = stringOrList{node.Value}
+		return nil
+	case yaml.SequenceNode:
+		var s []string
+		if err := node.Decode(&s); err != nil {
+			return err
+		}
+		*l = stringOrList(s)
+		return nil
+	default:
+		return fmt.Errorf("expected scalar or sequence, got yaml kind %v", node.Kind)
+	}
 }
 
 // wantsRoleEntrypoint checks that a worker service execs its own role link
@@ -97,6 +125,44 @@ func (s service) runsAsRoot() bool {
 		id = id[:i]
 	}
 	return id == "" || id == "0" || id == "root"
+}
+
+// dnsPinViolations enforces the DNS discipline: any service whose networks
+// are all internal (or external — the shared infernet, which the infra
+// stack's own lint keeps internal) must pin `dns: 127.0.0.1`, a dead
+// upstream, so the daemon-side embedded resolver can never forward an
+// external lookup.  Name resolution alone is an exfiltration channel from
+// an internal network (CVE-2024-29018); container-name resolution is
+// answered authoritatively by the embedded resolver and never consults the
+// upstream, so it is unaffected.  A service holding a NAT-routed network
+// (egress, frontend) has legitimate DNS and is exempt by construction.
+func dnsPinViolations(c compose) []string {
+	var names []string
+	for name := range c.Services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var v []string
+	for _, name := range names {
+		s := c.Services[name]
+		if len(s.Networks) == 0 {
+			continue
+		}
+		jailed := true
+		for _, n := range s.Networks {
+			def, defined := c.Networks[n]
+			if !defined || (!def.Internal && !def.External) {
+				jailed = false // a NAT-routed net: real DNS is legitimate here
+			}
+		}
+		if !jailed {
+			continue
+		}
+		if len(s.DNS) != 1 || s.DNS[0] != "127.0.0.1" {
+			v = append(v, fmt.Sprintf("%s has only internal networks but dns = %v — pin `dns: 127.0.0.1` (dead upstream) so the embedded resolver cannot forward external lookups", name, []string(s.DNS)))
+		}
+	}
+	return v
 }
 
 // egressCapable returns which egress-capable networks s holds, excluding
@@ -291,6 +357,7 @@ func Check(data []byte) ([]string, error) {
 			v = append(v, "state has no agency_status mount — the dashboard's Inference panel reads `agency_status:/agency-status:ro`")
 		}
 	}
+	v = append(v, dnsPinViolations(c)...)
 	return v, nil
 }
 
