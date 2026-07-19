@@ -123,6 +123,7 @@ func runScholar(o scholarOptions) {
 			BaseURL: baseURL,
 			Model:   model,
 			Key:     os.Getenv("OPENAI_API_KEY"),
+			Caller:  "scholar",
 		}),
 		Audit:       stateClient,
 		Approvals:   stateClient,

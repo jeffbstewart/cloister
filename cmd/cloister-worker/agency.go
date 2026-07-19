@@ -32,8 +32,13 @@ func agencyRole(args []string) (func(), error) {
 		"base URL of the model server a pass-through door fronts")
 	configPath := fs.String("config", "",
 		"path to the engine-class routing config (YAML); when set, the door routes classes instead of passing through")
+	statusDir := fs.String("status-dir", "",
+		"directory (the agency_status volume mount) for atomic status snapshots; routing mode only")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
+	}
+	if *statusDir != "" && *configPath == "" {
+		return nil, fmt.Errorf("agency: -status-dir requires -config: a pass-through door has no status to publish")
 	}
 	// The two modes are a deliberate startup choice: naming both is a
 	// contradiction, refused rather than resolved by precedence.
@@ -45,7 +50,7 @@ func agencyRole(args []string) (func(), error) {
 		}
 	}
 	return common.runOrProbe(func() {
-		runAgency(agencyOptions{Addr: *common.addr, Upstream: *upstream, ConfigPath: *configPath})
+		runAgency(agencyOptions{Addr: *common.addr, Upstream: *upstream, ConfigPath: *configPath, StatusDir: *statusDir})
 	}), nil
 }
 
@@ -54,6 +59,7 @@ type agencyOptions struct {
 	Addr       string
 	Upstream   string
 	ConfigPath string
+	StatusDir  string
 }
 
 func runAgency(o agencyOptions) {
@@ -73,8 +79,11 @@ func runAgency(o agencyOptions) {
 	if err != nil {
 		log.Fatalf("agency: %v", err)
 	}
-	// Node presence probes ride the process lifetime: a no-op in
-	// pass-through mode, and the goroutine dies with the process.
+	// Presence probes and status snapshots ride the process lifetime:
+	// no-ops in pass-through mode, and the goroutines die with the process.
 	go srv.ProbePresence(context.Background())
+	if o.StatusDir != "" {
+		go srv.WriteStatusSnapshots(context.Background(), o.StatusDir)
+	}
 	serveHTTP(&http.Server{Addr: o.Addr, Handler: srv.Handler()}, label)
 }

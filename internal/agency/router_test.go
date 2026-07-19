@@ -24,7 +24,18 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jeffbstewart/cloister/internal/openai"
 )
+
+// TestCallerHeaderNamesAgree pins the two declarations of the caller
+// header — the door's (here) and the worker-side client's (internal/openai,
+// kept import-free) — to the same wire name.
+func TestCallerHeaderNamesAgree(t *testing.T) {
+	if CallerHeader != openai.CallerHeader {
+		t.Errorf("agency.CallerHeader %q != openai.CallerHeader %q", CallerHeader, openai.CallerHeader)
+	}
+}
 
 // routerConfig parses a routing config or fails the test.
 func routerConfig(t *testing.T, yaml string) *RouterConfig {

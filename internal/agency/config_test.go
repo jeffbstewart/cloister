@@ -15,6 +15,7 @@
 package agency
 
 import (
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -319,6 +320,28 @@ func TestParseClassName(t *testing.T) {
 		if _, err := ParseClassName(invalid); err == nil {
 			t.Errorf("ParseClassName(%q) succeeded, want error", invalid)
 		}
+	}
+}
+
+// TestDurationJSON: the snapshot wire form is a duration STRING, and it
+// round-trips.
+func TestDurationJSON(t *testing.T) {
+	b, err := json.Marshal(Duration(90 * time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != `"1m30s"` {
+		t.Errorf("marshal = %s, want a duration string", b)
+	}
+	var d Duration
+	if err := json.Unmarshal(b, &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Std() != 90*time.Second {
+		t.Errorf("round-trip = %s, want 90s", d.Std())
+	}
+	if err := json.Unmarshal([]byte(`90`), &d); err == nil {
+		t.Error("bare-number duration unmarshaled, want refusal")
 	}
 }
 

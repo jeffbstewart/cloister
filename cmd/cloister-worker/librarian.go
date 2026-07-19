@@ -160,6 +160,7 @@ func buildInferencer() librarian.Inferencer {
 		BaseURL: baseURL,
 		Model:   model,
 		Key:     os.Getenv("OPENAI_API_KEY"),
+		Caller:  "librarian",
 	})
 	client, err := infer.New(infer.Config{
 		Engines: map[infer.Effort]infer.Engine{

@@ -16,6 +16,7 @@ package agency
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -75,6 +76,26 @@ func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
 
 // Std returns the standard-library time.Duration.
 func (d Duration) Std() time.Duration { return time.Duration(d) }
+
+// MarshalJSON emits the duration as a string ("90s"), so the status
+// snapshot carries units explicitly — never a bare number.
+func (d Duration) MarshalJSON() ([]byte, error) {
+	return json.Marshal(d.Std().String())
+}
+
+// UnmarshalJSON parses the string form, so snapshot readers round-trip.
+func (d *Duration) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return fmt.Errorf("duration must be a JSON string like %q: %w", "90s", err)
+	}
+	v, err := time.ParseDuration(s)
+	if err != nil {
+		return fmt.Errorf("invalid duration %q: %w", s, err)
+	}
+	*d = Duration(v)
+	return nil
+}
 
 // Priority is the queueing class of an engine class.  When a node slot
 // frees, interactive waiters are granted ahead of batch — and batch drains

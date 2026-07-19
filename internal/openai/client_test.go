@@ -26,10 +26,11 @@ import (
 // TestCompleteRequestShape asserts the outgoing body carries the model,
 // messages, and tools, and that a set key produces a bearer header.
 func TestCompleteRequestShape(t *testing.T) {
-	var gotAuth string
+	var gotAuth, gotCaller string
 	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
+		gotCaller = r.Header.Get(CallerHeader)
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 			t.Errorf("decode request body: %v", err)
 		}
@@ -37,7 +38,7 @@ func TestCompleteRequestShape(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(Options{BaseURL: srv.URL, Model: "test-model", Key: "sekret"})
+	c := New(Options{BaseURL: srv.URL, Model: "test-model", Key: "sekret", Caller: "librarian"})
 	msgs := []Message{{Role: "user", Content: "hi"}}
 	tools := []Tool{{Type: "function", Function: ToolFunction{Name: "web_search"}}}
 	if _, _, err := c.Complete(context.Background(), msgs, tools); err != nil {
@@ -46,6 +47,9 @@ func TestCompleteRequestShape(t *testing.T) {
 
 	if gotAuth != "Bearer sekret" {
 		t.Errorf("Authorization = %q, want %q", gotAuth, "Bearer sekret")
+	}
+	if gotCaller != "librarian" {
+		t.Errorf("%s = %q, want the self-declared caller", CallerHeader, gotCaller)
 	}
 	if gotBody["model"] != "test-model" {
 		t.Errorf("model = %v, want test-model", gotBody["model"])
@@ -67,11 +71,13 @@ func TestCompleteRequestShape(t *testing.T) {
 }
 
 // TestCompleteNoKeyNoBearer confirms an empty key sends no Authorization
-// header (the local infer case).
+// header (the local infer case), and an empty caller sends no attribution
+// header.
 func TestCompleteNoKeyNoBearer(t *testing.T) {
-	var hadAuth bool
+	var hadAuth, hadCaller bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, hadAuth = r.Header["Authorization"]
+		_, hadCaller = r.Header[CallerHeader]
 		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
 	}))
 	defer srv.Close()
@@ -82,6 +88,9 @@ func TestCompleteNoKeyNoBearer(t *testing.T) {
 	}
 	if hadAuth {
 		t.Error("Authorization header sent with an empty key")
+	}
+	if hadCaller {
+		t.Error("caller header sent with an empty caller")
 	}
 }
 

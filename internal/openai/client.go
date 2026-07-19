@@ -64,16 +64,23 @@ type ToolFunction struct {
 	Parameters  json.RawMessage `json:"parameters"` // JSON Schema
 }
 
+// CallerHeader carries the worker's self-declared identity to the agency,
+// which reports it in its status snapshot's op ledger.  The name must match
+// internal/agency.CallerHeader (pinned equal by a test there); it stays a
+// separate constant so this package keeps its zero-import posture.
+const CallerHeader = "Agency-Caller"
+
 // Client talks to an OpenAI-compatible /chat/completions endpoint (the
 // local `infer`, or a hosted model).  It is a plain client to the
 // CONFIGURED base URL — not arbitrary egress: the model endpoint is a fixed
 // internal host, and the boot self-check proves no arbitrary route
 // exists.
 type Client struct {
-	base  string // e.g. http://infer:11434/v1
-	model string
-	key   string // optional bearer (empty for local infer)
-	hc    *http.Client
+	base   string // e.g. http://infer:11434/v1
+	model  string
+	key    string // optional bearer (empty for local infer)
+	caller string // self-declared identity for the agency's op ledger
+	hc     *http.Client
 }
 
 // Options configures the client.
@@ -81,6 +88,10 @@ type Options struct {
 	BaseURL string // OpenAI-compatible base, e.g. http://infer:11434/v1
 	Model   string // model tag
 	Key     string // optional bearer (empty for local infer)
+	// Caller is the worker's name (e.g. "librarian"), sent as CallerHeader
+	// so the agency's op ledger attributes the work; empty sends nothing
+	// and the agency falls back to the remote host.
+	Caller string
 }
 
 // New builds the client.  It sets no client-level timeout: each turn is
@@ -89,10 +100,11 @@ type Options struct {
 // model mid-turn.
 func New(opts Options) *Client {
 	return &Client{
-		base:  strings.TrimRight(opts.BaseURL, "/"),
-		model: opts.Model,
-		key:   opts.Key,
-		hc:    &http.Client{},
+		base:   strings.TrimRight(opts.BaseURL, "/"),
+		model:  opts.Model,
+		key:    opts.Key,
+		caller: opts.Caller,
+		hc:     &http.Client{},
 	}
 }
 
@@ -114,6 +126,9 @@ func (c *Client) Complete(ctx context.Context, messages []Message, tools []Tool)
 	req.Header.Set("Content-Type", "application/json")
 	if c.key != "" {
 		req.Header.Set("Authorization", "Bearer "+c.key)
+	}
+	if c.caller != "" {
+		req.Header.Set(CallerHeader, c.caller)
 	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
