@@ -52,9 +52,10 @@ Three pressures, one root cause:
   derive from the same base so works-in-my-cell drift stays dead; the
   scholar stays on the slim workers image, so the compose-lint
   invariant becomes "only the agent image carries toolchains."
-  Builds stay **offline**: caches are pre-warmed (baked into the
-  image or a read-mostly volume); no registry route exists anywhere
-  in the cell.
+  Builds stay **offline**: dependencies come from per-user
+  content-addressed stores mounted read-only (see "Stores, warming,
+  and the airlock" below); no registry route exists anywhere in the
+  cell.
 - **The agent CLI is fungible; the model door is not.**  qwen-code
   and Claude Code both ship in the workbench image, either one
   pointed at the agency's endpoint — local models only.  A cloud
@@ -324,6 +325,58 @@ ecosystem.  What persists is a small pool of
   load-bearing; a reaper that can delete an unpublished grange is a
   data-loss bug class.  The archivist's `dispose()` refusal and the
   reaper's rescue path must share one code path.
+
+## Stores, warming, and the airlock
+
+"Pre-warmed offline caches" hides a lifecycle question: what does
+warming mean across projects and across fungible cells?  The answer
+splits the nouns.
+
+- **Workspaces** (granges) are per-task and ephemeral: create →
+  operate → publish → dispose.  They never *contain* dependency
+  caches; they mount them.
+- **Stores** are per-user, per-ecosystem, durable, and
+  content-addressed: the Go module cache, Gradle's dependency cache,
+  cargo's registry.  Content addressing is why "across projects" is a
+  non-problem — entries key on `module@version` + hash, so one store
+  set per user serves all of that user's projects, and warming
+  project B just adds entries beside project A's.  This is
+  `BUILD_HOME` (per-user, cross-project) promoted to first-class.
+- **Cells mount the stores read-only.**  A shared *writable* cache is
+  a poisoning channel between concurrent cells (cell A rewrites a
+  cached jar, cell B executes it); RO kills it and makes concurrency
+  trivially safe.  The ecosystems cooperate: Go's `GOMODCACHE` is
+  RO-clean (the separate `GOCACHE` stays per-cell), Gradle ships a
+  first-class `GRADLE_RO_DEP_CACHE`, cargo works RO when complete
+  (vendoring as fallback), and C++ dependencies bake into the
+  workbench image — an airlock already passed at image build.
+- **Warming is an airlock operation on the stores, not a workspace
+  phase.**  A warming container with registry egress and NO agent in
+  it, outside the cell topology, driven only by committed lockfiles
+  (`go.sum`, Gradle verification metadata, `Cargo.lock`) — the
+  existing `internal/warming` refusal-and-copy-paste ritual carries
+  over unchanged.  Trigger: lockfile change, human cadence — never a
+  task start.
+- **Dependency review precedes dependency fetch.**  An agent branch
+  that adds dependencies fails its coverage check; the human warms
+  *from that branch's lockfile* — whose module paths are agent-chosen
+  strings that direct network fetches.  Defenses: the warmer pins its
+  registries (`GOPROXY=proxy.golang.org` and equivalents, never the
+  module path's own host), the airlock ritual is a human reading the
+  short, legible lockfile diff before opening, and the quarantine age
+  gate (COMPETITION.md) refuses freshly published versions.  The
+  agent may propose dependencies; bytes move only after a human has
+  seen the names.
+- **Provisioning gains a coverage check, not a warm.**  Clone → mount
+  stores RO → compare the branch's lockfiles against the stores →
+  fail fast with the airlock instructions, instead of letting the
+  agent burn a session against a mid-build wall.
+- **Build caches start cold, on purpose.**  `GOCACHE`, Gradle's build
+  cache, cargo's `target/` are compiled outputs — writable by nature,
+  so per-cell and ephemeral.  Each fresh cell recompiles the closure
+  once; accept it, and revisit (snapshot seeding at provision) only
+  if it measurably hurts — the alternative is exactly the shared
+  writable cache the RO stores exist to forbid.
 
 ## Gitea-local development, GitHub as release mirror
 
