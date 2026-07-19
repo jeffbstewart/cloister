@@ -47,6 +47,12 @@ const QueueWaitHeader = "Agency-Queue-Wait"
 // a reply is never silently attributable to nothing (docs/agency.md).
 const servedByHeader = "Agency-Served-By"
 
+// CallerHeader is the consumer's self-declared identity for the status
+// snapshot's op ledger (e.g. "librarian", "corrector").  Optional — absent,
+// the op is attributed to the remote host — and stripped before forwarding
+// like the other control headers.
+const CallerHeader = "Agency-Caller"
+
 // maxRequestBytes caps the buffered request body.  The router must buffer to
 // rewrite the model field and replay the body down the chain, so an unbounded
 // request would be an unbounded allocation.  Generous against real prompts
@@ -69,8 +75,15 @@ var errChainExhausted = errors.New("no engine in the chain is reachable")
 // chain transport, via the request context.
 type routeState struct {
 	class classRoute
+	// askedClass is the validated class name the consumer asked for, or
+	// "(invalid)" when the model field failed validation — what the op
+	// ledger reports when no configured class was resolved.
+	askedClass string
 	// queueWait is the resolved per-link queue budget for this request.
 	queueWait time.Duration
+	// queueWaited is the admission wait actually paid, accumulated across
+	// the chain walk by the transport.
+	queueWaited time.Duration
 	// fields is the request body as raw top-level JSON fields; the model
 	// field is swapped per chain link, everything else is forwarded intact.
 	fields map[string]json.RawMessage
@@ -95,7 +108,12 @@ func stateFrom(ctx context.Context) *routeState {
 type router struct {
 	cfg      *RouterConfig
 	presence *presenceTracker
+	gates    map[string]*priorityGate
+	ops      *opLedger
 	proxy    *httputil.ReverseProxy
+	// now is the injectable clock behind op durations and snapshot
+	// timestamps; production keeps time.Now.
+	now func() time.Time
 }
 
 // newRouter builds the router.  base is the per-link round-tripper seam; nil
@@ -115,7 +133,13 @@ func newRouter(cfg *RouterConfig, base http.RoundTripper) *router {
 	for name, node := range cfg.nodes {
 		gates[name] = newPriorityGate(node.maxInFlight)
 	}
-	rt := &router{cfg: cfg, presence: newPresenceTracker(cfg)}
+	rt := &router{
+		cfg:      cfg,
+		presence: newPresenceTracker(cfg),
+		gates:    gates,
+		ops:      &opLedger{},
+		now:      time.Now,
+	}
 	rt.proxy = &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			// The chain transport picks the real target per attempt; point
@@ -124,27 +148,58 @@ func newRouter(cfg *RouterConfig, base http.RoundTripper) *router {
 			pr.SetURL(st.class.links[0].url)
 			pr.Out.Header.Del(DeadlineHeader)
 			pr.Out.Header.Del(QueueWaitHeader)
+			pr.Out.Header.Del(CallerHeader)
 		},
 		// Negative: flush every write through immediately.  A streaming
 		// completion must reach the consumer token-by-token; buffering a
 		// whole response would turn decode time into dead air.
 		FlushInterval: -1,
-		Transport:     &chainTransport{base: base, gates: gates, presence: rt.presence},
+		Transport:     &chainTransport{base: base, gates: gates, presence: rt.presence, now: rt.timeNow},
 		ErrorHandler:  routeErrorHandler,
 	}
 	return rt
 }
 
+// timeNow reads the router's clock seam at call time, so a test that swaps
+// rt.now after construction reaches the transport too.
+func (rt *router) timeNow() time.Time { return rt.now() }
+
 // ServeHTTP routes one /v1 request.  GET /v1/models lists the classes (they
 // are the only models the door serves); everything else must name a
 // configured class in its model field or is refused — fail closed, no blind
-// forwarding once there is more than one place a request could go.
+// forwarding once there is more than one place a request could go.  Every
+// inference ask — served or refused — lands in the op ledger for the status
+// snapshot.
 func (rt *router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet && r.URL.Path == "/v1/models" {
 		rt.serveModels(w)
 		return
 	}
+	start := rt.now()
+	rec := &opRecorder{ResponseWriter: w}
+	st := &routeState{}
+	defer func() {
+		class := st.askedClass
+		if st.class.name.String() != "" {
+			class = st.class.name.String()
+		}
+		rt.ops.record(OpRecord{
+			FinishedAt: rt.now(),
+			Caller:     callerIdentity(r),
+			Class:      class,
+			ServedBy:   st.servedBy,
+			Status:     rec.status,
+			QueueWait:  Duration(st.queueWaited),
+			Total:      Duration(rt.now().Sub(start)),
+			Tokens:     rec.tokens(),
+		})
+	}()
+	rt.route(rec, r, st)
+}
 
+// route resolves and forwards one inference request, writing any refusal to
+// w; st accumulates the facts the op ledger records.
+func (rt *router) route(w http.ResponseWriter, r *http.Request, st *routeState) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
 	if err != nil {
 		http.Error(w, "agency: request body unreadable or over the size cap", http.StatusRequestEntityTooLarge)
@@ -167,9 +222,11 @@ func (rt *router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	name, err := ParseClassName(modelStr)
 	if err != nil {
+		st.askedClass = "(invalid)"
 		http.Error(w, fmt.Sprintf("agency: %v", err), http.StatusBadRequest)
 		return
 	}
+	st.askedClass = name.String()
 	route, ok := rt.cfg.classes[name]
 	if !ok {
 		http.Error(w, fmt.Sprintf("agency: unknown engine class %q: the door serves only configured classes, never a substitute (configured: %s)", name, rt.cfg.classList()), http.StatusNotFound)
@@ -190,7 +247,7 @@ func (rt *router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// forward, never a parallel manual clock check.
 	ctx, cancel := context.WithTimeout(r.Context(), budget)
 	defer cancel()
-	st := &routeState{class: route, queueWait: queueWait, fields: fields}
+	st.class, st.queueWait, st.fields = route, queueWait, fields
 	r = r.WithContext(context.WithValue(ctx, routeStateKey{}, st))
 	// The body is consumed into fields; the chain transport builds each
 	// attempt's body from there.
@@ -268,6 +325,8 @@ type chainTransport struct {
 	// presence marks which nodes answered the last probe; an absent node's
 	// links are skipped without a dial.
 	presence *presenceTracker
+	// now is the router's clock seam, for measuring admission waits.
+	now func() time.Time
 }
 
 func (t *chainTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -286,7 +345,10 @@ func (t *chainTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			continue
 		}
 		gate := t.gates[link.node]
-		if err := t.admit(req.Context(), gate, st); err != nil {
+		admitStart := t.now()
+		err := t.admit(req.Context(), gate, st)
+		st.queueWaited += t.now().Sub(admitStart)
+		if err != nil {
 			if ctxErr := req.Context().Err(); ctxErr != nil {
 				return nil, ctxErr
 			}

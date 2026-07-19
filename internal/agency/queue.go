@@ -26,8 +26,9 @@ import (
 // waiter is present.  There is no preemption: a granted slot runs to
 // completion (docs/agency.md records the analysis).
 type priorityGate struct {
-	mu   sync.Mutex
-	free int
+	mu       sync.Mutex
+	capacity int // the configured maxInFlight, fixed
+	free     int
 	// lines are the FIFO wait lines indexed by priority rank, interactive
 	// first.  release always serves the lowest non-empty rank.
 	lines [2][]*waiter
@@ -39,7 +40,15 @@ type waiter struct {
 }
 
 func newPriorityGate(capacity int) *priorityGate {
-	return &priorityGate{free: capacity}
+	return &priorityGate{capacity: capacity, free: capacity}
+}
+
+// stats reports the gate's current occupancy and wait-line depths, for the
+// status snapshot.
+func (g *priorityGate) stats() (inFlight, queuedInteractive, queuedBatch int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.capacity - g.free, len(g.lines[0]), len(g.lines[1])
 }
 
 // rank maps a priority to its wait-line index.  Config validation admits only

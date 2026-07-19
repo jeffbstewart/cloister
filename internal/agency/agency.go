@@ -61,8 +61,9 @@ type Server struct {
 	// v1 handles everything under /v1/ — the pass-through proxy or the
 	// class router, fixed at construction.
 	v1 http.Handler
-	// presence and probeInterval drive ProbePresence in routing mode; both
-	// zero for a pass-through door.
+	// router is set in routing mode only; it backs ProbePresence and
+	// WriteStatusSnapshots, both no-ops for a pass-through door.
+	router        *router
 	presence      *presenceTracker
 	probeInterval time.Duration
 }
@@ -76,7 +77,7 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("agency: config sets both UpstreamURL and Routes: choose pass-through or class routing")
 	case cfg.Routes != nil:
 		rt := newRouter(cfg.Routes, nil)
-		return &Server{v1: rt, presence: rt.presence, probeInterval: cfg.Routes.probeInterval}, nil
+		return &Server{v1: rt, router: rt, presence: rt.presence, probeInterval: cfg.Routes.probeInterval}, nil
 	case cfg.UpstreamURL == "":
 		return nil, fmt.Errorf("agency: either UpstreamURL (pass-through) or Routes (class routing) is required")
 	}
