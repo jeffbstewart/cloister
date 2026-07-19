@@ -47,6 +47,12 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+    volumes:
+      # rw: the door's status snapshot writer (docs/agency.md, phase 4).
+      # Nothing is written until the door runs in routing mode with
+      # -status-dir /status; cells' state services mount the same volume
+      # read-only and render the Inference panel from it.
+      - agency_status:/status
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     pids_limit: 256
@@ -133,3 +139,9 @@ networks:
   modelnet:
     internal: true                       # agency <-> infer; the model server's ONLY edge
   frontend: {}
+
+volumes:
+  agency_status:
+    name: agency_status                  # stable name: this stack creates it (like
+                                         # infernet); cells mount it external + :ro.
+                                         # Deploy this stack before any cell.

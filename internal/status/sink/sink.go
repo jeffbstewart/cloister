@@ -70,6 +70,10 @@ type Config struct {
 	StateDir string
 	Token    string
 	Version  string
+	// AgencyStatusDir is the agency's status volume (read-only mount) for
+	// the web dashboard's Inference panel; optional — empty or unmounted
+	// just renders the panel as "no snapshot".
+	AgencyStatusDir string
 
 	MaxRunBytes    int64   // per-run log cap; 0 → DefaultMaxRunBytes
 	LogBytesPerSec float64 // log stream pacing; 0 → DefaultLogBytesPerSec
@@ -198,7 +202,7 @@ func New(cfg Config) (*Server, error) {
 		researchDir:  researchDir,
 		statusPath:   filepath.Join(cfg.StateDir, "status.json"),
 		auditLog:     auditLog,
-		web:          web.New(web.Config{StateDir: cfg.StateDir, Version: cfg.Version}),
+		web:          web.New(web.Config{StateDir: cfg.StateDir, Version: cfg.Version, AgencyStatusDir: cfg.AgencyStatusDir}),
 		logBytes:     newBucket(cfg.LogBytesPerSec, cfg.LogBytesPerSec),
 		auditLimit:   newBucket(cfg.AuditPerSec, cfg.AuditPerSec*2),
 		statusLimit:  newBucket(cfg.StatusPerSec, cfg.StatusPerSec*2),

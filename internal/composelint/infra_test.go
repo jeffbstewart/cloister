@@ -76,6 +76,7 @@ services:
   agency:
     entrypoint: ["/usr/local/bin/agency"]
     networks: ` + agencyNets + `
+    volumes: ["agency_status:/status"]
   infer:
     networks: ` + inferNets + `
   proxy:
@@ -110,6 +111,13 @@ services:
     networks: [egress]`),
 		"agency not on its role link": strings.Replace(cleanCompose,
 			`entrypoint: ["/usr/local/bin/agency"]`, `entrypoint: ["/usr/local/bin/scholar"]`, 1),
+		// The status volume: exactly one writer, the agency.
+		"agency status mount is ro": strings.Replace(cleanCompose,
+			`volumes: ["agency_status:/status"]`, `volumes: ["agency_status:/status:ro"]`, 1),
+		"agency missing status mount": strings.Replace(cleanCompose,
+			`volumes: ["agency_status:/status"]`, `volumes: []`, 1),
+		"stranger mounts status volume": base(agencyClean, inferClean, proxyClean, modelnetClean, `  sneaky:
+    volumes: ["agency_status:/peek"]`),
 	}
 	for name, yaml := range cases {
 		t.Run(name, func(t *testing.T) {

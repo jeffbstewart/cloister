@@ -41,11 +41,11 @@ RUN set -eux; \
     for role in builder scribe scholar librarian state-service agency agent-builder; do \
       ln -s cloister-worker "$role"; \
     done; \
-    mkdir -p /out/etc/ssl/certs /out/tmp /out/spool /out/state /out/scribe-state /out/burn /out/workspace /out/home/worker; \
+    mkdir -p /out/etc/ssl/certs /out/tmp /out/spool /out/state /out/scribe-state /out/burn /out/workspace /out/home/worker /out/status /out/agency-status; \
     cp /etc/ssl/certs/ca-certificates.crt /out/etc/ssl/certs/; \
     echo "worker:x:1000:1000::/home/worker:/sbin/nologin" > /out/etc/passwd; \
     echo "worker:x:1000:" > /out/etc/group; \
-    chown -R 1000:1000 /out/spool /out/state /out/scribe-state /out/burn /out/home/worker
+    chown -R 1000:1000 /out/spool /out/state /out/scribe-state /out/burn /out/home/worker /out/status /out/agency-status
 
 FROM scratch
 COPY --from=prep /out/ /

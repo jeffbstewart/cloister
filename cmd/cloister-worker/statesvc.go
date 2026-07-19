@@ -30,26 +30,30 @@ func stateServiceRole(args []string) (func(), error) {
 	fs := flag.NewFlagSet("state-service", flag.ContinueOnError)
 	common := registerCommon(fs, ":9201")
 	stateDir := fs.String("state-dir", "/state", "state volume: logs, audit, status")
+	agencyStatusDir := fs.String("agency-status-dir", "/agency-status",
+		"agency status volume (read-only) for the Inference panel; absent mount just hides the panel's data")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
 	return common.runOrProbe(func() {
-		runStateService(stateOptions{Addr: *common.addr, StateDir: *stateDir})
+		runStateService(stateOptions{Addr: *common.addr, StateDir: *stateDir, AgencyStatusDir: *agencyStatusDir})
 	}), nil
 }
 
 // stateOptions carries the state service's bootstrap inputs.
 type stateOptions struct {
-	Addr     string
-	StateDir string
+	Addr            string
+	StateDir        string
+	AgencyStatusDir string
 }
 
 func runStateService(o stateOptions) {
 	token := os.Getenv("STATE_TOKEN")
 	srv, err := sink.New(sink.Config{
-		StateDir: o.StateDir,
-		Token:    token,
-		Version:  version,
+		StateDir:        o.StateDir,
+		Token:           token,
+		Version:         version,
+		AgencyStatusDir: o.AgencyStatusDir,
 	})
 	if err != nil {
 		log.Fatalf("state service: %v", err)

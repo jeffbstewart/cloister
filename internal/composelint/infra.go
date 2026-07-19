@@ -17,6 +17,7 @@ package composelint
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -82,6 +83,35 @@ func CheckInfra(data []byte) ([]string, error) {
 				v = append(v, fmt.Sprintf("agency network %q is not `internal: true` — it may grant internet egress", n))
 			}
 		}
+		// The status volume: the agency is its ONE writer (docs/agency.md).
+		statusMounts := 0
+		for _, vol := range agency.Volumes {
+			if strings.HasPrefix(vol, "agency_status:") {
+				statusMounts++
+				if strings.HasSuffix(vol, ":ro") {
+					v = append(v, "agency's agency_status mount is `:ro` — the snapshot writer needs to write it")
+				}
+			}
+		}
+		if statusMounts == 0 {
+			v = append(v, "agency has no agency_status mount — the status snapshots have nowhere to land (`agency_status:/status`)")
+		}
+	}
+	// And nothing else in this stack may touch the status volume at all.
+	var statusHolders []string
+	for name, s := range c.Services {
+		if name == "agency" {
+			continue
+		}
+		for _, vol := range s.Volumes {
+			if strings.HasPrefix(vol, "agency_status:") {
+				statusHolders = append(statusHolders, name)
+			}
+		}
+	}
+	sort.Strings(statusHolders)
+	for _, name := range statusHolders {
+		v = append(v, fmt.Sprintf("%s mounts agency_status — only the agency writes the status volume", name))
 	}
 
 	// The model server retreats behind the door: modelnet only, so no

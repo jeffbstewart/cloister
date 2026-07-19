@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeffbstewart/cloister/internal/agency"
 	"github.com/jeffbstewart/cloister/internal/audit"
 	"github.com/jeffbstewart/cloister/internal/cellstate"
 	"github.com/jeffbstewart/cloister/internal/runid"
@@ -110,6 +111,84 @@ func get(t *testing.T, url string) (*http.Response, string) {
 		t.Fatal(err)
 	}
 	return resp, string(body)
+}
+
+// TestDashboardShowsInferencePanel: with the agency's status volume mounted
+// and a snapshot present, the dashboard renders the Inference panel — nodes,
+// classes, and the op ledger.
+func TestDashboardShowsInferencePanel(t *testing.T) {
+	agencyDir := t.TempDir()
+	snap := agency.Snapshot{
+		WrittenAt: time.Now().UTC(),
+		Nodes: map[string]agency.NodeStatus{
+			"infer": {
+				URL: "http://infer:11434", Present: true,
+				Pinned: []string{"coder-model:30b"}, ResidencyKnown: true, Resident: []string{"coder-model:30b"},
+				MaxInFlight: 4, InFlight: 1, QueuedInteractive: 2, QueuedBatch: 3,
+			},
+		},
+		Classes: map[string]agency.ClassStatus{
+			"interactive-code": {
+				Priority: agency.PriorityInteractive,
+				Deadline: agency.Duration(90 * time.Second), MaxDeadline: agency.Duration(5 * time.Minute),
+				QueueWait: agency.Duration(10 * time.Second), MaxQueueWait: agency.Duration(time.Minute),
+				Chain: []agency.ChainLinkStatus{{Node: "infer", Model: "coder-model:30b"}},
+			},
+		},
+		Ops: []agency.OpRecord{{
+			FinishedAt: time.Now().UTC(), Caller: "librarian", Class: "interactive-code",
+			ServedBy: "infer/coder-model:30b", Status: 200, Tokens: 42,
+		}},
+	}
+	b, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(agencyDir, agency.StatusFileName), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ts := httptest.NewServer(New(Config{StateDir: t.TempDir(), Version: "test", AgencyStatusDir: agencyDir}).Handler())
+	defer ts.Close()
+	_, body := get(t, ts.URL+"/")
+	for _, want := range []string{
+		"inference (agency)",
+		">present<",             // node reachability
+		"coder-model:30b",       // pinned/resident models
+		"1/4",                   // in-flight / maxInFlight
+		"2/3",                   // queued interactive/batch
+		"interactive-code",      // the class
+		"1m30s",                 // deadline rendered as a duration string
+		"infer/coder-model:30b", // chain link and op served-by
+		"librarian",             // op caller
+		">42<",                  // op tokens
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("inference panel missing %q:\n%s", want, body)
+		}
+	}
+}
+
+// TestDashboardInferencePanelAbsent: an unmounted volume or a not-yet-written
+// snapshot renders as "no agency snapshot" — never an error page.
+func TestDashboardInferencePanelAbsent(t *testing.T) {
+	cases := map[string]string{
+		"no dir configured": "",
+		"empty mount":       t.TempDir(),
+	}
+	for name, dir := range cases {
+		t.Run(name, func(t *testing.T) {
+			ts := httptest.NewServer(New(Config{StateDir: t.TempDir(), Version: "test", AgencyStatusDir: dir}).Handler())
+			defer ts.Close()
+			resp, body := get(t, ts.URL+"/")
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status %d", resp.StatusCode)
+			}
+			if !strings.Contains(body, "no agency snapshot") {
+				t.Errorf("dashboard missing the no-snapshot notice:\n%s", body)
+			}
+		})
+	}
 }
 
 func TestPendingApprovalCollapsedWhenResolved(t *testing.T) {
