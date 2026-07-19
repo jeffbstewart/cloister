@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/jeffbstewart/cloister/internal/agency"
 	"github.com/jeffbstewart/cloister/internal/egress"
 	"github.com/jeffbstewart/cloister/internal/egress/policy"
 	"github.com/jeffbstewart/cloister/internal/egress/wire"
@@ -74,9 +75,8 @@ func runScholar(o scholarOptions) {
 		log.Fatalf("scholar needs STATE_URL and STATE_TOKEN: it audits every search/extract to the state service")
 	}
 	baseURL := envOr("OPENAI_BASE_URL", "")
-	model := os.Getenv("OPENAI_MODEL")
-	if baseURL == "" || model == "" {
-		log.Fatalf("scholar needs OPENAI_BASE_URL and OPENAI_MODEL")
+	if baseURL == "" {
+		log.Fatalf("scholar needs OPENAI_BASE_URL (the agency's /v1 endpoint)")
 	}
 
 	p, err := policy.LoadPolicy(o.PolicyPath)
@@ -119,9 +119,11 @@ func runScholar(o scholarOptions) {
 	srv := scholar.New(scholar.Config{
 		Version: version,
 		Egress:  sub,
+		// The model field carries the agency's engine class for research
+		// synthesis; the routing policy picks the node and model tag.
 		Model: openai.New(openai.Options{
 			BaseURL: baseURL,
-			Model:   model,
+			Model:   agency.ClassResearch,
 			Key:     os.Getenv("OPENAI_API_KEY"),
 			Caller:  "scholar",
 		}),
@@ -132,5 +134,5 @@ func runScholar(o scholarOptions) {
 		Caps:        scholar.DefaultCaps(),
 	})
 	serveHTTP(&http.Server{Addr: o.Addr, Handler: srv.Handler()},
-		fmt.Sprintf("scholar (research → model %s @ %s, engine %s)", model, baseURL, sub.Engine()))
+		fmt.Sprintf("scholar (research → class %s @ %s, engine %s)", agency.ClassResearch, baseURL, sub.Engine()))
 }

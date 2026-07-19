@@ -12,12 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Agency engine-class routing — TEMPLATE (docs/agency.md).
+# Agency engine-class routing — HOST OVERRIDE TEMPLATE (docs/agency.md).
 #
-# Mount read-only into the agency container and start the door with
-# `-config <path>`. FAIL-CLOSED: an unknown key, a missing field, or a chain
-# link naming an unlisted node refuses startup — the door never routes on a
-# table you did not choose.
+# The door ships with a reference config embedded in the binary
+# (internal/agency/default-routes.yaml) and routes with it by default.  To
+# override — a LAN node's address, different model tags — copy this file
+# somewhere host-local, edit, and set the inference stack's AGENCY_ROUTES
+# var to its path; no compose edit needed.  The override REPLACES the
+# embedded config entirely, so keep every class consumers use.  FAIL-CLOSED:
+# an unknown key, a missing field, or a chain link naming an unlisted node
+# refuses startup — the door never routes on a table you did not choose.
 #
 # Consumers put a CLASS name in the request's `model` field, never a model
 # tag or a URL; GET /v1/models lists the classes. An unavailable OR

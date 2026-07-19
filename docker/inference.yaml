@@ -25,34 +25,45 @@
 #                 c:/ai_models); see docs/GETTING_STARTED.md for staging it
 #   AGENCY_IMAGE  the workers image serving the agency, e.g.
 #                 cloister-workers:latest or a pinned cloister-workers:sha-<commit>
+#   AGENCY_ROUTES (optional) host path of an engine-class routing yaml that
+#                 replaces the config embedded in the binary — the place for
+#                 LAN nodes and local model choices; unset = embedded default
 #   TZ            timezone for the agency's log timestamps (default UTC)
 
 services:
   agency:
-    # The sole inference door (docs/agency.md).  Phase 1: a streaming
-    # OpenAI-compatible pass-through fronting `infer`, which holds no
-    # consumer-reachable network of its own — cells dial
-    # http://agency:11434/v1 and only /v1/ paths pass (ollama's native
-    # API, pulls included, is unreachable through the door).
+    # The sole inference door (docs/agency.md), routing ENGINE CLASSES:
+    # cells dial http://agency:11434/v1 with a class name in the model
+    # field (interactive-code, think-fast, research, ...) and the routing
+    # policy picks the node and model tag.  Only /v1/ paths pass (ollama's
+    # native API, pulls included, is unreachable through the door), and
+    # `infer` holds no consumer-reachable network of its own.
     image: ${REGISTRY:-ghcr.io/jeffbstewart}/${AGENCY_IMAGE:?set AGENCY_IMAGE, the workers image serving the agency, e.g. cloister-workers:latest}
     container_name: agency
     user: "1000:1000"
     restart: unless-stopped
     # The agency role link of the multi-call worker binary; -addr defaults
-    # to the role's :11434.
+    # to the role's :11434.  The routing policy is the config embedded in
+    # the binary unless AGENCY_ROUTES mounts an override (below).
     entrypoint: ["/usr/local/bin/agency"]
-    command: ["-upstream", "http://infer:11434"]
+    command: ["-status-dir", "/status"]
     environment:
       - TZ=${TZ:-UTC}
     read_only: true
     tmpfs:
       - /tmp
     volumes:
-      # rw: the door's status snapshot writer (docs/agency.md, phase 4).
-      # Nothing is written until the door runs in routing mode with
-      # -status-dir /status; cells' state services mount the same volume
-      # read-only and render the Inference panel from it.
+      # rw: the door's status snapshot writer (docs/agency.md, phase 4);
+      # cells' state services mount the same volume read-only and render
+      # the Inference panel from it.
       - agency_status:/status
+      # Optional host-local routing override, no compose edit needed: set
+      # the stack var AGENCY_ROUTES to a routes yaml ON THE HOST and
+      # redeploy — that file replaces the embedded config entirely.
+      # Unset, /dev/null mounts here (a character device, which the door
+      # ignores) and the embedded reference config routes every class to
+      # infer/qwen3-coder:30b.
+      - "${AGENCY_ROUTES:-/dev/null}:/etc/agency/routes.yaml:ro"
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     pids_limit: 256

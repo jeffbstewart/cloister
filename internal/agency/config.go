@@ -16,6 +16,7 @@ package agency
 
 import (
 	"bytes"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -27,6 +28,41 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+// The reference class vocabulary of the embedded default routing config
+// (default-routes.yaml) — the names consumers program against.  A test
+// asserts every constant names a class in the embedded config, so the
+// vocabulary and the config cannot drift apart.
+const (
+	// ClassInteractiveCode is the agent's own session.
+	ClassInteractiveCode = "interactive-code"
+	// ClassThinkFast is the librarian's quick comprehension pass.
+	ClassThinkFast = "think-fast"
+	// ClassDeepThink is the librarian's effortful pass, and later the
+	// deep-think node's heavy-MoE lane.
+	ClassDeepThink = "deep-think"
+	// ClassResearch is the scholar's research-synthesis loop.
+	ClassResearch = "research"
+	// ClassSummarizeCheap is background digestion (batch).
+	ClassSummarizeCheap = "summarize-cheap"
+	// ClassReview is the corrector's review lenses (batch).
+	ClassReview = "review"
+)
+
+//go:embed default-routes.yaml
+var defaultRoutesYAML []byte
+
+// DefaultRouterConfig parses the embedded reference routing table — the
+// door's routing policy when no -config flag and no AGENCY_ROUTES override
+// names another file.  It ships inside the binary, so every image and local
+// run has a working default.
+func DefaultRouterConfig() (*RouterConfig, error) {
+	cfg, err := parseRouterConfig(defaultRoutesYAML)
+	if err != nil {
+		return nil, fmt.Errorf("agency: embedded default routes: %w", err)
+	}
+	return cfg, nil
+}
 
 // ClassName is the identifier of a named engine class — the thing a consumer
 // asks for in the request's model field (docs/agency.md: classes, not URLs).

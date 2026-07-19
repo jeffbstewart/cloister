@@ -23,6 +23,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/jeffbstewart/cloister/internal/agency"
 	"github.com/jeffbstewart/cloister/internal/infer"
 	"github.com/jeffbstewart/cloister/internal/librarian"
 	"github.com/jeffbstewart/cloister/internal/openai"
@@ -143,35 +144,38 @@ func runLibrarian(o librarianOptions) {
 }
 
 // buildInferencer wires the comprehension inference client from env, fail-soft:
-// with OPENAI_BASE_URL and OPENAI_MODEL both set it returns an *infer.Client;
-// with either unset (or a config error) it logs that comprehension is disabled
-// and returns nil, so the librarian still boots with its mechanical tools.
+// with OPENAI_BASE_URL set it returns an *infer.Client; unset (or a config
+// error) it logs that comprehension is disabled and returns nil, so the
+// librarian still boots with its mechanical tools.
 func buildInferencer() librarian.Inferencer {
 	baseURL := envOr("OPENAI_BASE_URL", "")
-	model := os.Getenv("OPENAI_MODEL")
-	if baseURL == "" || model == "" {
-		log.Printf("librarian: OPENAI_BASE_URL/OPENAI_MODEL unset — comprehension tools disabled (mechanical-only)")
+	if baseURL == "" {
+		log.Printf("librarian: OPENAI_BASE_URL unset — comprehension tools disabled (mechanical-only)")
 		return nil
 	}
-	// Both efforts resolve to the same endpoint today; the agency will later
-	// provide distinct engine classes (deep-think on a separate node).  The
-	// provenance Names differ now so the footer already reads the way it will.
-	engine := openai.New(openai.Options{
-		BaseURL: baseURL,
-		Model:   model,
-		Key:     os.Getenv("OPENAI_API_KEY"),
-		Caller:  "librarian",
-	})
+	// Each effort asks the agency for its ENGINE CLASS — the model field
+	// carries a class name, never a model tag; the agency's routing policy
+	// picks the node and model (docs/agency.md).  The provenance Names are
+	// the class names, so the footer reads exactly what was routed.
+	engineFor := func(class string) infer.Engine {
+		return infer.Engine{Name: class, Completer: openai.New(openai.Options{
+			BaseURL: baseURL,
+			Model:   class,
+			Key:     os.Getenv("OPENAI_API_KEY"),
+			Caller:  "librarian",
+		})}
+	}
 	client, err := infer.New(infer.Config{
 		Engines: map[infer.Effort]infer.Engine{
-			infer.Quick:    {Name: "think-fast", Completer: engine},
-			infer.Thorough: {Name: "deep-think", Completer: engine},
+			infer.Quick:    engineFor(agency.ClassThinkFast),
+			infer.Thorough: engineFor(agency.ClassDeepThink),
 		},
 	})
 	if err != nil {
 		log.Printf("librarian: inference client build failed (%v) — comprehension tools disabled (mechanical-only)", err)
 		return nil
 	}
-	log.Printf("librarian: comprehension tools enabled → model %s @ %s", model, baseURL)
+	log.Printf("librarian: comprehension tools enabled → classes %s/%s @ %s",
+		agency.ClassThinkFast, agency.ClassDeepThink, baseURL)
 	return client
 }

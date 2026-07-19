@@ -44,7 +44,9 @@
 #   TOOLCHAIN_IMAGE  the builder's toolchain image for THIS cell's
 #                  ecosystem, e.g. cloister-builder-jvm:latest (JDK 25 +
 #                  Gradle).  One toolchain per cell; docs/toolchains.md
-#   OPENAI_MODEL   a tag installed in infer, e.g. qwen3-coder:30b
+#   OPENAI_MODEL   (optional) the agency ENGINE CLASS the agent drives
+#                  (default interactive-code); model tags live in the
+#                  agency's routing policy, not in cells
 #   STATE_TOKEN    shared builder<->state secret; per project, e.g. [guid]::NewGuid().ToString("N")
 #   STATUS_PORT    host localhost port for the status pages (unique per project)
 #   TZ             timezone for log timestamps AND the status pages, e.g.
@@ -114,7 +116,9 @@ services:
       - *tz
       - OPENAI_BASE_URL=http://agency:11434/v1
       - OPENAI_API_KEY=ignored-for-local-use
-      - OPENAI_MODEL=${OPENAI_MODEL:?set OPENAI_MODEL, the model the agent drives}
+      # The agency engine class the agent's session rides; the routing
+      # policy (agency side) picks the node and model tag.
+      - OPENAI_MODEL=${OPENAI_MODEL:-interactive-code}
       # - BUILDER_MCP_URL=http://builder:9200/mcp   # default; override only for a nonstandard builder
     volumes:
       # Deliberately NO workspace mount: reads go through the librarian
@@ -238,8 +242,9 @@ services:
       - *tz
       - STATE_URL=http://state:9201
       - STATE_TOKEN=${STATE_TOKEN}
+      # No model name: the librarian asks the agency for its engine
+      # classes (think-fast / deep-think) by name.
       - OPENAI_BASE_URL=http://agency:11434/v1
-      - OPENAI_MODEL=${OPENAI_MODEL}
     volumes:
       - *workspace-ro                    # ro: the sole workspace view on the agent's side of the cell
     working_dir: /workspace
@@ -329,9 +334,10 @@ services:
       - *tz
       - STATE_URL=http://state:9201
       - STATE_TOKEN=${STATE_TOKEN}
+      # No model name: the scholar asks the agency for its `research`
+      # engine class by name.
       - OPENAI_BASE_URL=http://agency:11434/v1
       - OPENAI_API_KEY=ignored-for-local-use
-      - OPENAI_MODEL=${OPENAI_MODEL}
       - KAGI_API_KEY=${KAGI_API_KEY:?set KAGI_API_KEY, the scholar search/extract token}
       - BRAVE_API_KEY=${BRAVE_API_KEY:-}       # only if the policy sets search.engine: brave
       - KAGI_RELAY_ADDR=kagi-relay:8443        # dialed instead of kagi.com; TLS SNI stays kagi.com

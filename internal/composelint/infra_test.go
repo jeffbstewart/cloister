@@ -118,6 +118,10 @@ services:
 			`volumes: ["agency_status:/status"]`, `volumes: []`, 1),
 		"stranger mounts status volume": base(agencyClean, inferClean, proxyClean, modelnetClean, `  sneaky:
     volumes: ["agency_status:/peek"]`),
+		"agency in pass-through mode": strings.Replace(cleanCompose,
+			`entrypoint: ["/usr/local/bin/agency"]`,
+			`entrypoint: ["/usr/local/bin/agency"]
+    command: ["-upstream", "http://infer:11434"]`, 1),
 	}
 	for name, yaml := range cases {
 		t.Run(name, func(t *testing.T) {

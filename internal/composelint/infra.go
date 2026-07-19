@@ -83,6 +83,15 @@ func CheckInfra(data []byte) ([]string, error) {
 				v = append(v, fmt.Sprintf("agency network %q is not `internal: true` — it may grant internet egress", n))
 			}
 		}
+		// The cutover invariant: the deployed door routes engine classes
+		// (policy config).  A -upstream command is pass-through drift that
+		// would forward class names to raw ollama as model tags — every
+		// consumer's ask becomes model-not-found.
+		for _, arg := range agency.Command {
+			if strings.Contains(arg, "-upstream") {
+				v = append(v, "agency command uses -upstream — the deployed door routes engine classes, never pass-through")
+			}
+		}
 		// The status volume: the agency is its ONE writer (docs/agency.md).
 		statusMounts := 0
 		for _, vol := range agency.Volumes {

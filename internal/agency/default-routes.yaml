@@ -12,7 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Agency engine-class routing — the REFERENCE configuration (docs/agency.md).
+# Agency engine-class routing — the EMBEDDED DEFAULT (docs/agency.md).
+# Compiled into the worker binary (go:embed) and used whenever no
+# -config flag and no AGENCY_ROUTES env override is given, so the image
+# routes sensibly out of the box.  The class name constants in config.go
+# mirror this vocabulary; a test holds them in sync.
 #
 # This is the class vocabulary consumers program against: a consumer puts a
 # CLASS name in the request's `model` field and never learns which node or
@@ -22,10 +26,9 @@
 # summarize-cheap, review — are declared now so the vocabulary is stable
 # before their workers land.)
 #
-# Turn-on: mount this read-only into the agency container and start the
-# door with `-config <path> -status-dir /status`.  Contains no secrets and
-# no LAN addresses — a config that needs either belongs in an operator
-# copy, not the repo.
+# To override on a host: point the AGENCY_ROUTES env at a mounted copy —
+# that file replaces this one entirely.  Secrets and LAN addresses (the
+# deep-think node) belong only in such an operator copy, never here.
 
 probe:
   interval: 15s

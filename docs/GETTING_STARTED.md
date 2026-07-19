@@ -122,7 +122,7 @@ deploy naming the variable):
 | `AGENT_IMAGE` | `cloister-agent:<qwen>-sha-<commit>` — pin from [GHCR](https://github.com/jeffbstewart?tab=packages), or `cloister-agent:latest` |
 | `WORKERS_IMAGE` | `cloister-workers:sha-<commit>` or `cloister-workers:latest` — the slim toolchain-free image every Go worker except the builder runs |
 | `TOOLCHAIN_IMAGE` | `cloister-builder-jvm:25-sha-<commit>` or `cloister-builder-jvm:latest` — the builder's toolchain image for this cell's ecosystem ([toolchains.md](toolchains.md)) |
-| `OPENAI_MODEL` | the staged model the agent drives, as `ollama list` names it |
+| `OPENAI_MODEL` | (optional) the agency engine class the agent drives; default `interactive-code`.  Model tags live in the agency's routing policy, not in cells |
 | `STATE_TOKEN` | per-project secret, e.g. a fresh GUID; lives only here |
 | `STATUS_PORT` | localhost port for the status pages — unique per project |
 | `KAGI_API_KEY` | the scholar's search/extract token |
