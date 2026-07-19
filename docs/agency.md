@@ -209,13 +209,17 @@ deep-think node: dialed by the agency via env-provided address
    Shape).
    The deep-think node itself is wired in at turn-on via its
    env-provided address.
-4. The status volume: agency-side snapshot writer — **DONE**
-   (internal/agency status: atomic-rename JSON snapshots — nodes with
+4. The status volume — **DONE** end to end.  Writer (internal/agency
+   status: atomic-rename JSON snapshots — nodes with
    presence/residency/queue depths, classes, and the last-N op ledger
    with caller attribution via the Agency-Caller header, which the
    librarian's and scholar's clients now send; enabled by -status-dir).
-   The state services' Inference panel and the compose/compose-lint
-   volume wiring land at turn-on.
+   Panel (internal/status/web: the dashboard's Inference section, from
+   the read-only mount).  Volume (compose: `agency_status`, created by
+   the inference stack like infernet, rw only at the agency, `:ro` at
+   each cell's state service; compose-lint enforces the mount modes on
+   both files).  The agency starts writing at turn-on, when -config and
+   -status-dir join its command.
 5. Librarian/corrector land their inference through classes (their docs'
    engine-routing sections become agency config).
 6. Frontier, if and when decided: relay, spend ledger, content-policy

@@ -265,6 +265,32 @@ func Check(data []byte) ([]string, error) {
 			}
 		}
 	}
+
+	// The agency's status volume is one-way glass (docs/agency.md): in the
+	// cell, ONLY the state service may mount it, and only read-only —
+	// machine-wide operation metadata must never be reachable by an agent,
+	// and no cell may write into the agency's snapshot.
+	for _, name := range svcNames {
+		for _, vol := range c.Services[name].Volumes {
+			if !strings.HasPrefix(vol, "agency_status:") {
+				continue
+			}
+			if name != "state" {
+				v = append(v, fmt.Sprintf("%s mounts agency_status — in the cell only the state service reads the agency's status", name))
+			} else if !strings.HasSuffix(vol, ":ro") {
+				v = append(v, "state's agency_status mount is not `:ro` — cells read the agency's status, never write it")
+			}
+		}
+	}
+	if st, ok := c.Services["state"]; ok {
+		mounted := false
+		for _, vol := range st.Volumes {
+			mounted = mounted || strings.HasPrefix(vol, "agency_status:")
+		}
+		if !mounted {
+			v = append(v, "state has no agency_status mount — the dashboard's Inference panel reads `agency_status:/agency-status:ro`")
+		}
+	}
 	return v, nil
 }
 

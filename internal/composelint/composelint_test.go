@@ -138,6 +138,23 @@ services:
 		"scholar on the toolchain image": strings.Replace(cleanCompose(),
 			"scholar:\n    image: ${REGISTRY:-x}/${WORKERS_IMAGE}",
 			"scholar:\n    image: ${REGISTRY:-x}/${TOOLCHAIN_IMAGE}", 1),
+		// The agency's status volume: in the cell, only the state service
+		// reads it, and only read-only.
+		"agent mounts agency_status": base(clean, noVols, kagiCmd, `["agency_status:/agency-status:ro"]`, librarianClean, ""),
+		"state agency_status mount not ro": base(clean, noVols, kagiCmd, agentClean, librarianClean, `  state:
+    user: "1000:1000"
+    image: ${REGISTRY:-x}/${WORKERS_IMAGE}
+    entrypoint: ["/usr/local/bin/state-service"]
+    networks: [statenet]
+    volumes: ["state:/state", "agency_status:/agency-status"]
+`),
+		"state missing agency_status mount": base(clean, noVols, kagiCmd, agentClean, librarianClean, `  state:
+    user: "1000:1000"
+    image: ${REGISTRY:-x}/${WORKERS_IMAGE}
+    entrypoint: ["/usr/local/bin/state-service"]
+    networks: [statenet]
+    volumes: ["state:/state"]
+`),
 	}
 	for name, yaml := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -151,8 +168,19 @@ services:
 		})
 	}
 
-	// And the clean shape passes.
+	// And the clean shape passes — including with a well-formed state
+	// service holding its read-only agency_status mount.
 	if v, err := Check([]byte(cleanCompose())); err != nil || len(v) != 0 {
 		t.Errorf("clean compose flagged: %v (err %v)", v, err)
+	}
+	withState := base(clean, noVols, kagiCmd, agentClean, librarianClean, `  state:
+    user: "1000:1000"
+    image: ${REGISTRY:-x}/${WORKERS_IMAGE}
+    entrypoint: ["/usr/local/bin/state-service"]
+    networks: [statenet]
+    volumes: ["state:/state", "agency_status:/agency-status:ro"]
+`)
+	if v, err := Check([]byte(withState)); err != nil || len(v) != 0 {
+		t.Errorf("clean compose with state flagged: %v (err %v)", v, err)
 	}
 }

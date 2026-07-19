@@ -15,10 +15,11 @@
 // Package web serves the human-facing observability pages for a cell — the
 // oversight surface for every worker in it: live queue state, the audit
 // trail (builder commands, scribe mutations, scholar searches and research),
-// full run logs, stored mutation diffs, and the pending-approvals banner.
-// It reads ONLY from the cell's /state volume (mounted read-only) — it has
-// no MCP surface and no route to any worker, and it belongs on a
-// host-published network the agent cannot reach.
+// full run logs, stored mutation diffs, the pending-approvals banner, and
+// the machine-level Inference panel (the agency's status snapshot).  It
+// reads ONLY from volumes — the cell's /state and the agency's read-only
+// status volume — it has no MCP surface and no route to any worker, and it
+// belongs on a host-published network the agent cannot reach.
 //
 // Log and param content is agent-influenced, so logs are served as
 // text/plain with X-Content-Type-Options: nosniff, and all HTML goes
@@ -36,10 +37,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jeffbstewart/cloister/internal/agency"
 	"github.com/jeffbstewart/cloister/internal/approval"
 	"github.com/jeffbstewart/cloister/internal/audit"
 	"github.com/jeffbstewart/cloister/internal/cellstate"
@@ -56,21 +59,27 @@ const (
 type Config struct {
 	StateDir string
 	Version  string
+	// AgencyStatusDir is the agency's status volume, mounted read-only.
+	// Optional: empty (or an absent mount) renders the Inference panel as
+	// "no snapshot" — the cell works fine without the shared infra stack's
+	// door publishing anything.
+	AgencyStatusDir string
 }
 
 // Server renders the status pages.
 type Server struct {
-	cfg          Config
-	statusPath   string
-	auditPath    string
-	logsDir      string
-	diffsDir     string
-	approvalsDir string
+	cfg              Config
+	statusPath       string
+	auditPath        string
+	logsDir          string
+	diffsDir         string
+	approvalsDir     string
+	agencyStatusPath string // "" when no agency status dir is configured
 }
 
 // New builds a status server over the given state directory.
 func New(cfg Config) *Server {
-	return &Server{
+	s := &Server{
 		cfg:          cfg,
 		statusPath:   filepath.Join(cfg.StateDir, "status.json"),
 		auditPath:    filepath.Join(cfg.StateDir, "audit.jsonl"),
@@ -78,6 +87,10 @@ func New(cfg Config) *Server {
 		diffsDir:     filepath.Join(cfg.StateDir, "diffs"),
 		approvalsDir: filepath.Join(cfg.StateDir, "approvals"),
 	}
+	if cfg.AgencyStatusDir != "" {
+		s.agencyStatusPath = filepath.Join(cfg.AgencyStatusDir, agency.StatusFileName)
+	}
+	return s
 }
 
 // Handler serves the dashboard at /, the audit tail at /audit, run logs at
@@ -119,6 +132,8 @@ var tmplFuncs = template.FuncMap{
 		}
 		return t.Local().Format("2006-01-02 15:04:05 MST")
 	},
+	// join renders a model list compactly.
+	"join": func(items []string) string { return strings.Join(items, ", ") },
 }
 
 const pageHead = `<!doctype html>
@@ -181,6 +196,47 @@ as of {{local .Status.UpdatedAt}}</p>
 <h2>recent action calls (newest first)</h2>
 ` + auditTable + `
 <p><a href="/audit">longer audit tail</a> &middot; <a href="/approvals">pending approvals</a></p>
+<h2>inference (agency)</h2>
+{{if not .HaveInference}}
+<p>no agency snapshot &mdash; the door is in pass-through mode or the status volume is not mounted</p>
+{{else}}
+<p>as of {{local .Inference.WrittenAt}}</p>
+<table>
+<tr><th>node</th><th>presence</th><th>pinned</th><th>resident</th><th>in-flight</th><th>queued i/b</th></tr>
+{{range $name, $n := .Inference.Nodes}}<tr>
+<td>{{$name}}</td>
+<td class="{{if $n.Present}}ok{{else}}failed{{end}}">{{if $n.Present}}present{{else}}absent{{end}}</td>
+<td>{{join $n.Pinned}}</td>
+<td>{{if $n.ResidencyKnown}}{{join $n.Resident}}{{else}}unknown{{end}}</td>
+<td>{{$n.InFlight}}/{{$n.MaxInFlight}}</td>
+<td>{{$n.QueuedInteractive}}/{{$n.QueuedBatch}}</td>
+</tr>{{end}}
+</table>
+<table>
+<tr><th>class</th><th>priority</th><th>deadline def/max</th><th>queue wait def/max</th><th>chain</th></tr>
+{{range $name, $c := .Inference.Classes}}<tr>
+<td>{{$name}}</td>
+<td>{{$c.Priority}}</td>
+<td>{{$c.Deadline.Std}} / {{$c.MaxDeadline.Std}}</td>
+<td>{{$c.QueueWait.Std}} / {{$c.MaxQueueWait.Std}}</td>
+<td class="argv">{{range $c.Chain}}{{.Node}}/{{.Model}} &rarr; {{end}}refuse</td>
+</tr>{{end}}
+</table>
+<table>
+<tr><th>time</th><th>caller</th><th>class</th><th>served by</th><th>status</th><th>queued</th><th>total</th><th>tokens</th></tr>
+{{range .InferenceOps}}<tr>
+<td>{{local .FinishedAt}}</td>
+<td>{{.Caller}}</td>
+<td>{{.Class}}</td>
+<td>{{.ServedBy}}</td>
+<td class="{{if lt .Status 400}}ok{{else}}failed{{end}}">{{.Status}}</td>
+<td>{{.QueueWait.Std}}</td>
+<td>{{.Total.Std}}</td>
+<td>{{if .Tokens}}{{.Tokens}}{{end}}</td>
+</tr>{{end}}
+{{if not .InferenceOps}}<tr><td colspan="8">no operations yet</td></tr>{{end}}
+</table>
+{{end}}
 <footer>cloister {{.Version}} &mdash; read-only view of /state; refreshes every 5s</footer>
 </body></html>
 `))
@@ -197,6 +253,10 @@ type pageData struct {
 	Status           cellstate.Status
 	Records          []audit.Record
 	PendingApprovals int
+	HaveInference    bool
+	Inference        agency.Snapshot
+	// InferenceOps is the snapshot's op ledger, newest first for display.
+	InferenceOps []agency.OpRecord
 }
 
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
@@ -206,7 +266,30 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		data.Status = st
 	}
 	data.Records = s.readAuditTail(dashboardRecords)
+	s.readInference(&data)
 	renderHTML(w, dashboardTmpl, data)
+}
+
+// readInference loads the agency's status snapshot if the volume is mounted
+// and holds one.  Absence in any form — no configured dir, no mount, no
+// file yet, or an unparseable file mid-deploy — renders as "no snapshot",
+// never an error page: the panel is machine-level context, not cell state.
+func (s *Server) readInference(data *pageData) {
+	if s.agencyStatusPath == "" {
+		return
+	}
+	raw, err := os.ReadFile(s.agencyStatusPath)
+	if err != nil {
+		return
+	}
+	var snap agency.Snapshot
+	if err := json.Unmarshal(raw, &snap); err != nil {
+		return
+	}
+	data.HaveInference = true
+	data.Inference = snap
+	data.InferenceOps = slices.Clone(snap.Ops)
+	slices.Reverse(data.InferenceOps)
 }
 
 // countPending counts the approvals still awaiting a human (a hint for the

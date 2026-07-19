@@ -269,6 +269,10 @@ services:
       - STATE_TOKEN=${STATE_TOKEN}
     volumes:
       - state:/state                     # rw: the SOLE owner of durable logs/audit/status
+      # ro: the agency's status snapshot, for the dashboard's Inference
+      # panel.  One-way glass by mount mode — status flows agency -> volume
+      # -> here; no network edge exists (docs/agency.md).
+      - agency_status:/agency-status:ro
     read_only: true
     tmpfs:
       - /tmp
@@ -401,3 +405,6 @@ volumes:
     name: ${PROJECT}_builder_state
   scholar_burn:
     name: ${PROJECT}_scholar_burn
+  agency_status:
+    external: true                       # created by the shared inference stack
+    name: agency_status                  # (deploy it first), like infernet
