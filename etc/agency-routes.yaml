@@ -1,0 +1,117 @@
+# Copyright 2026 Jeffrey B. Stewart
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Agency engine-class routing — the REFERENCE configuration (docs/agency.md).
+#
+# This is the class vocabulary consumers program against: a consumer puts a
+# CLASS name in the request's `model` field and never learns which node or
+# model tag serves it.  Today every chain lands on the one GPU node and
+# qwen3-coder:30b; when the deep-think node arrives, its chains grow a
+# first link and no consumer changes.  (Names with no consumer yet —
+# summarize-cheap, review — are declared now so the vocabulary is stable
+# before their workers land.)
+#
+# Turn-on: mount this read-only into the agency container and start the
+# door with `-config <path> -status-dir /status`.  Contains no secrets and
+# no LAN addresses — a config that needs either belongs in an operator
+# copy, not the repo.
+
+probe:
+  interval: 15s
+  timeout: 3s
+
+nodes:
+  infer:
+    url: http://infer:11434
+    # One admission at a time: with a ~19 GB model and 32k context on a
+    # 24 GB GPU, ollama effectively runs one slot, and any extra request
+    # the door admits would just sit in ollama's blind FIFO — invisible to
+    # the two-class queue, where interactive must overtake batch.  Keep
+    # the queueing at the door.
+    maxInFlight: 1
+    models:
+      - qwen3-coder:30b
+
+classes:
+  # The agent's own session — the human is watching the tokens arrive.
+  interactive-code:
+    priority: interactive
+    deadline: 5m
+    maxDeadline: 15m
+    queueWait: 20s
+    maxQueueWait: 2m
+    chain:
+      - node: infer
+        model: qwen3-coder:30b
+
+  # The librarian's quick comprehension pass (infer.Quick — its provenance
+  # name for this class).  Serves the agent mid-turn: short and interactive.
+  think-fast:
+    priority: interactive
+    deadline: 90s
+    maxDeadline: 5m
+    queueWait: 15s
+    maxQueueWait: 1m
+    chain:
+      - node: infer
+        model: qwen3-coder:30b
+
+  # The librarian's effortful chain-of-thought pass (infer.Thorough), and
+  # later the heavy-MoE lane on the deep-think node — that node becomes
+  # this chain's first link at its turn-on.
+  deep-think:
+    priority: interactive
+    deadline: 5m
+    maxDeadline: 15m
+    queueWait: 30s
+    maxQueueWait: 5m
+    chain:
+      - node: infer
+        model: qwen3-coder:30b
+
+  # The scholar's research loop: search-grounded synthesis while the agent
+  # (and usually the human) waits on the answer.
+  research:
+    priority: interactive
+    deadline: 5m
+    maxDeadline: 10m
+    queueWait: 30s
+    maxQueueWait: 2m
+    chain:
+      - node: infer
+        model: qwen3-coder:30b
+
+  # Background digestion — summaries, indexing.  Batch: it waits its turn
+  # whenever anything interactive is queued.
+  summarize-cheap:
+    priority: batch
+    deadline: 2m
+    maxDeadline: 10m
+    queueWait: 1m
+    maxQueueWait: 10m
+    chain:
+      - node: infer
+        model: qwen3-coder:30b
+
+  # The corrector's review lenses (docs/corrector.md): long-running,
+  # never blocks a human — advice can wait behind every interactive ask.
+  review:
+    priority: batch
+    deadline: 10m
+    maxDeadline: 30m
+    queueWait: 5m
+    maxQueueWait: 30m
+    chain:
+      - node: infer
+        model: qwen3-coder:30b

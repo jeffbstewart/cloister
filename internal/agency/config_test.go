@@ -16,6 +16,7 @@ package agency
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -342,6 +343,25 @@ func TestDurationJSON(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(`90`), &d); err == nil {
 		t.Error("bare-number duration unmarshaled, want refusal")
+	}
+}
+
+// TestCommittedReferenceRoutesAreValid loads the repo's reference routing
+// config, so schema drift — a renamed field, a new required one — fails the
+// suite instead of the deployed door's startup.
+func TestCommittedReferenceRoutesAreValid(t *testing.T) {
+	cfg, err := LoadRouterConfig(filepath.Join("..", "..", "etc", "agency-routes.yaml"))
+	if err != nil {
+		t.Fatalf("reference config invalid: %v", err)
+	}
+	for _, class := range []string{"interactive-code", "think-fast", "deep-think", "research", "summarize-cheap", "review"} {
+		name, err := ParseClassName(class)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := cfg.classes[name]; !ok {
+			t.Errorf("reference config missing the %q class", class)
+		}
 	}
 }
 
