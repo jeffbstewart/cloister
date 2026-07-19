@@ -36,9 +36,10 @@
 //	               :9400 served from an in-memory, shield-filtered model
 //	               of the workspace; denials (only) audited to state.
 //	agency         the sole inference door on :11434, in the shared infra
-//	               stack (not the cell): a streaming pass-through of the
-//	               OpenAI-compatible /v1 API to the model server, which
-//	               consumers can no longer reach directly.
+//	               stack (not the cell): routes the OpenAI-compatible /v1
+//	               API by ENGINE CLASS (the request's model field) to the
+//	               model servers, which consumers can no longer reach
+//	               directly.
 //
 // Each role parses its own flag set, so a flag from the wrong role is a
 // startup error, never a silent no-op.  Under the generic binary name

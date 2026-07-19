@@ -29,7 +29,7 @@ func TestResolveRole(t *testing.T) {
 		wantErr  bool
 	}{
 		{"role link", "scribe", []string{"-scribe-approvals"}, "scribe", []string{"-scribe-approvals"}, false},
-		{"role link with .exe", "agency.exe", []string{"-upstream", "http://x"}, "agency", []string{"-upstream", "http://x"}, false},
+		{"role link with .exe", "agency.exe", []string{"-status-dir", "/status"}, "agency", []string{"-status-dir", "/status"}, false},
 		{"every role name resolves", "state-service", nil, "state-service", nil, false},
 		{"generic with selector pair", "cloister-worker", []string{"-worker-mode", "builder", "-spool", "/s"}, "builder", []string{"-spool", "/s"}, false},
 		{"generic with = form", "cloister-worker", []string{"-worker-mode=librarian"}, "librarian", []string{}, false},
@@ -79,7 +79,7 @@ func TestWrongRoleFlagIsAnError(t *testing.T) {
 		role string
 		args []string
 	}{
-		{"builder", []string{"-upstream", "http://x"}},        // agency flag
+		{"builder", []string{"-status-dir", "/status"}},       // agency flag
 		{"scribe", []string{"-policy", "/p"}},                 // scholar flag
 		{"scholar", []string{"-scribe-approvals"}},            // scribe flag
 		{"librarian", []string{"-state-dir", "/state"}},       // state-service flag
@@ -109,7 +109,7 @@ func TestRoleParsersAcceptTheirOwnFlags(t *testing.T) {
 		{"scribe", []string{"-scribe-approvals"}},
 		{"scholar", nil},
 		{"librarian", nil},
-		{"agency", []string{"-upstream", "http://infer:11434"}},
+		{"agency", []string{"-status-dir", "/status"}},
 		{"scribe", []string{"-healthcheck"}},
 		{"agency", []string{"-healthcheck"}},
 	}

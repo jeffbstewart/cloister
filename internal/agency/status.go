@@ -135,14 +135,11 @@ func (rt *router) writeSnapshot(dir string) error {
 }
 
 // WriteStatusSnapshots publishes the status snapshot into dir on an
-// interval until ctx ends, starting immediately.  It is a no-op for a
-// pass-through door.  Callers run it on its own goroutine beside the HTTP
-// server; write failures are logged and retried on the next tick — a full
-// or briefly absent volume must never take the door down.
+// interval until ctx ends, starting immediately.  Callers run it on its own
+// goroutine beside the HTTP server; write failures are logged and retried
+// on the next tick — a full or briefly absent volume must never take the
+// door down.
 func (s *Server) WriteStatusSnapshots(ctx context.Context, dir string) {
-	if s.router == nil {
-		return
-	}
 	write := func() {
 		if err := s.router.writeSnapshot(dir); err != nil {
 			log.Printf("agency: status snapshot: %v", err)

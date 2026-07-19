@@ -191,7 +191,8 @@ deep-think node: dialed by the agency via env-provided address
    `infer` only; consumers repoint `OPENAI_BASE_URL`; `infer` moves to
    `modelnet`; the localhost relay flips to the agency (GETTING_STARTED's
    verification step changed with it — `v1/models` instead of `api/tags`).
-   Behaviorally invisible, topology proven.
+   Behaviorally invisible, topology proven.  (The mode itself was REMOVED
+   after the phase-5 cutover — routing is the door's only mode.)
 2. Engine classes + fail-closed config + the two-class queue — **DONE**
    (internal/agency router: the request's model field names a class,
    chains advance past unreachable or too-busy links, caller budgets ride
@@ -229,9 +230,11 @@ deep-think node: dialed by the agency via env-provided address
    means embedded — no compose edit to override).  The librarian asks
    think-fast/deep-think, the scholar research, the agent's cell env
    defaults OPENAI_MODEL to interactive-code; no cell names a model tag.
-   Pass-through survives only as an explicit -upstream escape hatch, and
-   compose-lint refuses it in the committed command.  The corrector
-   lands on the already-declared `review` class when it is built.
+   Once routing proved out in deployment, pass-through was removed
+   entirely — a -upstream flag no longer exists (an unknown flag is a
+   loud startup error), and compose-lint still refuses it in the
+   committed command as an extra pre-deploy guard.  The corrector lands
+   on the already-declared `review` class when it is built.
 6. Frontier, if and when decided: relay, spend ledger, content-policy
    matrix — each a deliberate, reviewable step.
 

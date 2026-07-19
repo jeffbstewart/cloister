@@ -175,22 +175,3 @@ func TestWriteSnapshotAtomically(t *testing.T) {
 		}
 	}
 }
-
-// TestWriteStatusSnapshotsNoOpInPassThrough: a pass-through door publishes
-// nothing — the call returns immediately instead of looping.
-func TestWriteStatusSnapshotsNoOpInPassThrough(t *testing.T) {
-	srv, err := New(Config{UpstreamURL: "http://infer:11434"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := t.TempDir()
-	srv.WriteStatusSnapshots(t.Context(), dir)
-
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 0 {
-		t.Errorf("pass-through door wrote %d files, want none", len(entries))
-	}
-}
