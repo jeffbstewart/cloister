@@ -41,18 +41,38 @@ Three pressures, one root cause:
   Nothing agent-written outlives it except commits on a published
   branch.  The host working tree is never mounted into a cell again;
   agent work reaches the operator's machine only via a reviewed fetch.
-- **Toolchain in the agent image.**  Per-ecosystem agent images —
-  the agent stack layered onto the toolchain base images of
-  [toolchains.md](toolchains.md) — so build and test run natively in
-  the agent's own container.  Builds stay **offline**: caches are
-  pre-warmed (baked into the image or a read-mostly volume); no
-  registry route exists anywhere in the cell.
-- **The archivist is the hinge.**  Sole holder of the forge credential,
-  sole author of remote operations (publish, propose, review reads),
-  and now also the grange's provisioner.  Its design in
+- **One fat, identity-free workbench image.**  All toolchains ride
+  together — JVM, Go, Rust, C++, built from
+  [toolchains.md](toolchains.md)'s bases layered stable-to-volatile —
+  plus the agent CLIs on top, so build and test run natively in the
+  agent's own container and **any cell can serve any project**: the
+  fungibility the cellarer (below) needs.  The image carries no
+  identity — bot tokens and git author identity are injected at
+  provision time, per human, never baked into a layer.  CI images
+  derive from the same base so works-in-my-cell drift stays dead; the
+  scholar stays on the slim workers image, so the compose-lint
+  invariant becomes "only the agent image carries toolchains."
+  Builds stay **offline**: caches are pre-warmed (baked into the
+  image or a read-mostly volume); no registry route exists anywhere
+  in the cell.
+- **The agent CLI is fungible; the model door is not.**  qwen-code
+  and Claude Code both ship in the workbench image, either one
+  pointed at the agency's endpoint — local models only.  A cloud
+  engine is a separate, undecided policy door (a pinned relay plus
+  the credential-swap pattern, per COMPETITION.md); no cell reaches a
+  cloud API as a side effect of CLI choice.
+- **The archivist is the hinge — sized to the forge's blast radius.**
+  Sole holder of the forge credential, sole author of remote
+  operations (publish, propose, review reads), and now also the
+  grange's provisioner.  Its design in
   [archivist.md](archivist.md) stands, with two amendments: it gains
   provision/dispose verbs for grange lifecycle, and it drops the
-  assumption that a scribe writes beside it.
+  assumption that a scribe writes beside it.  Against the LAN-jailed
+  Gitea (below), its credential-custody role relaxes — the agent may
+  hold its own scoped bot token and drive git and the forge API
+  directly, leaving the archivist as the provisioning/lifecycle owner
+  (or a thin provisioner, where the CLI's native git flow suffices).
+  Against a world-readable forge, custody stays archivist-only.
 - **The mediators retire.**  Scribe, librarian, and builder are removed
   once the grange path is proven.  A clean clone has clean provenance —
   the presubmit already guarantees the repo is secret-free — so the
@@ -78,10 +98,16 @@ Three pressures, one root cause:
 1. **Agent-authored bytes reach the canonical tree only through a
    human-reviewed PR.**  Enforced by forge configuration (below), not
    by cell-side mediation.
-2. **The forge credential never enters agent-reachable space.**  It
-   lives in the archivist's environment only; `git push` is egress, and
-   push access is an exfiltration channel — the credential is the one
-   thing that must not cross into the model's container.
+2. **The world-facing credential never enters any cell.**  `git push`
+   is egress, and push access is an exfiltration channel — *to
+   wherever the remote is readable*.  Against a LAN-jailed forge that
+   audience collapses to the LAN, so a per-human, scoped local-forge
+   bot token may ride in the cell: the worst case is attributed
+   graffiti on protected local branches.  The credential that reaches
+   the world — GitHub, the release mirror — stays operator-held,
+   outside every cell, always.  A deployment whose working forge is
+   world-readable (GitHub-direct) keeps the forge credential
+   archivist-only.
 3. **The grange is ephemeral.**  Provisioned from the remote at task
    start, destroyed at task end; a task resumes by re-cloning its
    branch, never by reviving a stale volume.
@@ -230,12 +256,11 @@ the linted topology never lags the real one.
   the agent uses native file tools and local read-only git.  The
   scribe and librarian go idle and are then removed from the compose
   topology.  This is the milestone that resolves the qwen friction.
-- **M4 — toolchain-in-agent images.**  Build per-ecosystem agent
-  images by layering the agent stack onto the toolchain bases
-  (toolchain as the stable lower layers, agent on top, so vendor bumps
-  don't rebuild the world), pre-warm offline caches, retire the
-  builder.  Derive these and any CI images from the same bases to
-  limit works-in-my-cell drift.
+- **M4 — the workbench image.**  One fat, identity-free image: the
+  toolchain bases as the stable lower layers, the agent CLIs on top
+  (so vendor bumps don't rebuild the world), offline caches
+  pre-warmed; retire the builder.  Derive CI images from the same
+  base to limit works-in-my-cell drift.
 - **M5 — cutover of the record.**  Rewrite the security invariants in
   CLAUDE.md and [ARCHITECTURE.md](ARCHITECTURE.md); honesty pass on
   COMPETITION.md (the "no workspace mount at all" and "cannot even
@@ -255,8 +280,8 @@ supports 4–6 concurrently.
 
 **Shape: slots with leases, cells as cattle.**  Not N long-lived cells
 that get reassigned — a cell is *instantiated* per task and torn down
-with it (its agent image is toolchain-specific anyway, so reuse across
-ecosystems was never on the table).  What persists is a small pool of
+with it; the fat workbench image means any slot serves any project and
+ecosystem.  What persists is a small pool of
 **slots**, handed out by an allocator — proposed name: the
 **cellarer**, the monastic officer in charge of the abbey's provisions:
 
@@ -303,7 +328,9 @@ ecosystems was never on the table).  What persists is a small pool of
 ## Gitea-local development, GitHub as release mirror
 
 The forge-requirements table is host-agnostic on purpose.  Running
-Gitea on abbot as the *working* forge and demoting GitHub to a
+Gitea as the *working* forge — sited on its own box, not abbot: the
+canonical repo should not live on the host that runs untrusted cells,
+and the forge survives abbot rebuilds — and demoting GitHub to a
 *publication* target changes the system's character more than any
 other option in this doc:
 
@@ -362,8 +389,12 @@ the same `forge-lint` assertions before any cutover.
 
 ## Open questions
 
-- **Gitea rule precedence** — verify multi-pattern protection behavior
-  before trusting R8 to the Gitea side (pilot task).
+- **Gitea rule precedence** — the docs answer it: when several
+  protection rules match a branch, only the **first, in page order**,
+  applies (rules are drag-reorderable), so R8 is `main` first,
+  `agent/**` second, a `**` fallback last — and forge-lint must
+  assert rule *order*, not just contents.  Remaining pilot task:
+  confirm the ordering behaves live before trusting R8 server-side.
 - **Agency fairness** — the scheduling/budget mechanism for 4–6
   concurrent cells needs its own design pass in
   [agency.md](agency.md).
