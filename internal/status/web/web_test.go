@@ -113,10 +113,11 @@ func get(t *testing.T, url string) (*http.Response, string) {
 	return resp, string(body)
 }
 
-// TestDashboardShowsInferencePanel: with the agency's status volume mounted
-// and a snapshot present, the dashboard renders the Inference panel — nodes,
-// classes, and the op ledger.
-func TestDashboardShowsInferencePanel(t *testing.T) {
+// TestInferenceTabShowsSnapshot: with the agency's status volume mounted
+// and a snapshot present, the /inference tab renders nodes, classes, and
+// the op ledger — on its own 10s reload cadence — while the dashboard
+// stays a short page that only links to it.
+func TestInferenceTabShowsSnapshot(t *testing.T) {
 	agencyDir := t.TempDir()
 	snap := agency.Snapshot{
 		WrittenAt: time.Now().UTC(),
@@ -150,9 +151,10 @@ func TestDashboardShowsInferencePanel(t *testing.T) {
 
 	ts := httptest.NewServer(New(Config{StateDir: t.TempDir(), Version: "test", AgencyStatusDir: agencyDir}).Handler())
 	defer ts.Close()
-	_, body := get(t, ts.URL+"/")
+	_, body := get(t, ts.URL+"/inference")
 	for _, want := range []string{
 		"inference (agency)",
+		`content="10"`,          // the tab's own reload cadence
 		">present<",             // node reachability
 		"coder-model:30b",       // pinned/resident models
 		"1/4",                   // in-flight / maxInFlight
@@ -164,14 +166,26 @@ func TestDashboardShowsInferencePanel(t *testing.T) {
 		">42<",                  // op tokens
 	} {
 		if !strings.Contains(body, want) {
-			t.Errorf("inference panel missing %q:\n%s", want, body)
+			t.Errorf("inference tab missing %q:\n%s", want, body)
 		}
+	}
+
+	// The dashboard stays short: no snapshot tables, just the nav tab.
+	_, dash := get(t, ts.URL+"/")
+	if strings.Contains(dash, "coder-model:30b") {
+		t.Error("dashboard still renders the inference tables, want them only on /inference")
+	}
+	if !strings.Contains(dash, `href="/inference"`) {
+		t.Error("dashboard nav missing the inference tab link")
+	}
+	if !strings.Contains(dash, `content="5"`) {
+		t.Error("dashboard lost its 5s reload cadence")
 	}
 }
 
-// TestDashboardInferencePanelAbsent: an unmounted volume or a not-yet-written
+// TestInferenceTabAbsentSnapshot: an unmounted volume or a not-yet-written
 // snapshot renders as "no agency snapshot" — never an error page.
-func TestDashboardInferencePanelAbsent(t *testing.T) {
+func TestInferenceTabAbsentSnapshot(t *testing.T) {
 	cases := map[string]string{
 		"no dir configured": "",
 		"empty mount":       t.TempDir(),
@@ -180,12 +194,12 @@ func TestDashboardInferencePanelAbsent(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ts := httptest.NewServer(New(Config{StateDir: t.TempDir(), Version: "test", AgencyStatusDir: dir}).Handler())
 			defer ts.Close()
-			resp, body := get(t, ts.URL+"/")
+			resp, body := get(t, ts.URL+"/inference")
 			if resp.StatusCode != http.StatusOK {
 				t.Fatalf("status %d", resp.StatusCode)
 			}
 			if !strings.Contains(body, "no agency snapshot") {
-				t.Errorf("dashboard missing the no-snapshot notice:\n%s", body)
+				t.Errorf("inference tab missing the no-snapshot notice:\n%s", body)
 			}
 		})
 	}
