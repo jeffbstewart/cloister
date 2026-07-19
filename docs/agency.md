@@ -1,8 +1,9 @@
 # The agency — inference gateway design
 
-Status: **phases 1–2 implemented (the pass-through door; the router —
-engine classes, fail-closed config, chains, caller deadlines, the
-two-class queue); phases 3–6 are design**.  Decisions from the
+Status: **phases 1–5 implemented and CUT OVER — policy-based class
+routing is the deployed mode (embedded default config, AGENCY_ROUTES
+host override); of phase 3 the deep-think node itself remains, and
+phase 6 (frontier) stays design**.  Decisions from the
 2026-07-07 design review.  Lives in the
 **shared inference stack** (machine-level, like `infer` itself), not in
 any cell.
@@ -196,8 +197,7 @@ deep-think node: dialed by the agency via env-provided address
    chains advance past unreachable or too-busy links, caller budgets ride
    the Agency-Deadline and Agency-Queue-Wait headers, per-node
    maxInFlight admission with interactive queued ahead of batch,
-   etc/agency-routes.example.yaml is the config template; the deployed
-   door stays in pass-through mode until the operator mounts a config).
+   etc/agency-routes.example.yaml is the override template).
 3. The deep-think node: presence probes — **DONE** (internal/agency
    presence: every node probed via GET /v1/models on a configured
    interval; chains skip a node marked absent without a dial and pick it
@@ -218,10 +218,20 @@ deep-think node: dialed by the agency via env-provided address
    the read-only mount).  Volume (compose: `agency_status`, created by
    the inference stack like infernet, rw only at the agency, `:ro` at
    each cell's state service; compose-lint enforces the mount modes on
-   both files).  The agency starts writing at turn-on, when -config and
-   -status-dir join its command.
-5. Librarian/corrector land their inference through classes (their docs'
-   engine-routing sections become agency config).
+   both files).
+5. Consumers land their inference through classes — **DONE for every
+   built worker** (the CUTOVER, 2026-07-18): routing is the door's
+   default mode, with the reference config embedded in the binary
+   (internal/agency/default-routes.yaml, go:embed; class-name constants
+   held in sync by test) and a host-local override via the stack var
+   AGENCY_ROUTES (compose mounts `${AGENCY_ROUTES:-/dev/null}` at a
+   well-known path; a regular file there wins, the /dev/null placeholder
+   means embedded — no compose edit to override).  The librarian asks
+   think-fast/deep-think, the scholar research, the agent's cell env
+   defaults OPENAI_MODEL to interactive-code; no cell names a model tag.
+   Pass-through survives only as an explicit -upstream escape hatch, and
+   compose-lint refuses it in the committed command.  The corrector
+   lands on the already-declared `review` class when it is built.
 6. Frontier, if and when decided: relay, spend ledger, content-policy
    matrix — each a deliberate, reviewable step.
 

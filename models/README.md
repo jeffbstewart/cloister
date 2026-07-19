@@ -108,6 +108,9 @@ bracket the served model end to end.
 OLLAMA_MODELS=c:/ai_models ollama show qwen3-coder-liberated:30b
 ```
 
-Point a cell at it by setting `OPENAI_MODEL=qwen3-coder-liberated:30b` (see
-[docs/GETTING_STARTED.md](../docs/GETTING_STARTED.md)).  No compose change: the
-tag is already in the store `infer` mounts.
+Route to it through the agency's policy (cells never name model tags): copy
+[etc/agency-routes.example.yaml](../etc/agency-routes.example.yaml)
+host-local, point the class chains — and the node's pinned `models` list —
+at `qwen3-coder-liberated:30b`, and set the inference stack's
+`AGENCY_ROUTES` var to the file's path.  No compose change: the tag is
+already in the store `infer` mounts.
