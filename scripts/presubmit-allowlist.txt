@@ -43,3 +43,7 @@ test-token-abc123
 # untouched.
 OPENAI_API_KEY=ignored-for-local-use
 Bearer ignored-for-local-use
+
+# Public gist ID cited in COMPETITION.md's sources — a URL path segment,
+# not a token.
+2752d8d97727577050c043e4ff9e386e
