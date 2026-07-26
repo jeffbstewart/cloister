@@ -170,13 +170,17 @@ two heavies never co-reside before the wired limit is raised):
 
     OLLAMA_MODELS=/opt/deepthink/models vivarium seed \
       -source http://<nas-ip>:8091 \
-      -models qwen3-coder-next,qwen3.6-27b \
+      -targets t2 -models qwen3.6-27b \
       -allowed-signers /path/to/allowed_signers \
       -store /opt/deepthink/staging -ollama-bin ollama -create
 
-Name the models explicitly: `-models` and `-targets` filter with AND,
-and the think-fast 27B is tagged t1, so `-targets t2` alone would miss
-it (and today also skips gpt-oss — gotcha 1).
+Selection is a union: `-targets t2` pulls this machine's tier, and
+`-models` adds named models on top (the think-fast 27B is tagged t1, so
+name it to include it).  So this seeds qwen3-coder-next + qwen3.6-27b
+today and skips gpt-oss (t2 but no gguf yet — gotcha 1); after the
+2026-07-30 gpt-oss amendment the same command also pulls it.  (The
+union replaced an earlier AND-filter that would have dropped the t1
+27B when `-targets t2` was set — vivarium seed change, 2026-07-26.)
 
 **Verify** — one hello-world per model over `/api/generate` proved both
 serve and decode.  Measured cold: qwen3-coder-next ~63 tok/s (A3B MoE),
