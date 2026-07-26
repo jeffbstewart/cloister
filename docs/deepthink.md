@@ -136,28 +136,25 @@ deliberately when this service runs.
 
 The first real seed-and-serve on the target hardware (M4 Max, 128 GiB),
 native and **unjailed** — Gate 2 adds the jail.  Recorded here because
-the runbook and its gotchas are the part worth keeping; the model picks
-and sizes live in vivarium's `docs/MAC_SETUP.md`.
+the runbook and its gotchas are the part worth keeping.  Model picks and
+sizes are tracked separately by the model-population tooling and are out
+of scope here.
 
 **Tooling actually needed** (all native, no container):
 
-- Go toolchain (go.dev or brew).  `vivarium` is stdlib-only, so
-  `go build ./cmd/vivarium` pulls nothing else — build from a trusted
-  checkout, no signed-binary ceremony.
 - Homebrew `ollama` (0.32.4 here), the native Metal server.  Its own
   `brew` caveats print the exact `OLLAMA_FLASH_ATTENTION=1
   OLLAMA_KV_CACHE_TYPE=q8_0` tuning this doc prescribes.
-- The vivarium checkout's `signing/allowed_signers` as the trust
-  anchor.  Confirm its fingerprints against the paper record before
-  trusting the checkout — recompute from the key bytes, not the comment
-  lines an attacker would also edit:
-  `awk '/^[^#]/ {print $3,$4}' allowed_signers | ssh-keygen -lf -`.
+- Separate model-population tooling (out of scope here) that imports the
+  chosen models into the store offline and integrity-checked.  It carries
+  its own trust anchor, verified before use, and is documented with that
+  tool, not here.
 
 **Store layout** — one root, three dirs, outside any home:
 
     /opt/deepthink/models    # OLLAMA_MODELS: the served store
-    /opt/deepthink/staging   # vivarium seed work-dir (transient)
-    /opt/deepthink/bin       # the from-source vivarium binary
+    /opt/deepthink/staging   # model-population work-dir (transient)
+    /opt/deepthink/bin       # the model-population tool
 
 **Serve** (loopback only; `MAX_LOADED_MODELS=1` for the shakedown so the
 two heavies never co-reside before the wired limit is raised):
@@ -166,21 +163,11 @@ two heavies never co-reside before the wired limit is raised):
     OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 \
     OLLAMA_MAX_LOADED_MODELS=1 ollama serve
 
-**Seed** (the airlock's core; runs against the LAN status server):
-
-    OLLAMA_MODELS=/opt/deepthink/models vivarium seed \
-      -source http://<nas-ip>:8091 \
-      -targets t2 -models qwen3.6-27b \
-      -allowed-signers /path/to/allowed_signers \
-      -store /opt/deepthink/staging -ollama-bin ollama -create
-
-Selection is a union: `-targets t2` pulls this machine's tier, and
-`-models` adds named models on top (the think-fast 27B is tagged t1, so
-name it to include it).  So this seeds qwen3-coder-next + qwen3.6-27b
-today and skips gpt-oss (t2 but no gguf yet — gotcha 1); after the
-2026-07-30 gpt-oss amendment the same command also pulls it.  (The
-union replaced an earlier AND-filter that would have dropped the t1
-27B when `-targets t2` was set — vivarium seed change, 2026-07-26.)
+**Populate** — the model-population tooling (out of scope here) imports
+the chosen models into `OLLAMA_MODELS` offline: it fetches each blessed
+gguf, verifies it against its own trust anchor, and runs `ollama create`.
+Today that is qwen3-coder-next + qwen3.6-27b; gpt-oss is skipped for now
+(gotcha 1).
 
 **Verify** — one hello-world per model over `/api/generate` proved both
 serve and decode.  Measured cold: qwen3-coder-next ~63 tok/s (A3B MoE),
@@ -189,26 +176,24 @@ qwen3.6-27b ~22 tok/s (dense 27B) — the ~3x gap is exactly
 
 ### Gotchas found (and fixed)
 
-1. **gpt-oss is originals-only.**  gpt-oss-120b and -20b are preserved
-   as native MXFP4 safetensors with no gguf, so ollama cannot serve
-   them and `vivarium seed` skips them with a "no gguf artifact" note.
-   By design: their gguf repacks were inside the 14-day acquisition
-   quarantine and clear 2026-07-30, after which a manifest amendment
-   adds the gguf.  The servable-today pair is therefore
+1. **Some models are originals-only.**  gpt-oss-120b and -20b are
+   preserved as native MXFP4 safetensors with no gguf, so ollama cannot
+   serve them and the population tooling skips them ("no gguf artifact").
+   Their gguf repacks are expected later; the servable-today pair is
    qwen3-coder-next + qwen3.6-27b.
 
 2. **Split-gguf import needs a directory, not a shard file.**
    `ollama create` from `FROM <...-00001-of-00004.gguf>` fails with
    "split GGUF has 1 shards, expected 4" — handed one shard it gathers
    only that one.  `FROM <the shard directory>` makes ollama gather and
-   merge every shard.  Fixed in vivarium `internal/seed`: point FROM at
-   the shard directory when the artifact is multi-shard.  Hits every
-   split model — coder-next now, and likely the gpt-oss ggufs later.
+   merge every shard.  Fixed in the population tooling: point FROM at the
+   shard directory when the artifact is multi-shard.  Hits every split
+   model — coder-next now, and likely the gpt-oss ggufs later.
 
 3. **A failed import must not cost the download.**  The first run
    fetched-and-verified 45 GiB, then died on gotcha 2 before persisting
-   any state, so a naive retry would re-fetch all of it.  vivarium's
-   seed now adopts already-staged bytes by re-hashing them locally
+   any state, so a naive retry would re-fetch all of it.  The population
+   tooling now adopts already-staged bytes by re-hashing them locally
    (same guarantee as hashing in flight, no network) and persists
    progress even when a model fails — the retry re-hashed in seconds
    instead of re-downloading.

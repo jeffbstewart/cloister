@@ -1,0 +1,175 @@
+;; vim:ft=scheme
+;;
+;; Copyright 2026 Jeffrey B. Stewart
+;;
+;; Licensed under the Apache License, Version 2.0 (the "License");
+;; you may not use this file except in compliance with the License.
+;; You may obtain a copy of the License at
+;;
+;;     http://www.apache.org/licenses/LICENSE-2.0
+;;
+;; Unless required by applicable law or agreed to in writing, software
+;; distributed under the License is distributed on an "AS IS" BASIS,
+;; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+;; See the License for the specific language governing permissions and
+;; limitations under the License.
+;;
+;; This file as a whole is distributed under Apache-2.0.  Portions of the
+;; Metal/GPU ruleset are derived from aldur/sandboxed-ai and remain under
+;; the MIT License, whose full notice is recorded in THIRD_PARTY_NOTICES.
+;;
+;; deep-think jail: seatbelt profile for a native `ollama serve`.
+;;
+;; Deny-default.  The security-critical property is NO network egress:
+;; outbound is allowed ONLY to loopback (ollama's scheduler talks to its
+;; own runner subprocess over 127.0.0.1), so a jailed ollama physically
+;; cannot phone home -- no telemetry, no model-recommendation pings, no
+;; pulls.  Filesystem is contained: it reads system frameworks, the GPU
+;; stack, and its own model store (READ-ONLY), and writes only inside its
+;; runtime tree and the OS temp dir; the operator's home is invisible.
+;;
+;; Derived from aldur/sandboxed-ai (llama-server.sb + common.sb), the
+;; trial-and-error Metal ruleset, adapted for ollama's differences:
+;; ollama forks/execs a runner subprocess and talks to it over loopback
+;; TCP, where llama-server is a single process with no outbound at all.
+;;
+;; The Metal/GPU ruleset (mach-lookup, iokit-open, ipc-posix-shm,
+;; file-issue-extension) is derived from aldur/sandboxed-ai
+;; (https://github.com/aldur/sandboxed-ai), used under the MIT License;
+;; the full MIT notice is recorded in cloister/THIRD_PARTY_NOTICES.
+;;
+;; sandbox-exec is deprecated-but-functional (Apple daemons still ship
+;; seatbelt profiles).  The PF per-uid outbound backstop (layer 2, added
+;; with sudo) is the belt-and-suspenders that also closes any XPC-proxied
+;; egress a mach-lookup might otherwise permit.
+
+(version 1)
+(deny default)
+
+;; Apple base: dyld shared cache, exec bootstrap, CoreFoundation.  This
+;; is what my hand-rolled profile missed -- without it dyld cannot map
+;; the shared cache and the process aborts before logging a thing.
+(import "system.sb")
+(import "com.apple.corefoundation.sb")
+
+;; ── Process: ollama execs its runner subprocess (inherits this jail) ──
+(allow process-fork)
+(allow process-exec*
+  (subpath "/opt/homebrew")                          ; ollama + its runner
+  (subpath "/System/Library/Frameworks/Metal.framework")
+  (subpath "/System/Library/PrivateFrameworks"))     ; metalfe shader compiler
+(allow process-info-pidinfo)
+(allow process-info* (target self))
+;; ollama must signal its runner children (kill on timeout/shutdown).
+(allow signal (target self) (target children))
+
+;; ── Mach: opendirectory (common) + the GPU services ──────────────────
+(allow mach-lookup
+  (global-name "com.apple.system.opendirectoryd.membership")
+  (global-name "com.apple.gpumemd.shared")
+  (global-name "com.apple.metal.shared")
+  (global-name "com.apple.GPUCompiler.daemon")
+  ;; Full Metal context creation (not just --list-devices) reaches these;
+  ;; denied, it stalls past ollama's 30s GPU-discovery watchdog and falls
+  ;; back to CPU.  All local services, not egress.
+  (global-name "com.apple.windowserver.active")
+  (global-name "com.apple.tccd.system"))
+
+;; ── IOKit: Apple GPU (AGX) + accelerator + IOSurface ─────────────────
+(allow iokit-open
+  (iokit-user-client-class "AGXDeviceUserClient")
+  (iokit-user-client-class "AGXCommandQueueUserClient")
+  (iokit-user-client-class "AGXSharedUserClient")
+  (iokit-user-client-class "IOAcceleratorClient")
+  (iokit-user-client-class "IOGPUDeviceUserClient")
+  (iokit-user-client-class "IOSurfaceRootUserClient"))
+(allow iokit-get-properties)                          ; read-only device metadata
+
+;; Metal/CoreFoundation read CFPreferences (any-application domain) during
+;; device setup; local reads, not egress.
+(allow user-preference-read)
+
+;; ── sysctl: hardware topology for scheduling + memory sizing ─────────
+(allow sysctl-read
+  (sysctl-name "hw.ncpu")
+  (sysctl-name "hw.memsize")
+  (sysctl-name "hw.pagesize")
+  (sysctl-name "hw.physicalcpu")
+  (sysctl-name "hw.nperflevels")
+  (sysctl-name-prefix "hw.perflevel")
+  (sysctl-name-prefix "hw.optional.")
+  (sysctl-name "kern.osrelease")
+  (sysctl-name "kern.osversion"))
+
+;; ── Metal shared memory (command buffers, compiler) ──────────────────
+(allow ipc-posix-shm-read-data
+       ipc-posix-shm-write-data
+       ipc-posix-shm-write-create
+  (ipc-posix-name-prefix "com.apple.metal")
+  (ipc-posix-name-prefix "com.apple.GPUCompiler")
+  (ipc-posix-name-prefix "com.apple.ane"))
+
+;; ── Filesystem: reads ────────────────────────────────────────────────
+;; System libs/dyld cache come from system.sb; add the GPU shader
+;; bundles and the frameworks the runner maps.
+(allow file-read*
+  (subpath "/usr/lib")
+  (subpath "/System/Library/Frameworks")
+  (subpath "/System/Library/PrivateFrameworks")
+  (subpath "/System/Library/Caches/com.apple.dyld")
+  (subpath "/Library/Apple/usr/lib")
+  (subpath "/Library/GPUBundles")
+  (subpath "/System/Library/GPUBundles")
+  (literal "/dev/null") (literal "/dev/zero")
+  (literal "/dev/random") (literal "/dev/urandom"))
+
+;; The ollama binary, its runner, and bundled dylibs: read + map exec.
+(allow file-read* file-map-executable
+  (subpath "/opt/homebrew"))
+
+;; The model store: READ-ONLY.  Seeding writes it outside the jail; a
+;; compromised ollama cannot alter the weights it serves.
+(allow file-read*
+  (subpath "/opt/deepthink/models"))
+
+;; ── Filesystem: writes (contained) ───────────────────────────────────
+;; Runtime tree only: run/ (ollama's HOME/.ollama keypair etc.), cache/,
+;; logs/.  Metal also needs file-map-executable in its shader cache.
+(allow file-read* file-write* file-lock
+  (subpath "/opt/deepthink/run")
+  (subpath "/opt/deepthink/cache")
+  (subpath "/opt/deepthink/logs"))
+
+;; NSTemporaryDirectory: Apple frameworks (Metal, CoreFoundation) use
+;; confstr(_CS_DARWIN_USER_TEMP_DIR) -> /private/var/folders/.../T/, which
+;; cannot be redirected via TMPDIR.  Metal maps compiled shaders exec.
+(allow file-read* file-write* file-map-executable file-lock
+  (subpath "/private/var/folders"))
+
+;; MTLCompilerService runs shader compilation in an XPC service that needs
+;; sandbox extensions issued by us to reach those temp paths.
+(allow file-issue-extension
+  (require-all
+    (extension-class "com.apple.app-sandbox.read-write")
+    (subpath "/private/var/folders")))
+
+;; stat() of ancestor dirs during path resolution (metadata only).
+(allow file-read-metadata)
+
+;; getcwd()/std::filesystem::current_path walks the cwd's ancestors and
+;; reads their entries; the launcher sets cwd to /opt/deepthink/run, so
+;; allow reading the two ancestor dir nodes.  Without this llama-server
+;; aborts at startup ("getcwd failed: Operation not permitted") before it
+;; ever reaches Metal -- which looks like a silent GPU-discovery hang.
+(allow file-read* (literal "/") (literal "/opt"))
+
+;; ── Network: loopback only; egress denied by the default ─────────────
+;; bind + accept on loopback (the API port and the scheduler<->runner
+;; random ports); outbound ONLY to loopback.  Any non-loopback connect()
+;; gets EPERM from the deny-default -- the egress block.  (PF layer 2
+;; turns this from silent-EPERM into a hard per-uid block.)
+(allow network-bind    (local ip "localhost:*"))
+(allow network-inbound (local ip "localhost:*"))
+(allow network-outbound (remote ip "localhost:*"))
+(allow network-bind    (local unix-socket))
+(allow network-outbound (remote unix-socket))
