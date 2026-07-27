@@ -67,6 +67,7 @@ type Subsystem struct {
 	searchLedger  *Ledger
 	extractLedger *Ledger
 	scrubber      *wire.Scrubber
+	cache         *extractCache
 	now           func() time.Time
 }
 
@@ -96,6 +97,7 @@ func NewSubsystem(cfg Config) (*Subsystem, error) {
 		policy: cfg.Policy, searcher: cfg.Searcher, retriever: cfg.Retriever,
 		searchLedger: cfg.SearchLedger, extractLedger: cfg.ExtractLedger,
 		scrubber: cfg.Scrubber, now: now,
+		cache: newExtractCache(cfg.Policy.Extract.Cache.MaxBytes, cfg.Policy.Extract.Cache.TTL.Std()),
 	}, nil
 }
 
@@ -107,7 +109,9 @@ func (s *Subsystem) Provider() string { return s.retriever.Name() }
 
 // Session is the request-scoped state for one research call: a fresh, empty
 // handle map.  Discarded when the call ends, so it is no cross-query memory
-// channel.
+// channel.  (The subsystem's extract cache does outlive the call, but it
+// holds only fetched web content keyed by exact URL — the model cannot
+// write into it, so it carries no model-authored state across queries.)
 type Session struct {
 	sub     *Subsystem
 	handles map[string]string // handle → exact result URL
@@ -195,20 +199,31 @@ func (se *Session) extractHandle(ctx context.Context, handle string) (Extracted,
 // extractRaw applies the same gates as a handle extract, but instead of
 // calling out it refuses with ErrNeedsApproval for the operator-approval
 // flow.  A denied or internal host is refused OUTRIGHT — the operator is
-// never even asked about it.
+// never even asked about it.  A cache hit means the content of an earlier
+// APPROVED fetch of this exact URL is still live, so it is served without
+// a fresh prompt; refusals are never cached, so a denied request always
+// re-prompts.
 func (se *Session) extractRaw(u *url.URL) (Extracted, error) {
 	if err := se.sub.checkTarget(u); err != nil {
 		return Extracted{}, err
+	}
+	if ext, ok := se.sub.cache.get(u.String(), se.sub.now()); ok {
+		return ext, nil
 	}
 	return Extracted{}, ErrNeedsApproval
 }
 
 // doExtract runs the final path for an approved-by-construction target (a
-// resolved handle): scheme/deny/hygiene, the daily cap, then the Kagi call.
+// resolved handle or an operator-approved raw URL): scheme/deny/hygiene,
+// then the cache — a hit burns no daily cap — then the cap and the Kagi
+// call, whose success is cached for next time.
 func (se *Session) doExtract(ctx context.Context, u *url.URL) (Extracted, error) {
 	s := se.sub
 	if err := s.checkTarget(u); err != nil {
 		return Extracted{}, err
+	}
+	if ext, ok := s.cache.get(u.String(), s.now()); ok {
+		return ext, nil
 	}
 	if s.extractLedger.CountSince(startOfUTCDay(s.now())) >= s.policy.Extract.DailyCap {
 		return Extracted{}, ErrExtractCap
@@ -220,6 +235,7 @@ func (se *Session) doExtract(ctx context.Context, u *url.URL) (Extracted, error)
 	if err != nil {
 		return Extracted{}, s.scrubErr(err)
 	}
+	s.cache.put(u.String(), ext, s.now())
 	return ext, nil
 }
 

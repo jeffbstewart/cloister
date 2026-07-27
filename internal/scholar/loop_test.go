@@ -84,6 +84,8 @@ func testEgress(t *testing.T, s egress.Searcher, r egress.Retriever) *egress.Sub
 	p.Search.DailyCap = 100
 	p.Search.DenySearchEnginePages = &on
 	p.Extract.DailyCap = 100
+	p.Extract.Cache.MaxBytes = 1 << 20
+	p.Extract.Cache.TTL = policy.Duration(10 * time.Minute)
 	p.Extract.Deny = []policy.DenyEntry{{Host: "pastebin.com"}}
 	p.Limits.MaxResponseBytes = 1 << 20
 	p.Limits.Timeout = policy.Duration(10 * time.Second)

@@ -78,8 +78,16 @@ type Policy struct {
 		DenySearchEnginePages *bool `yaml:"denySearchEnginePages"`
 	} `yaml:"search"`
 	Extract struct {
-		DailyCap int         `yaml:"dailyCap"` // extract calls/UTC-day; must be > 0
-		Deny     []DenyEntry `yaml:"deny"`     // never-extract hosts; must list >= 1
+		DailyCap int `yaml:"dailyCap"` // extract calls/UTC-day; must be > 0
+		// Cache bounds the in-memory reuse of successful extracts: repeat
+		// lookups within TTL are served without a provider call, and a raw
+		// URL the operator already approved is not re-prompted while its
+		// content is cached.  Both fields required, like everything else.
+		Cache struct {
+			MaxBytes int64    `yaml:"maxBytes"` // total content budget; must be > 0
+			TTL      Duration `yaml:"ttl"`      // entry lifetime; must be > 0
+		} `yaml:"cache"`
+		Deny []DenyEntry `yaml:"deny"` // never-extract hosts; must list >= 1
 	} `yaml:"extract"`
 	Limits struct {
 		MaxResponseBytes int64    `yaml:"maxResponseBytes"` // must be > 0
@@ -135,6 +143,12 @@ func (p *Policy) validate() error {
 	}
 	if p.Extract.DailyCap <= 0 {
 		return fmt.Errorf("extract.dailyCap is required and must be > 0")
+	}
+	if p.Extract.Cache.MaxBytes <= 0 {
+		return fmt.Errorf("extract.cache.maxBytes is required and must be > 0")
+	}
+	if p.Extract.Cache.TTL <= 0 {
+		return fmt.Errorf("extract.cache.ttl is required and must be > 0 (e.g. \"30m\")")
 	}
 	if p.Limits.MaxResponseBytes <= 0 {
 		return fmt.Errorf("limits.maxResponseBytes is required and must be > 0")

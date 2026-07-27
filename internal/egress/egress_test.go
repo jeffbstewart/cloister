@@ -79,6 +79,11 @@ func (r *stubRetriever) Fetch(_ context.Context, u string) (Extracted, error) {
 
 func newSub(t *testing.T, p *policy.Policy, s Searcher, r Retriever, scrub *wire.Scrubber) *Subsystem {
 	t.Helper()
+	return newSubAt(t, p, s, r, scrub, func() time.Time { return fixedNow })
+}
+
+func newSubAt(t *testing.T, p *policy.Policy, s Searcher, r Retriever, scrub *wire.Scrubber, now func() time.Time) *Subsystem {
+	t.Helper()
 	dir := t.TempDir()
 	sl, err := OpenLedger(filepath.Join(dir, "search"), 48*time.Hour, fixedNow)
 	if err != nil {
@@ -90,12 +95,23 @@ func newSub(t *testing.T, p *policy.Policy, s Searcher, r Retriever, scrub *wire
 	}
 	sub, err := NewSubsystem(Config{
 		Policy: p, Searcher: s, Retriever: r, SearchLedger: sl, ExtractLedger: el,
-		Scrubber: scrub, Now: func() time.Time { return fixedNow },
+		Scrubber: scrub, Now: now,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return sub
+}
+
+// testPolicyCached is testPolicy with the extract cache turned on (the
+// zero cache in testPolicy keeps it off, preserving pre-cache behavior for
+// the tests that count fetches and cap burns).
+func testPolicyCached(t *testing.T) *policy.Policy {
+	t.Helper()
+	p := testPolicy(t)
+	p.Extract.Cache.MaxBytes = 1 << 20
+	p.Extract.Cache.TTL = policy.Duration(10 * time.Minute)
+	return p
 }
 
 // --- Session behavior -------------------------------------------------------
@@ -196,6 +212,134 @@ func TestExtractDeniedAndInternalHostsRefusedNoUpstream(t *testing.T) {
 	}
 	if r.calls != 0 {
 		t.Errorf("refused extracts made %d upstream calls, want 0", r.calls)
+	}
+}
+
+// --- extract cache ----------------------------------------------------------
+
+func TestCachedExtractSkipsRefetchAndCapBurn(t *testing.T) {
+	p := testPolicyCached(t) // extract cap 3
+	s := &stubSearcher{name: "kagi", hits: []Hit{{URL: "https://ok.example/x"}}}
+	r := &stubRetriever{name: "kagi", md: "content"}
+	se := newSub(t, p, s, r, nil).NewSession()
+	ctx := context.Background()
+
+	res, err := se.Search(ctx, "q", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle := res[0].Handle.String()
+	first, err := se.Extract(ctx, handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Cached {
+		t.Error("first extract marked cached, want a real fetch")
+	}
+	// Repeats past the daily cap: all served, one upstream call, no cap trip.
+	for i := 0; i < p.Extract.DailyCap+2; i++ {
+		ext, err := se.Extract(ctx, handle)
+		if err != nil {
+			t.Fatalf("repeat %d: %v", i, err)
+		}
+		if !ext.Cached || ext.Markdown != "content" {
+			t.Fatalf("repeat %d: cached=%v markdown=%q", i, ext.Cached, ext.Markdown)
+		}
+	}
+	if r.calls != 1 {
+		t.Errorf("retriever called %d times, want 1", r.calls)
+	}
+}
+
+func TestApprovedRawURLServedFromCacheWithoutReprompt(t *testing.T) {
+	const rawURL = "https://a.example/page"
+	r := &stubRetriever{name: "kagi", md: "raw content"}
+	sub := newSub(t, testPolicyCached(t), &stubSearcher{name: "kagi"}, r, nil)
+	se := sub.NewSession()
+	ctx := context.Background()
+
+	if _, err := se.Extract(ctx, rawURL); !errors.Is(err, ErrNeedsApproval) {
+		t.Fatalf("cold raw URL err = %v, want ErrNeedsApproval", err)
+	}
+	if _, err := se.ExtractApprovedURL(ctx, rawURL); err != nil {
+		t.Fatal(err)
+	}
+	// The same raw URL is now served from cache — no fresh approval refusal,
+	// in this session or the next.
+	for _, sess := range []*Session{se, sub.NewSession()} {
+		ext, err := sess.Extract(ctx, rawURL)
+		if err != nil {
+			t.Fatalf("cached raw URL err = %v, want served", err)
+		}
+		if !ext.Cached {
+			t.Error("cached raw URL not marked cached")
+		}
+	}
+	if r.calls != 1 {
+		t.Errorf("retriever called %d times, want 1", r.calls)
+	}
+}
+
+func TestExpiredCacheEntryRepromptsRawURL(t *testing.T) {
+	const rawURL = "https://a.example/page"
+	p := testPolicyCached(t) // ttl 10m
+	r := &stubRetriever{name: "kagi", md: "raw content"}
+	now := fixedNow
+	se := newSubAt(t, p, &stubSearcher{name: "kagi"}, r, nil, func() time.Time { return now }).NewSession()
+	ctx := context.Background()
+
+	if _, err := se.ExtractApprovedURL(ctx, rawURL); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(p.Extract.Cache.TTL.Std()) // entry lifetime elapses
+	if _, err := se.Extract(ctx, rawURL); !errors.Is(err, ErrNeedsApproval) {
+		t.Fatalf("expired raw URL err = %v, want ErrNeedsApproval again", err)
+	}
+	if r.calls != 1 {
+		t.Errorf("retriever called %d times, want 1 (the expired repeat was refused, not refetched)", r.calls)
+	}
+}
+
+func TestCacheEvictsLeastRecentlyUsedUnderBudget(t *testing.T) {
+	p := testPolicyCached(t)
+	p.Extract.DailyCap = 100
+	// Each entry costs len(markdown)+len(finalURL) = 10+20 = 30 bytes; a
+	// 60-byte budget holds two.
+	p.Extract.Cache.MaxBytes = 60
+	s := &stubSearcher{name: "kagi", hits: []Hit{
+		{URL: "https://ok.example/a"}, {URL: "https://ok.example/b"}, {URL: "https://ok.example/c"},
+	}}
+	r := &stubRetriever{name: "kagi", md: "0123456789"}
+	now := fixedNow
+	se := newSubAt(t, p, s, r, nil, func() time.Time { return now }).NewSession()
+	ctx := context.Background()
+
+	res, err := se.Search(ctx, "q", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b, c := res[0].Handle.String(), res[1].Handle.String(), res[2].Handle.String()
+	extract := func(h string) Extracted {
+		t.Helper()
+		now = now.Add(time.Minute) // distinct lastUsed stamps make LRU deterministic
+		ext, err := se.Extract(ctx, h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ext
+	}
+	extract(a) // fetch 1
+	extract(b) // fetch 2
+	extract(a) // cache hit; a is now fresher than b
+	extract(c) // fetch 3 — budget forces one eviction: b
+	if ext := extract(a); !ext.Cached {
+		t.Error("a evicted, want b (least recently used)")
+	}
+	if ext := extract(b); ext.Cached {
+		t.Error("b served from cache, want it evicted")
+	}
+	if r.calls != 4 {
+		t.Errorf("retriever called %d times, want 4 (a, b, c, and b again)", r.calls)
 	}
 }
 

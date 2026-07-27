@@ -168,6 +168,50 @@ func (m *rawURLModel) Complete(_ context.Context, _ []Message, _ []Tool) (Messag
 	}
 }
 
+// repeatRawURLModel asks for the same raw URL twice, then answers.
+type repeatRawURLModel struct{ calls int }
+
+func (m *repeatRawURLModel) Complete(_ context.Context, _ []Message, _ []Tool) (Message, int, error) {
+	m.calls++
+	switch m.calls {
+	case 1, 2:
+		return toolCallMsg("extract_url_as_markdown", `{"target":"https://elsewhere.example/page"}`), 1, nil
+	default:
+		return toolCallMsg("respond", `{"answer":"done","sources":["https://elsewhere.example/page"]}`), 1, nil
+	}
+}
+
+// TestApprovedRawURLNotRepromptedWhileCached: the second ask for an
+// already-approved, still-cached raw URL is served without a second
+// operator prompt or upstream fetch — and the audit marks it cached.
+func TestApprovedRawURLNotRepromptedWhileCached(t *testing.T) {
+	r := &stubRetriever{md: "# raw page"}
+	appr := &stubApprover{} // approves
+	aud := &recAuditor{}
+	srv := New(Config{
+		Egress: testEgress(t, &stubSearcher{}, r),
+		Model:  &repeatRawURLModel{}, Approvals: appr, Audit: aud, Caps: DefaultCaps(),
+	})
+	if _, err := srv.research(context.Background(), mustRunID(t), "q"); err != nil {
+		t.Fatal(err)
+	}
+	gates := 0
+	for _, tool := range appr.registeredTools() {
+		if tool == "extract_url" {
+			gates++
+		}
+	}
+	if gates != 1 {
+		t.Errorf("the same raw URL registered %d extract_url approvals, want 1 (repeat serves from cache)", gates)
+	}
+	if r.calls != 1 {
+		t.Errorf("retriever called %d times, want 1", r.calls)
+	}
+	if got := aud.decisions("extract_url_as_markdown"); len(got) != 2 || got[0] != decExtracted || got[1] != decExtracted {
+		t.Errorf("extract audit = %v, want two successes", got)
+	}
+}
+
 func TestRawURLExtractIsGated(t *testing.T) {
 	r := &stubRetriever{md: "# raw page"}
 	appr := &stubApprover{} // approves
