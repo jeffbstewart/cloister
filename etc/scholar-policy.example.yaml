@@ -35,6 +35,16 @@ search:
 
 extract:
   dailyCap: 100          # page extracts per UTC day (a separate, pricier SKU).
+  cache:                 # successful extracts are re-served from memory: no
+                         # provider spend on a repeat lookup, and a raw URL the
+                         # operator already approved is NOT re-prompted while
+                         # its content is cached.  Refusals are never cached —
+                         # a denied request re-prompts every time.  Cache hits
+                         # are marked in the audit trail and burn no dailyCap.
+    maxBytes: 16777216   # 16 MiB — total cached-content budget; least-recently-
+                         # used entries are evicted beyond it
+    ttl: 30m             # entry lifetime; after this a repeat lookup fetches
+                         # (and, for a raw URL, prompts) afresh
   deny:                  # THE extract gate. Hosts we will never ask Kagi to
                          # fetch — an attempted extract is refused + logged +
                          # audited (rejected_denied). At least one entry required.

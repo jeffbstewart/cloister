@@ -37,6 +37,7 @@ import (
 type Extracted struct {
 	Markdown string
 	FinalURL string // best-effort: Kagi follows redirects we can't observe
+	Cached   bool   // served from the extract cache — no provider call, no spend
 }
 
 // Retriever turns a URL into clean markdown.  Kagi is the only

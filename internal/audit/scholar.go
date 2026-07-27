@@ -54,6 +54,7 @@ type ExtractDetail struct {
 	URL      string `json:"url,omitempty"`      // the URI retrieved (identity; present on success and failure)
 	Provider string `json:"provider,omitempty"` // extract backend (success only)
 	FinalURL string `json:"finalUrl,omitempty"` // resolved URL after redirects (success only)
+	Cached   bool   `json:"cached,omitempty"`   // served from the extract cache — no provider call
 }
 
 // Kind marks ResearchDetail as a scholar detail body.

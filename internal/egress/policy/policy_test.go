@@ -28,6 +28,9 @@ search:
   denySearchEnginePages: true
 extract:
   dailyCap: 50
+  cache:
+    maxBytes: 1048576
+    ttl: 30m
   deny:
     - host: pastebin.com
 limits:
@@ -73,6 +76,9 @@ func TestLoadPolicyFailClosed(t *testing.T) {
 		"zero timeout":           strings.Replace(validPolicy, "timeout: 20s", "timeout: 0s", 1),
 		"bad timeout string":     strings.Replace(validPolicy, "timeout: 20s", "timeout: 20", 1),
 		"bad deny host wildcard": strings.Replace(validPolicy, "host: pastebin.com", `host: "ev*l.com"`, 1),
+		"missing cache":          strings.Replace(validPolicy, "  cache:\n    maxBytes: 1048576\n    ttl: 30m\n", "", 1),
+		"zero cache bytes":       strings.Replace(validPolicy, "maxBytes: 1048576", "maxBytes: 0", 1),
+		"zero cache ttl":         strings.Replace(validPolicy, "ttl: 30m", "ttl: 0s", 1),
 	}
 	for name, body := range tests {
 		if _, err := LoadPolicy(writePolicy(t, body)); err == nil {

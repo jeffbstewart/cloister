@@ -59,7 +59,7 @@ type Answer struct {
 }
 
 // Caps bound one research call.  The three timeouts must sum to ≤ the
-// agent's MCP client timeout: query 15m + loop 10m + answer 10m ≤ 40m.
+// agent's MCP client timeout: query 10m + loop 20m + answer 10m ≤ 40m.
 type Caps struct {
 	MaxQueryBytes      int
 	MaxAnswerBytes     int
@@ -85,9 +85,13 @@ func DefaultCaps() Caps {
 		MaxTurns:           40,
 		MaxTokens:          0,
 		MaxTranscriptBytes: 1 << 20, // 1 MiB
-		WallClock:          10 * time.Minute,
-		QueryApproval:      15 * time.Minute,
-		AnswerApproval:     10 * time.Minute,
+		// A deep-think-served loop legitimately runs long: chain-of-thought
+		// turns plus per-URL approval gates both spend wall clock.  The
+		// loop gets the largest share; the query gate gives up five of its
+		// minutes to keep the three-timeout sum inside the agent's 40m.
+		WallClock:      20 * time.Minute,
+		QueryApproval:  10 * time.Minute,
+		AnswerApproval: 10 * time.Minute,
 	}
 }
 

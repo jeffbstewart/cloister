@@ -407,9 +407,13 @@ func (s *Server) recordExtract(rc *runctx, tc ToolCall, via, url string, ext egr
 	// Cap the markdown fed into the model context (a page can be huge); the model
 	// re-reads sparingly and the full byte count is still recorded below.
 	s.toolResult(rc.messages, tc.ID, capStr(ext.Markdown, s.cfg.Caps.MaxExtractBytes))
-	rc.tr.line("read[%s] %s (%d bytes)", via, ext.FinalURL, len(ext.Markdown))
+	if ext.Cached {
+		rc.tr.line("read[%s] %s (%d bytes, cached)", via, ext.FinalURL, len(ext.Markdown))
+	} else {
+		rc.tr.line("read[%s] %s (%d bytes)", via, ext.FinalURL, len(ext.Markdown))
+	}
 	rec := audit.New(rc.opID, "extract_url_as_markdown", decision, time.Since(start))
-	rec.Detail = &audit.ExtractDetail{Via: via, URL: url, Provider: s.cfg.Egress.Provider(), FinalURL: ext.FinalURL}
+	rec.Detail = &audit.ExtractDetail{Via: via, URL: url, Provider: s.cfg.Egress.Provider(), FinalURL: ext.FinalURL, Cached: ext.Cached}
 	s.audit(rec)
 }
 
