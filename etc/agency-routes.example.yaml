@@ -61,8 +61,11 @@ nodes:
     # blind deepthink-relay: set the DEEPTHINK_ADDR stack var to its
     # host:port — never put a LAN address in this file.  Chains listing
     # it first fall back to their next link while a presence probe finds
-    # it absent or its slot stays busy past the queueWait.
-    url: http://deepthink-relay:11434
+    # it absent or its slot stays busy past the queueWait.  Dial the
+    # relay's deepthink.internal alias, not its service name: a
+    # loopback-bound ollama 403s Host headers outside its DNS-rebinding
+    # allowlist, and `.internal` names are on it.
+    url: http://deepthink.internal:11434
     maxInFlight: 1
     models:
       - big-model:120b

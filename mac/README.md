@@ -41,6 +41,16 @@ together:
 | 3. `probe-deepthink-egress` | TODO |
 | Dedicated service user | TODO (runs as the operator today) |
 | `launchd` plists (auto-start) | TODO (foreground launcher today) |
+| Relay inbound source pinning | TODO (socat `range=<workstation>/32` on the listen, PF inbound rule when that layer lands) |
+
+Note on inbound: the loopback-bound ollama's DNS-rebinding guard 403s
+unrecognized Host headers (which is why the workstation dials the node as
+`deepthink.internal` — see docs/deepthink.md), but it ADMITS any private
+IP literal — the natural form of a LAN request — so it is no defense
+against a deliberate LAN client.  Such a client cannot pull models (no
+egress) or alter weights (store mounted read-only), but can unload
+residents (`keep_alive: 0`), occupy the single slot, and burn power;
+source pinning above is the real answer.
 
 The launcher (`bin/deepthink-serve.sh`) is a foreground, watch-the-logs
 tool for bring-up and the shakedown.  The launchd/PF/probe/service-user

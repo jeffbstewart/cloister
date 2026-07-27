@@ -52,7 +52,13 @@ nodes:
     # 128 GiB MacBook, dialed through the inference stack's blind
     # deepthink-relay so no LAN address lives here.  Sometimes-there by
     # design — every chain leading here falls back to `infer`.
-    url: http://deepthink-relay:11434
+    #
+    # deepthink.internal is the relay's network alias, not its service
+    # name: a loopback-bound ollama 403s Host headers outside its
+    # DNS-rebinding allowlist, which admits `.internal` names but not a
+    # bare `deepthink-relay`.  The blind relays pass the Host header
+    # through untouched, so the name we dial is the name the node judges.
+    url: http://deepthink.internal:11434
     # One admission across both residents: decode speed is bound by the
     # unified memory's bandwidth, which a single request already
     # saturates — a second wouldn't add throughput, just slow both.

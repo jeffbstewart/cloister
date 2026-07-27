@@ -88,7 +88,10 @@ services:
     networks: [infernet, frontend]
   deepthink-relay:
     command: ["TCP-LISTEN:11434,fork,reuseaddr", "TCP:${DEEPTHINK_ADDR:-127.0.0.1:1}"]
-    networks: [infernet_big, lanegress]
+    networks:
+      infernet_big:
+        aliases: [deepthink.internal]
+      lanegress: {}
 ` + extra
 	}
 	agencyClean := `[infernet, modelnet, infernet_big]`
@@ -139,7 +142,9 @@ services:
 		"deepthink-relay pinned to a committed address": strings.Replace(cleanCompose,
 			`TCP:${DEEPTHINK_ADDR:-127.0.0.1:1}`, `TCP:some-macbook:11434`, 1),
 		"deepthink-relay on infernet": strings.Replace(cleanCompose,
-			`networks: [infernet_big, lanegress]`, `networks: [infernet, infernet_big, lanegress]`, 1),
+			"      lanegress: {}\n", "      lanegress: {}\n      infernet: {}\n", 1),
+		"deepthink-relay missing the .internal alias": strings.Replace(cleanCompose,
+			"        aliases: [deepthink.internal]\n", "", 1),
 		"infernet_big not internal": strings.Replace(cleanCompose,
 			`infernet_big: { internal: true }`, `infernet_big: {}`, 1),
 		"stranger on infernet_big": base(agencyClean, inferClean, proxyClean, modelnetClean, `  sneaky:

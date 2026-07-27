@@ -53,10 +53,73 @@ type service struct {
 	Entrypoint  []string     `yaml:"entrypoint"`
 	Command     []string     `yaml:"command"`
 	Volumes     []string     `yaml:"volumes"`
-	Networks    []string     `yaml:"networks"`
+	Networks    networkRefs  `yaml:"networks"`
 	Environment []string     `yaml:"environment"`
 	User        string       `yaml:"user"`
 	DNS         stringOrList `yaml:"dns"`
+}
+
+// networkRef is one entry of a service's `networks`: the network's name,
+// plus the aliases the service answers to on it (mapping form only).
+type networkRef struct {
+	Name    string
+	Aliases []string
+}
+
+// networkRefs accepts the two shapes compose allows for a service's
+// `networks`: a sequence of names, or a mapping of name -> per-network
+// config (possibly empty) carrying fields like `aliases`.
+type networkRefs []networkRef
+
+func (l *networkRefs) UnmarshalYAML(node *yaml.Node) error {
+	switch node.Kind {
+	case yaml.SequenceNode:
+		var names []string
+		if err := node.Decode(&names); err != nil {
+			return err
+		}
+		for _, n := range names {
+			*l = append(*l, networkRef{Name: n})
+		}
+		return nil
+	case yaml.MappingNode:
+		// Content flattens the mapping to key, value, key, value, ...
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			ref := networkRef{Name: node.Content[i].Value}
+			if node.Content[i+1].Kind == yaml.MappingNode {
+				var cfg struct {
+					Aliases []string `yaml:"aliases"`
+				}
+				if err := node.Content[i+1].Decode(&cfg); err != nil {
+					return err
+				}
+				ref.Aliases = cfg.Aliases
+			}
+			*l = append(*l, ref)
+		}
+		return nil
+	default:
+		return fmt.Errorf("networks must be a sequence of names or a name->config mapping, got yaml kind %v", node.Kind)
+	}
+}
+
+// names returns just the network names, in file order.
+func (l networkRefs) names() []string {
+	names := make([]string, len(l))
+	for i, ref := range l {
+		names[i] = ref.Name
+	}
+	return names
+}
+
+// aliasesOn returns the aliases the service declares on the named network.
+func (l networkRefs) aliasesOn(network string) []string {
+	for _, ref := range l {
+		if ref.Name == network {
+			return ref.Aliases
+		}
+	}
+	return nil
 }
 
 // stringOrList accepts a compose field that YAML allows as either a scalar
@@ -111,7 +174,7 @@ var egressCapableNetworks = []string{"egress", "frontend", "kagiegress", "lanegr
 
 func (s service) hasNet(n string) bool {
 	for _, x := range s.Networks {
-		if x == n {
+		if x.Name == n {
 			return true
 		}
 	}
@@ -152,7 +215,7 @@ func dnsPinViolations(c compose) []string {
 		}
 		jailed := true
 		for _, n := range s.Networks {
-			def, defined := c.Networks[n]
+			def, defined := c.Networks[n.Name]
 			if !defined || (!def.Internal && !def.External) {
 				jailed = false // a NAT-routed net: real DNS is legitimate here
 			}
@@ -213,8 +276,8 @@ func Check(data []byte) ([]string, error) {
 	// is an internet path that would bypass the relay. (External nets like
 	// infernet are the infra stack's to guarantee; see its compose.)
 	for _, n := range sch.Networks {
-		if def, defined := c.Networks[n]; defined && !def.External && !def.Internal {
-			v = append(v, fmt.Sprintf("scholar network %q is not `internal: true` — it may grant internet egress", n))
+		if def, defined := c.Networks[n.Name]; defined && !def.External && !def.Internal {
+			v = append(v, fmt.Sprintf("scholar network %q is not `internal: true` — it may grant internet egress", n.Name))
 		}
 	}
 
@@ -258,8 +321,8 @@ func Check(data []byte) ([]string, error) {
 			v = append(v, fmt.Sprintf("librarian holds %q — the reader gets no egress-capable network", n))
 		}
 		for _, n := range lib.Networks {
-			if def, defined := c.Networks[n]; defined && !def.External && !def.Internal {
-				v = append(v, fmt.Sprintf("librarian network %q is not `internal: true` — it may grant internet egress", n))
+			if def, defined := c.Networks[n.Name]; defined && !def.External && !def.Internal {
+				v = append(v, fmt.Sprintf("librarian network %q is not `internal: true` — it may grant internet egress", n.Name))
 			}
 		}
 	}
