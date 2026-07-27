@@ -20,15 +20,17 @@
 #
 # This is the class vocabulary consumers program against: a consumer puts a
 # CLASS name in the request's `model` field and never learns which node or
-# model tag serves it.  Today every chain lands on the one GPU node and
-# qwen3-coder:30b; when the deep-think node arrives, its chains grow a
-# first link and no consumer changes.  (Names with no consumer yet —
-# summarize-cheap, review — are declared now so the vocabulary is stable
-# before their workers land.)
+# model tag serves it.  The heavy chains lead with the sometimes-there
+# deep-think node and fall back to the always-there GPU node; presence
+# probes skip the node while it is away, so no consumer ever notices the
+# MacBook leaving.  (Names with no consumer yet — summarize-cheap, review —
+# are declared now so the vocabulary is stable before their workers land.)
 #
 # To override on a host: point the AGENCY_ROUTES env at a mounted copy —
-# that file replaces this one entirely.  Secrets and LAN addresses (the
-# deep-think node) belong only in such an operator copy, never here.
+# that file replaces this one entirely.  Secrets and LAN addresses belong
+# only in such an operator copy, never here — which is why the deep-think
+# node appears as its in-stack relay name, not an address: the real LAN
+# target rides the DEEPTHINK_ADDR stack var (docker/inference.yaml).
 
 probe:
   interval: 15s
@@ -45,6 +47,22 @@ nodes:
     maxInFlight: 1
     models:
       - qwen3-coder:30b
+  deepthink:
+    # The deep-think node (docs/deepthink.md): a jailed macOS ollama on a
+    # 128 GiB MacBook, dialed through the inference stack's blind
+    # deepthink-relay so no LAN address lives here.  Sometimes-there by
+    # design — every chain leading here falls back to `infer`.
+    url: http://deepthink-relay:11434
+    # One admission across both residents: decode speed is bound by the
+    # unified memory's bandwidth, which a single request already
+    # saturates — a second wouldn't add throughput, just slow both.
+    maxInFlight: 1
+    models:
+      # The heavy lane: a large MoE — few active parameters keep decode
+      # fast even when chain-of-thought multiplies the tokens.
+      - qwen3-coder-next:latest
+      # The fast lane: a mid-size reasoning model resident alongside.
+      - qwen3.6-27b:latest
 
 classes:
   # The agent's own session — the human is watching the tokens arrive.
@@ -60,6 +78,8 @@ classes:
 
   # The librarian's quick comprehension pass (infer.Quick — its provenance
   # name for this class).  Serves the agent mid-turn: short and interactive.
+  # Leads with the deep-think node's fast lane; a busy or absent node means
+  # the local GPU within the queueWait.
   think-fast:
     priority: interactive
     deadline: 90s
@@ -67,12 +87,14 @@ classes:
     queueWait: 15s
     maxQueueWait: 1m
     chain:
+      - node: deepthink
+        model: qwen3.6-27b:latest
       - node: infer
         model: qwen3-coder:30b
 
-  # The librarian's effortful chain-of-thought pass (infer.Thorough), and
-  # later the heavy-MoE lane on the deep-think node — that node becomes
-  # this chain's first link at its turn-on.
+  # The librarian's effortful chain-of-thought pass (infer.Thorough), led
+  # by the heavy-MoE lane on the deep-think node — the work the local GPU
+  # cannot hold well — degrading to it when the node is away.
   deep-think:
     priority: interactive
     deadline: 5m
@@ -80,6 +102,8 @@ classes:
     queueWait: 30s
     maxQueueWait: 5m
     chain:
+      - node: deepthink
+        model: qwen3-coder-next:latest
       - node: infer
         model: qwen3-coder:30b
 
@@ -109,6 +133,8 @@ classes:
 
   # The corrector's review lenses (docs/corrector.md): long-running,
   # never blocks a human — advice can wait behind every interactive ask.
+  # The prime deep-think workload: batch tolerance means it can afford to
+  # queue for the strong model.
   review:
     priority: batch
     deadline: 10m
@@ -116,5 +142,7 @@ classes:
     queueWait: 5m
     maxQueueWait: 30m
     chain:
+      - node: deepthink
+        model: qwen3-coder-next:latest
       - node: infer
         model: qwen3-coder:30b

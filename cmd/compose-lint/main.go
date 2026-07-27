@@ -23,7 +23,9 @@
 //   - inference stack (docker/inference.yaml): the agency is the sole
 //     inference door — infer on `modelnet` alone, modelnet internal and
 //     private to agency+infer, the localhost relay pinned to the agency,
-//     no egress anywhere in the stack.
+//     the deep-think path private to agency+deepthink-relay with the
+//     relay's target env-provided (never a committed LAN address), and no
+//     internet egress anywhere in the stack.
 //
 // CI runs it on every PR:
 //
@@ -42,7 +44,7 @@ import (
 // okSummary is the one-line clean verdict printed per stack kind.
 var okSummary = map[composelint.Stack]string{
 	composelint.StackCell:  "scholar contained, egress pinned to kagi.com, agent mount-free, librarian read-only, consumers dial the agency",
-	composelint.StackInfra: "infer behind the agency on a closed modelnet, relay fronts the door, no egress",
+	composelint.StackInfra: "infer behind the agency on a closed modelnet, relay fronts the door, deep-think path env-pinned, no egress",
 }
 
 func main() {

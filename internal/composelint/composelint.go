@@ -100,12 +100,14 @@ type networkDef struct {
 	External bool `yaml:"external"`
 }
 
-// egressCapableNetworks are the cell networks with a path out of the cell:
-// `egress` is the internet, `frontend` publishes to the host, and
-// `kagiegress` leads to the kagi-relay (and through it to kagi.com).  Every
-// no-egress assertion checks membership against this one list, naming any
-// legitimate exception explicitly.
-var egressCapableNetworks = []string{"egress", "frontend", "kagiegress"}
+// egressCapableNetworks are the networks with a path out of their stack:
+// `egress` is the internet, `frontend` publishes to the host, `kagiegress`
+// leads to the kagi-relay (and through it to kagi.com), `lanegress` is the
+// deepthink-relay's LAN path, and `infernet_big` leads to that relay (and
+// through it to the deep-think node).  Every no-egress assertion checks
+// membership against this one list, naming any legitimate exception
+// explicitly.
+var egressCapableNetworks = []string{"egress", "frontend", "kagiegress", "lanegress", "infernet_big"}
 
 func (s service) hasNet(n string) bool {
 	for _, x := range s.Networks {

@@ -42,11 +42,12 @@ flowchart LR
     agency["agency<br/>cloister-workers :11434"]
     infer["infer<br/>ollama/ollama"]
     iproxy["agency-proxy<br/>alpine/socat"]
+    dtrelay["deepthink-relay<br/>alpine/socat"]
   end
 
   kagi["kagi.com<br/>search + extract APIs"]
   gh["github.com<br/>code + PR APIs, PLANNED"]
-  mac["deep-think node<br/>LAN, PLANNED"]
+  mac["deep-think node<br/>jailed macOS ollama, LAN"]
 
   agent -- "buildnet · MCP" --> builder
   agent -- "buildnet · MCP" --> scribe
@@ -80,10 +81,11 @@ flowchart LR
   corrector -. "buildnet · diffs + comments (planned)" .-> archivist
   corrector -. "infernet (planned)" .-> agency
   corrector -. "statenet (planned)" .-> state
-  agency -. "infernet_big (planned)" .-> mac
+  agency -- "infernet_big" --> dtrelay
+  dtrelay -- "lanegress · $DEEPTHINK_ADDR" --> mac
 
   classDef planned stroke-dasharray: 6 4;
-  class archivist,corrector,gh,mac planned
+  class archivist,corrector,gh planned
 ```
 
 Solid arrows are network edges (labeled with the compose network that
@@ -123,9 +125,10 @@ nowhere else.
 
 | Container | Role | Image | Listens | Mounts | Networks |
 |---|---|---|---|---|---|
-| `agency` | `agency` role — the sole inference door: streaming OpenAI-compatible pass-through, `/v1` only ([agency.md](agency.md) phase 1) | `cloister-workers:<ver>` | `:11434` (infernet) | — | infernet, modelnet |
+| `agency` | `agency` role — the sole inference door: streaming OpenAI-compatible pass-through, `/v1` only ([agency.md](agency.md) phase 1) | `cloister-workers:<ver>` | `:11434` (infernet) | — | infernet, modelnet, infernet_big |
 | `infer` | GPU model server (OpenAI-compatible API), reachable only via the agency | `ollama/ollama` | `:11434` (modelnet only) | model weights **ro** (host dir) | modelnet |
 | `agency-proxy` | blind relay for host smoke tests, fronting the agency | `alpine/socat` | `127.0.0.1:11434` | — | infernet, frontend |
+| `deepthink-relay` | blind relay to the LAN deep-think node ([deepthink.md](deepthink.md)), target from the `DEEPTHINK_ADDR` stack var (dead loopback when unset — the node just probes absent) | `alpine/socat` | `:11434` (infernet_big only) | — | infernet_big, lanegress |
 
 ## Networks
 
@@ -139,11 +142,13 @@ nowhere else.
 | `scholarstate` | scholar → state, kept off `statenet` so the scholar never shares a wire with builder/scribe | scholar, state |
 | `statepub` | state → status relay | state, status |
 | `kagiegress` | scholar → kagi-relay (internal; no internet) | scholar, kagi-relay |
+| `infernet_big` | agency → deepthink-relay (internal; the deep-think path's only agency-side edge) | agency, deepthink-relay |
+| `lanegress` | deepthink-relay → the LAN deep-think node.  ONLY the relay holds it | deepthink-relay |
 | `egress` | the internet.  ONLY the kagi-relay holds it | kagi-relay |
 | `frontend` | host publishing | status, agency-proxy |
 
-Every network except `egress` and `frontend` is `internal: true` — no
-route out.  Notable absences are the architecture: the agent has no route
+Every network except `egress`, `lanegress`, and `frontend` is
+`internal: true` — no route out.  Notable absences are the architecture: the agent has no route
 to `state` (it cannot touch the record of its own actions), `infer` shares
 a network with nothing but the agency, and the scholar has no route to
 builder, scribe, or the workspace.
@@ -166,7 +171,7 @@ Exactly two localhost-only ports; nothing binds a routable interface:
 |---|---|---|
 | `kagi.com` | web **search** and the **extract/summarize** API (fetches and cleans pages to markdown server-side) | scholar → kagi-relay → `kagi.com:443`, TLS end-to-end (the relay pipes ciphertext) |
 | `api.search.brave.com` (optional) | alternate search engine when the scholar policy selects it; extract stays Kagi-only | would need its own `brave-relay`; never yet exercised against the real API |
-| deep-think node (PLANNED) | heavier librarian comprehension ops | `infernet_big`, an external network to a LAN host; address via env only |
+| deep-think node | heavyweight chain-of-thought lanes: `deep-think`, `review`, and `think-fast` lead here and degrade to local `infer` when the machine is away | agency → deepthink-relay → `$DEEPTHINK_ADDR` on the LAN (the node's own blind relay, [deepthink.md](deepthink.md)); no address in-repo |
 
 Image pulls from GHCR happen at deploy time only; nothing in a running
 cell fetches images or code.
@@ -190,11 +195,6 @@ Dashed in the diagram; designed, not yet built (see
   — the inference-backed tools (summarize, ask-about) atop the now-live
   mechanical read path; brings the librarian its `infernet` edge and the
   engine-routed client the agency design absorbs.
-- **deep-think node** (`infernet_big`, see [deepthink.md](deepthink.md)) —
-  an off-host inference engine for heavy comprehension ops: a natively
-  jailed macOS ollama (seatbelt + PF, no outbound, blind LAN relay)
-  behind the agency's presence-aware fallback chains; requests degrade to
-  local `infer` when the machine is away.
 - **archivist** (`:9600`, see [archivist.md](archivist.md)) — the cell's
   sole version-control authority: sole toucher of `.git` (confinement
   blocks it for everyone else), VCS-agnostic local verbs plus
