@@ -241,7 +241,12 @@ the linted topology never lags the real one.
   fine-grained PAT migration, Actions-secrets audit) and build the lint
   that asserts them.  This is load-bearing *today* — the PR gate is
   already the declared boundary — so it comes first and de-risks
-  everything after.
+  everything after.  *The lint is built* (cmd/forge-lint: R1–R8 as one
+  assertion set over GitHub-ruleset and Gitea-branch-protection
+  backends; blocking in CI with `-allow-unverified` for its limited
+  token; see [GITHUB_SETUP.md](GITHUB_SETUP.md)) — the milestone
+  completes when the operator hardening it asserts is live and an
+  admin-token run reports all eight OK.
 - **M1 — archivist.**  Implement [archivist.md](archivist.md) as
   designed, plus grange lifecycle verbs: `provision(branch?)` (clone
   into a fresh per-task volume; new branch or resume an existing one)
