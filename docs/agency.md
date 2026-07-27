@@ -2,9 +2,9 @@
 
 Status: **phases 1–5 implemented and CUT OVER — policy-based class
 routing is the deployed mode (embedded default config, AGENCY_ROUTES
-host override); of phase 3 the deep-think node itself remains, and
-phase 6 (frontier) stays design**.  Decisions from the
-2026-07-07 design review.  Lives in the
+host override); the deep-think node is wired in (2026-07-26, via the
+blind deepthink-relay); phase 6 (frontier) stays design**.  Decisions
+from the 2026-07-07 design review.  Lives in the
 **shared inference stack** (machine-level, like `infer` itself), not in
 any cell.
 
@@ -169,20 +169,23 @@ through the volume, to state services, to the operator.
 
 ```
 shared inference stack:
-  agency:                       # NEW — the sole inference door
-    networks: [infernet, modelnet]
+  agency:                       # the sole inference door
+    networks: [infernet, modelnet, infernet_big]
     volumes:  [agency_status:/status]         # rw: the snapshot writer
   infer:
-    networks: [modelnet]        # was infernet: now reachable ONLY via the agency
+    networks: [modelnet]        # reachable ONLY via the agency
   agency-proxy:                 # blind socat relay; replaces infer-proxy —
-    networks: [infernet, frontend]   # 127.0.0.1:11434 now reaches the AGENCY
+    networks: [infernet, frontend]   # 127.0.0.1:11434 reaches the AGENCY
                                      # (host smoke tests); raw ollama has no
                                      # host port at all
+  deepthink-relay:              # blind socat to the LAN deep-think node,
+    networks: [infernet_big, lanegress]  # target = the DEEPTHINK_ADDR stack
+                                     # var (no LAN IPs in-repo); the agency
+                                     # dials deepthink-relay:11434 and stays
+                                     # on internal networks only
 
 cells (unchanged nets):  agent/scholar/librarian/corrector reach the
   agency over infernet; state mounts agency_status:ro for the panel.
-deep-think node: dialed by the agency via env-provided address
-  (infernet_big posture from the librarian design; no LAN IPs in-repo).
 ```
 
 ## Phasing
@@ -208,8 +211,12 @@ deep-think node: dialed by the agency via env-provided address
    log drift, and preload cold pinned models; nodes never idle-unload —
    OLLAMA_KEEP_ALIVE=-1); session affinity recorded as a non-goal (see
    Shape).
-   The deep-think node itself is wired in at turn-on via its
-   env-provided address.
+   The node itself — **DONE** (turn-on 2026-07-26): the inference stack's
+   blind `deepthink-relay` carries the env-provided address (the
+   DEEPTHINK_ADDR stack var; compose-lint refuses a committed target),
+   and the embedded default chains lead `deep-think` and `review` with
+   the node's heavy lane and `think-fast` with its fast lane, all
+   degrading to local `infer`.
 4. The status volume — **DONE** end to end.  Writer (internal/agency
    status: atomic-rename JSON snapshots — nodes with
    presence/residency/queue depths, classes, and the last-N op ledger

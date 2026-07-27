@@ -69,6 +69,10 @@ Once per machine, before any cell.
      `cloister-workers:sha-<commit>` pinned from
      [GHCR](https://github.com/jeffbstewart?tab=packages), or
      `cloister-workers:latest`.
+   - `DEEPTHINK_ADDR` (optional) = `host:port` of the deep-think node's
+     LAN relay ([deepthink.md](deepthink.md)), if you run one.  Unset,
+     the stack deploys the same; the agency just marks the node absent
+     and every chain serves from the local GPU.
 7. Deploy, then verify from the host — this proxy port is one of the only
    two localhost ports the whole system publishes:
 
@@ -83,6 +87,17 @@ works because it uses the host-side ollama store directly.)
 
 The stack is long-lived: deploy once and leave it up (model loads are
 expensive, and every project cell shares it).
+
+### Optional: the deep-think node
+
+A second, sometimes-there inference node — a LAN machine with large
+unified memory serving heavyweight reasoning models
+([deepthink.md](deepthink.md); node-side setup in
+[mac/](../mac/README.md)).  Set `DEEPTHINK_ADDR` to its relay's
+`host:port` and redeploy the stack.  The agency probes the node for
+presence, leads the heavy engine classes with it while it is there, and
+falls back to the local GPU when the machine leaves — no cell notices
+either way.
 
 ## 3. Onboard the project
 

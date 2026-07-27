@@ -1,8 +1,11 @@
 # The deep-think node — jailed macOS ollama design
 
-Status: **design; Gate 1 (seed + serve, unjailed) shaken down on real
-hardware 2026-07-25 — see "First light" below; the jail itself is not
-yet implemented**.  Decisions from the 2026-07-07 design review.  This is the node the agency ([agency.md](agency.md))
+Status: **live — Gate 1 (seed + serve, unjailed) shaken down 2026-07-25
+(see "First light" below); the jail's no-root layers landed in
+[mac/](../mac/README.md) and the node serves jailed on the LAN, wired
+into the agency, 2026-07-26 (mac/README.md tracks the remaining
+PF/launchd/service-user layers)**.  Decisions from the 2026-07-07 design
+review.  This is the node the agency ([agency.md](agency.md))
 dials over `infernet_big`: a 2024 MacBook Pro with 128 GiB of unified
 memory, serving heavyweight chain-of-thought models the workstation GPU
 cannot hold.
@@ -219,7 +222,11 @@ mac/
    relay reachable from the workstation).
 2. Models staged per the dated picks; both lanes resident; timing
    measured at target context.
-3. The agency (its phase 3) learns the node: presence probes, fallback
-   chains, `infernet_big` env address.
+3. The agency (its phase 3) learns the node — **DONE** (turn-on
+   2026-07-26): the inference stack's blind `deepthink-relay` carries
+   the `DEEPTHINK_ADDR` stack var over `infernet_big` (compose-lint
+   refuses a committed target), and the embedded default chains lead
+   `deep-think` and `review` with the heavy lane and `think-fast` with
+   the fast lane, degrading to local `infer` while the node is away.
 4. GETTING_STARTED gains a deep-think section; ARCHITECTURE.md's
-   deep-think entries go from PLANNED to real.
+   deep-think entries go from PLANNED to real — **DONE** with 3.

@@ -14,8 +14,9 @@
 
 # ── Shared infrastructure stack ─────────────────────────────────────────────
 # The GPU inference node, the agency (the sole inference door fronting it),
-# and the localhost bridge. LONG-LIVED: deploy once and leave up (model
-# reloads are expensive). It knows nothing about any project.
+# the localhost bridge, and the blind relay to the optional LAN deep-think
+# node. LONG-LIVED: deploy once and leave up (model reloads are expensive).
+# It knows nothing about any project.
 #
 # Per-project cells (ai-workers.yaml) attach to the `infernet` network this
 # stack publishes, to reach the `agency`. Deploy this first.
@@ -27,7 +28,12 @@
 #                 cloister-workers:latest or a pinned cloister-workers:sha-<commit>
 #   AGENCY_ROUTES (optional) host path of an engine-class routing yaml that
 #                 replaces the config embedded in the binary — the place for
-#                 LAN nodes and local model choices; unset = embedded default
+#                 local model choices; unset = embedded default
+#   DEEPTHINK_ADDR (optional) host:port of the deep-think node's LAN relay
+#                 (docs/deepthink.md), the target of the deepthink-relay
+#                 below.  Unset, the relay forwards to a dead loopback port,
+#                 the agency's presence probe marks the node absent, and
+#                 every chain serves from the local GPU node.
 #   TZ            timezone for the agency's log timestamps (default UTC)
 
 services:
@@ -81,6 +87,7 @@ services:
     networks:
       - infernet                         # consumers (cells) dial in here
       - modelnet                         # the only route to infer
+      - infernet_big                     # the only route to the deep-think relay
   infer:
     image: ollama/ollama:0.24.0          # pin a version; avoid :latest for reproducibility
     container_name: infer
@@ -151,12 +158,39 @@ services:
       - infernet
       - frontend
 
+  deepthink-relay:
+    image: alpine/socat:1.8.0.3
+    container_name: deepthink-relay
+    restart: unless-stopped
+    user: "65534:65534"                  # nobody
+    # Blind LAN relay to the deep-think node (docs/deepthink.md): the agency
+    # dials deepthink-relay:11434 over the internal infernet_big and socat
+    # forwards raw TCP to the env-provided LAN address, so the agency itself
+    # keeps internal networks only and no LAN address enters the repo.  The
+    # node is sometimes-there by design: unset (or with the MacBook away)
+    # the connection just drops, the agency's presence probe marks the node
+    # absent, and chains fall back to local `infer`.  `fork` re-resolves per
+    # connection.  NOT on infernet: a cell dialing this relay directly would
+    # reach the node's raw API around the door's routing and queueing.
+    command: ["TCP-LISTEN:11434,fork,reuseaddr", "TCP:${DEEPTHINK_ADDR:-127.0.0.1:1}"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    pids_limit: 64
+    mem_limit: 64m
+    networks:
+      - infernet_big                     # reachable by the agency ONLY
+      - lanegress                        # the LAN path to the node
+
 networks:
   infernet:
     internal: true                       # NO route to the internet => no egress
     name: infernet                       # stable name so per-project cells join as external
   modelnet:
     internal: true                       # agency <-> infer; the model server's ONLY edge
+  infernet_big:
+    internal: true                       # agency <-> deepthink-relay; no route out
+  lanegress: {}                          # deepthink-relay -> the LAN node (ONLY the relay holds this)
   frontend: {}
 
 volumes:
