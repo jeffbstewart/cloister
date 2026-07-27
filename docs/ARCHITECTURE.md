@@ -171,7 +171,7 @@ Exactly two localhost-only ports; nothing binds a routable interface:
 |---|---|---|
 | `kagi.com` | web **search** and the **extract/summarize** API (fetches and cleans pages to markdown server-side) | scholar → kagi-relay → `kagi.com:443`, TLS end-to-end (the relay pipes ciphertext) |
 | `api.search.brave.com` (optional) | alternate search engine when the scholar policy selects it; extract stays Kagi-only | would need its own `brave-relay`; never yet exercised against the real API |
-| deep-think node | heavyweight chain-of-thought lanes: `deep-think`, `review`, and `think-fast` lead here and degrade to local `infer` when the machine is away | agency → deepthink-relay → `$DEEPTHINK_ADDR` on the LAN (the node's own blind relay, [deepthink.md](deepthink.md)); no address in-repo |
+| deep-think node | heavyweight chain-of-thought lanes: `deep-think`, `review`, `research`, and `think-fast` lead here and degrade to local `infer` when the machine is away | agency → deepthink-relay → `$DEEPTHINK_ADDR` on the LAN (the node's own blind relay, [deepthink.md](deepthink.md)); no address in-repo |
 
 Image pulls from GHCR happen at deploy time only; nothing in a running
 cell fetches images or code.

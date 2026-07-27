@@ -214,9 +214,9 @@ cells (unchanged nets):  agent/scholar/librarian/corrector reach the
    The node itself — **DONE** (turn-on 2026-07-26): the inference stack's
    blind `deepthink-relay` carries the env-provided address (the
    DEEPTHINK_ADDR stack var; compose-lint refuses a committed target),
-   and the embedded default chains lead `deep-think` and `review` with
-   the node's heavy lane and `think-fast` with its fast lane, all
-   degrading to local `infer`.
+   and the embedded default chains lead `deep-think`, `review`, and
+   `research` with the node's heavy lane and `think-fast` with its fast
+   lane, all degrading to local `infer`.
 4. The status volume — **DONE** end to end.  Writer (internal/agency
    status: atomic-rename JSON snapshots — nodes with
    presence/residency/queue depths, classes, and the last-N op ledger
