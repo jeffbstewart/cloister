@@ -235,7 +235,8 @@ mac/
    2026-07-26): the inference stack's blind `deepthink-relay` carries
    the `DEEPTHINK_ADDR` stack var over `infernet_big` (compose-lint
    refuses a committed target), and the embedded default chains lead
-   `deep-think` and `review` with the heavy lane and `think-fast` with
-   the fast lane, degrading to local `infer` while the node is away.
+   `deep-think`, `review`, and `research` with the heavy lane and
+   `think-fast` with the fast lane, degrading to local `infer` while the
+   node is away.
 4. GETTING_STARTED gains a deep-think section; ARCHITECTURE.md's
    deep-think entries go from PLANNED to real — **DONE** with 3.

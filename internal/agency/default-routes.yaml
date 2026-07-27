@@ -114,7 +114,9 @@ classes:
         model: qwen3-coder:30b
 
   # The scholar's research loop: search-grounded synthesis while the agent
-  # (and usually the human) waits on the answer.
+  # (and usually the human) waits on the answer.  Leads with the heavy
+  # lane: multi-hop synthesis across retrieved sources is reasoning work,
+  # and on this node the big MoE is also the faster decoder.
   research:
     priority: interactive
     deadline: 5m
@@ -122,6 +124,8 @@ classes:
     queueWait: 30s
     maxQueueWait: 2m
     chain:
+      - node: deepthink
+        model: qwen3-coder-next:latest
       - node: infer
         model: qwen3-coder:30b
 
