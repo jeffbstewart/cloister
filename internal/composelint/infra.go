@@ -84,8 +84,8 @@ func CheckInfra(data []byte) ([]string, error) {
 			v = append(v, fmt.Sprintf("agency holds %q — the inference door gets no egress-capable network", n))
 		}
 		for _, n := range agency.Networks {
-			if def, defined := c.Networks[n]; defined && !def.External && !def.Internal {
-				v = append(v, fmt.Sprintf("agency network %q is not `internal: true` — it may grant internet egress", n))
+			if def, defined := c.Networks[n.Name]; defined && !def.External && !def.Internal {
+				v = append(v, fmt.Sprintf("agency network %q is not `internal: true` — it may grant internet egress", n.Name))
 			}
 		}
 		// The cutover invariant: the deployed door routes engine classes
@@ -133,8 +133,8 @@ func CheckInfra(data []byte) ([]string, error) {
 	infer, ok := c.Services["infer"]
 	if !ok {
 		v = append(v, "no `infer` service defined")
-	} else if len(infer.Networks) != 1 || infer.Networks[0] != "modelnet" {
-		v = append(v, fmt.Sprintf("infer must sit on `modelnet` alone (reachable only via the agency); networks = %v", infer.Networks))
+	} else if len(infer.Networks) != 1 || infer.Networks[0].Name != "modelnet" {
+		v = append(v, fmt.Sprintf("infer must sit on `modelnet` alone (reachable only via the agency); networks = %v", infer.Networks.names()))
 	}
 
 	if def, ok := c.Networks["modelnet"]; !ok {
@@ -176,10 +176,18 @@ func CheckInfra(data []byte) ([]string, error) {
 		if !targetsEnvAddr(relay.Command, "DEEPTHINK_ADDR") {
 			v = append(v, fmt.Sprintf("deepthink-relay must forward to the env-provided ${DEEPTHINK_ADDR}, never a committed address; command = %v", relay.Command))
 		}
-		relayNets := append([]string(nil), relay.Networks...)
+		relayNets := relay.Networks.names()
 		sort.Strings(relayNets)
 		if !slices.Equal(relayNets, []string{"infernet_big", "lanegress"}) {
-			v = append(v, fmt.Sprintf("deepthink-relay must hold exactly [infernet_big lanegress]; networks = %v", relay.Networks))
+			v = append(v, fmt.Sprintf("deepthink-relay must hold exactly [infernet_big lanegress]; networks = %v", relay.Networks.names()))
+		}
+		// The routes dial the node as deepthink.internal — a name the
+		// loopback-bound ollama's DNS-rebinding guard accepts in the Host
+		// header, where the bare service name draws a 403.  Load-bearing
+		// topology: without the alias every probe is refused and the node
+		// is forever absent.
+		if !slices.Contains(relay.Networks.aliasesOn("infernet_big"), "deepthink.internal") {
+			v = append(v, "deepthink-relay must carry the `deepthink.internal` alias on infernet_big — the node's ollama 403s Host headers outside its allowlist, so the bare service name can never probe present")
 		}
 	}
 	if def, ok := c.Networks["infernet_big"]; !ok {

@@ -124,6 +124,15 @@ listens on the LAN interface and forwards to loopback — the node's only
 LAN-visible surface, and it parses nothing.  The agency dials it via an
 env-provided address (no LAN addresses in the repo).
 
+Loopback binding activates ollama's DNS-rebinding guard: it 403s any
+request whose Host header is not a loopback/private IP literal,
+`localhost`, the machine's own hostname, or a `.localhost`/`.local`/
+`.internal` name — a pure string check, no DNS consulted.  Since the
+blind relays pass the Host header through untouched, the inference stack
+dials the node as `deepthink.internal`, a network alias of its
+deepthink-relay, which lands on that allowlist where the bare service
+name would be refused.
+
 ## Sleep
 
 The launchd job wraps the serve in **`caffeinate -s`**: the machine

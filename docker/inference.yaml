@@ -179,8 +179,16 @@ services:
     pids_limit: 64
     mem_limit: 64m
     networks:
-      - infernet_big                     # reachable by the agency ONLY
-      - lanegress                        # the LAN path to the node
+      infernet_big:                      # reachable by the agency ONLY
+        # The routes dial the node as deepthink.internal, NOT the service
+        # name: a loopback-bound ollama runs a DNS-rebinding guard that
+        # 403s any Host header it doesn't recognize, and `.internal` names
+        # are on its allowlist while a bare `deepthink-relay` is not.  The
+        # relay is blind, so the Host header rides through to the node
+        # exactly as the agency sent it.  Load-bearing: without this alias
+        # every probe is refused and the node stays absent.
+        aliases: [deepthink.internal]
+      lanegress: {}                      # the LAN path to the node
 
 networks:
   infernet:
