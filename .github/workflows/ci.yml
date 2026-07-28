@@ -90,6 +90,17 @@ jobs:
       - name: Compose lint (cell + inference containment)
         run: go run ./cmd/compose-lint docker/ai-workers.yaml docker/inference.yaml
 
+      # The forge's own merge-path protections (docs/grange.md R1-R8):
+      # rulesets, CODEOWNERS, namespace confinement.  The workflow token
+      # cannot read collaborator roles or Actions secrets, so those report
+      # UNVERIFIED here (-allow-unverified downgrades them to warnings);
+      # the operator runs the same lint with an admin token for the full
+      # verdict.  Any readable rule that is WRONG still fails the PR.
+      - name: Forge lint (merge-path protections)
+        env:
+          FORGE_LINT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: go run ./cmd/forge-lint -allow-unverified
+
       # Header presence and third-party observation repo-wide; year currency
       # on the files the PR touches (main pushes re-verify presence only).
       - name: Copyright headers
