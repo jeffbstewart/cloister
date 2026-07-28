@@ -92,6 +92,8 @@ func main() {
 	}
 	if exit == 0 {
 		fmt.Printf("forge-lint: %s %s OK — the merge path enforces R1-R8 as far as this credential can see\n", cfg.Forge, cfg.Repo)
+	} else {
+		fmt.Println("forge-lint: hardening runbook: docs/grange.md, \"Locking down a project for grange service\"")
 	}
 	os.Exit(exit)
 }

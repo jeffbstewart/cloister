@@ -125,7 +125,10 @@ Three pressures, one root cause:
 6. **Forge configuration is linted security config.**  The branch
    ruleset is now load-bearing topology that lives outside the repo;
    `forge-lint` (below) verifies it the way compose-lint verifies the
-   compose files.
+   compose files.  It is also a **provisioning precondition**: the
+   archivist refuses to hand over a grange for a repository whose
+   bot-verifiable protections do not hold ("Provision-time
+   verification" below) — an unprotected repo never gets a workspace.
 
 ## Forge requirements
 
@@ -229,6 +232,88 @@ the whole loop on-LAN — the local-first hedge).
   protection by default, which matches the operator-override decision;
   the lint asserts the admin set is exactly the operator.
 
+### Provision-time verification
+
+Invariant 6's teeth: `provision` runs a protection check against the
+target repository and **refuses the grange** if it fails.  The full
+R1–R8 lint needs an operator credential (R7), and that credential
+never enters a cell — so the provision gate verifies the subset the
+**bot's own token** can read, live, at hand-over.  On GitHub that
+subset is nearly everything that matters:
+
+- **Effective rules** (`GET /repos/{o}/{r}/rules/branches/{branch}`,
+  readable with plain read access): PR-required, approval count,
+  stale-approval dismissal, code-owner review, required checks,
+  force-push and deletion blocks — R1 minus the bypass roster, R2's
+  flags, R3, and therefore R4.
+- **CODEOWNERS** is a file in the repo: the bot reads it and asserts
+  the catch-all names exactly the operator (completing R2) and that
+  `.github/**` is owner-guarded (R6's mergeable half).
+- **Self-inspection**: `GET /repos/{o}/{r}` under the bot's token
+  reports the bot's own permission — write and not admin (R5).  This
+  composes with the R1 residue: the bypass roster is unreadable, but
+  admin-role is the only sanctioned bypass and the bot verifiably
+  isn't one, so *the bot cannot bypass* holds without the roster.
+- **Namespace probes**: the effective-rules endpoint evaluates any
+  branch *name*, existing or not — probe an out-of-namespace name for
+  creation/update restrictions and an `agent/…` name for their
+  absence (R8).
+
+The unverifiable residue — the bypass roster's full contents, the
+Actions-secrets inventory, collaborator roles — is entirely about
+actors *other than the bot*; it stays the operator-credential lint's
+job (on demand and in CI), not a provisioning precondition.  The gate
+policy: refuse on any VIOLATION; tolerate UNVERIFIED only on those
+three admin-only sections.  Because the check is live at every
+provision, drift the operator never initiated — e.g. a private repo's
+paid plan lapsing and its rules going unenforced — surfaces as an
+empty rule read and a refusal, with no attestation cadence needed.
+
+Gitea caveat: reading branch protection there requires admin, and no
+effective-rules equivalent for a plain-write user is known — the
+bot-readable subset may be near-empty, which joins the rule-precedence
+question on the pilot's probe list.  Until it is answered, the
+provision gate is GitHub-shaped and Gitea granges lean on the
+archivist's client-side discipline.
+
+### Locking down a project for grange service
+
+The runbook for bringing a repository up to R1–R8 so granges may be
+provisioned against it.  `forge-lint` prints this section's name when
+it fails; `provision`'s refusal will point here too.
+
+1. **Bot access.**  Create/reuse the bot account and add it as a
+   **Write** collaborator ([GITHUB_SETUP.md](GITHUB_SETUP.md) §1–2).
+   Write and nothing more — the provision gate verifies this from the
+   bot's own token.
+2. **Pin the expectations.**  Copy `etc/forge-lint.yaml`'s shape into
+   the project as `.github/forge-lint.yaml` — forge, repo, default
+   branch, operator, bot, required checks, `agent/` namespace.  It
+   lives under `.github/` so the CODEOWNERS guard (step 3) covers the
+   pinned identities themselves.
+3. **Commit the in-repo half.**  A `CODEOWNERS` naming the operator
+   as owner of `*` and of `/.github/`, and a CI workflow whose job is
+   the required check (the presubmit suite; **zero secrets**).  Give
+   the workflow a forge-lint step — checks out nothing extra, runs
+   the lint from the cloister module against the repo's own config
+   with the workflow's read token and `-allow-unverified` — so any
+   readable rule that drifts fails every future PR.
+4. **Create the rulesets** ([GITHUB_SETUP.md](GITHUB_SETUP.md) §3):
+   the default-branch ruleset (R1–R4) and the `agent/**` namespace
+   ruleset (R8), bypass admin-role only.  Do this while step 3's PR
+   is open, then re-run its checks: the lint step goes green in
+   place, proving the gate before anything relies on it.
+5. **Verify before trusting.**  Run the full lint with the operator
+   credential until all eight report OK:
+   `FORGE_LINT_TOKEN=<admin PAT> go run ./cmd/forge-lint
+   -config <path to the project's forge-lint.yaml>`.
+6. **Keep it enforced.**  The CI step from step 3 is the standing
+   guard for everything its token can read; the admin-only residue
+   (bypass roster, secrets inventory, collaborator roles) is cleared
+   only by re-running step 5, so re-run it when settings change —
+   and provisioning re-checks the bot-readable subset live, every
+   time.
+
 ## Sequencing
 
 The archivist is the prerequisite for everything: it holds the
@@ -251,7 +336,10 @@ the linted topology never lags the real one.
   designed, plus grange lifecycle verbs: `provision(branch?)` (clone
   into a fresh per-task volume; new branch or resume an existing one)
   and `dispose()` (destroy the volume; refuse if unpublished
-  checkpoints exist, overridable).
+  checkpoints exist, overridable).  `provision` runs the
+  provision-time verification first and refuses on failure, naming
+  the failing requirement and pointing at "Locking down a project
+  for grange service".
 - **M2 — the grange replaces the host mount.**  Cells mount the
   per-task volume where the host directory used to be; scribe,
   librarian, and builder keep operating against it unchanged.  A
