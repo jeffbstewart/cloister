@@ -1,9 +1,12 @@
 # The archivist — source-control sidecar design
 
-Status: **design, not yet implemented**.  Decisions from the 2026-07-07
-design review, recorded as the fixed target for the implementation PRs.
-Rationale style follows [DESIGN.md](DESIGN.md); the runtime picture is in
-[ARCHITECTURE.md](ARCHITECTURE.md) (marked PLANNED).
+Status: **design, not yet implemented; execution plan fixed**.
+Decisions from the 2026-07-07 design review, amended 2026-07-29 for the
+grange transformation ([grange.md](grange.md)): the archivist gains the
+grange lifecycle verbs, a one-instance-one-workspace binding, and
+per-endpoint egress.  "Execution sequencing" below is the M1 plan of
+record.  Rationale style follows [DESIGN.md](DESIGN.md); the runtime
+picture is in [ARCHITECTURE.md](ARCHITECTURE.md) (marked PLANNED).
 
 ## Problem
 
@@ -33,6 +36,21 @@ librarian (planned) is sole reader.
   operations, not git incantations, so a future subversion (or other)
   adapter can satisfy the same surface.  Git-only concepts stay out of the
   contract.
+- **One instance, one workspace, one human.**  An archivist is bound at
+  startup to a single workspace mount and a single endpoint table
+  (credentials included).  The table holds one **human principal's** bot
+  identities — that human's GitHub bot, that human's Gitea bot, one per
+  endpoint — so the actor a grange speaks as is *derived* at provision
+  time from (instance's human × repo's host), never chosen: there is no
+  identity parameter to get wrong, and no archivist ever aggregates two
+  humans' credentials.  n workspaces means n configured instances;
+  rebinding a workspace to a different human is a deliberate operator
+  act (recreate the instance with the other envelope), never a
+  provision-time choice.  Mounting one workspace into several places
+  would mean one archivist per mount — deferred until something needs
+  it.  Fungibility lives one level up: any repository whose protections
+  pass the provision gate can be provisioned into any instance whose
+  endpoint table knows its host.
 
 ## Verbs
 
@@ -49,15 +67,31 @@ crossings):
 | `start_work(name)` | new line of work off the default branch (branch + switch) |
 | `abandon_work(name, deleteRemote?)` | discard a line of work: switch to the default branch, delete the local branch (branch -D).  Refuses on the default branch or a dirty tree.  `deleteRemote` also removes the published counterpart — that half is a remote op, audited |
 | `checkpoint(message, paths?)` | record the working tree — all of it, or just the named paths (commit, or commit -- paths) |
-| `restore(checkpoint?, path?)` | roll back: one file's local edits (restore path), one file from a checkpoint (checkout ref -- path), or the whole tree (reset --hard) |
+| `restore(checkpoint?, path?)` | roll back: one file's local edits (restore path), one file from a checkpoint (checkout ref -- path), or the whole tree (reset --hard while unpublished; a content restore once published — see "Published history is append-only") |
 | `set_aside()` / `resume()` | park and recover uncommitted work (stash push/pop) |
-| `sync_from_upstream()` | update the local default branch and replay work on it (fetch + rebase) |
+| `sync_from_upstream()` | update the local default branch and replay work on it (fetch; the replay is a rebase only while unpublished — see "Published history is append-only") |
 
 **No staging verbs.**  The index is a git realization detail, not part of
 the contract (subversion has none, and staged-vs-worktree divergence is a
 state class the agent can silently lose track of).  Checkpoints always
 read the working tree; selective recording is `checkpoint`'s `paths`
 parameter, not an `add` step.
+
+**Published history is append-only.**  The client-side force-push
+refusal (below) makes every published branch forward-only, and the
+local verbs inherit the consequence rather than fighting it.  While a
+branch is unpublished, history is the agent's scratchpad: `restore` may
+`reset --hard` to any checkpoint and `sync_from_upstream` replays by
+rebase.  The moment the branch is published, both switch realization:
+`restore(checkpoint)` brings the checkpoint's *content* into the
+worktree, recorded by the next checkpoint — selective revert is forward
+motion, never history rewrite — and `sync_from_upstream` merges from
+the default branch, because either rewind would need the force-push the
+archivist refuses.  The alternative — permitting force-push inside the
+agent's own `agent/**` namespace, where stale-approval dismissal
+already defuses approve-then-swap — was considered and rejected: one
+refusal with no exceptions is easier to audit, and a merge-commit PR
+flow never needs the branch linear.
 
 Remote — **audited, ungated** (every GitHub touch leaves a record; none
 waits for approval):
@@ -89,6 +123,47 @@ the default branch, force-pushing, and tag deletion are refused by the
 archivist itself and audited as refusals.  A misconfigured ruleset or an
 over-scoped credential must not become an incident.
 
+## Grange lifecycle
+
+[grange.md](grange.md)'s amendment: the archivist is also its
+workspace's provisioner.  Two lifecycle verbs — audited, since they are
+the workspace's boundary events:
+
+| Verb | Meaning |
+|---|---|
+| `provision(repo, branch?)` | populate the EMPTY workspace: resolve the repo URL against the endpoint table (unknown host: refuse), run the provision-time verification (grange.md) and refuse on failure naming the failing requirement and the lock-down runbook, clone through the endpoint's relay with its credential, create `agent/<name>` or check out the resumed branch, set the repo-local author identity from the endpoint, and write the provenance marker last |
+| `dispose(force?)` | return the workspace to EMPTY.  Refuses while unpublished work exists — a dirty tree, checkpoints ahead of the published branch, or set-aside work (`set_aside`'s stash counts: parked work is the easiest thing to destroy silently); `force` overrides all three.  A workspace without the provenance marker is refused regardless of `force` |
+
+- **Contents, not volumes.**  The archivist never touches the Docker
+  control plane — a docker socket beside the credential would be a cell
+  escape.  The volume is created and destroyed host-side (compose
+  today, the cellarer later) and arrives mounted empty; `provision`
+  fills it, `dispose` empties it.  Grange invariant 3 ("never revive a
+  stale volume") holds because `provision` refuses a non-empty
+  workspace and a resumed task is always a fresh clone of its branch.
+- **The provenance marker** (`.git/cloister-grange`: repo, branch,
+  provision time as epoch seconds) is `provision`'s last write and
+  `dispose`'s precondition — the rail that makes `dispose` structurally
+  unable to wipe a host tree, because a mounted host tree never carries
+  the marker.  It lives inside `.git`, deliberately outside the
+  worktree, so no worktree verb can touch it: `set_aside` cannot stash
+  it, `restore` cannot revert it, `checkpoint` can never commit it into
+  the repository, and it never appears in `pending_changes`.  Post-M3
+  the agent can delete it, but that only blocks cleanup of a tree the
+  agent already fully controls; the operator recycles the volume
+  host-side.
+- **State derives from disk, never memory** (restart-safe): an empty
+  directory is EMPTY; marker + `.git` is PROVISIONED; anything else is
+  CORRUPT, where every verb refuses and recovery is host-side.
+- **The provision gate reuses `internal/forgelint`**: snapshot under
+  the bot's own token, the R1–R8 checks, then grange.md's gate policy —
+  refuse on any VIOLATION, tolerate UNVERIFIED only on the admin-only
+  residue.  The dispose refusal is shaped as a reusable predicate: the
+  future reaper's rescue-branch path must share it, not reimplement it.
+- The stores/lockfile coverage check stays out of M1 — it needs the
+  read-only store mounts, which land with the workbench image (grange
+  M4).
+
 ## Hardened git execution
 
 The archivist drives the real git binary — but never with ambient trust:
@@ -98,50 +173,124 @@ The archivist drives the real git binary — but never with ambient trust:
 - Global/system config disabled (`GIT_CONFIG_GLOBAL=/dev/null`,
   `GIT_CONFIG_SYSTEM=/dev/null`); dangerous keys (fsmonitor, filters,
   aliases) overridden per-invocation with `-c`.
-- Remote protocol restricted to https toward the pinned relays; no
-  credential helpers — the token is injected per call, never stored in
-  config inside the workspace.
+- Remotes restricted to the endpoint allowlist (below), checked before
+  git ever runs; `http.followRedirects` off per invocation.  No
+  credential helpers — the endpoint's token is injected per call (via
+  askpass, never argv: argv is world-readable in /proc), never stored
+  in config inside the workspace.
 
-The `.git` directory the archivist maintains still lives in the workspace
-mount (host git interop is a feature — the operator can inspect the repo
-normally), but every cell-side toucher of it is the archivist's own
-hardened invocations.
+The `.git` directory the archivist maintains lives in the grange
+volume, never a host mount.  Until grange M3 every cell-side toucher of
+it is the archivist's own hardened invocations; after M3 the agent runs
+git freely inside its own container ([grange.md](grange.md), "Local git
+is the agent's") and the hardened discipline binds every *other* worker
+that touches a grange's `.git`, the archivist first among them.
 
-## Identity and credential
+## Endpoints, identity, and credential
 
 Commits and PRs happen as a **bot account** (the operator reviews as
-themselves; the bot cannot approve or merge).  Its token lives in one
-place: the archivist's environment, per cell.  The agent never sees it,
-and no scribe-writable or librarian-readable file contains it.
-[GITHUB_SETUP.md](GITHUB_SETUP.md) is the replication recipe: bot account,
-token, collaborator grant, and the branch ruleset that keeps `main`
-requiring a human PR approval and green checks.
+themselves; the bot cannot approve or merge).  Which bot follows from
+the instance: each archivist mounts a read-only **endpoint table** —
+deployment config, holding credential *paths*, never secrets — with one
+entry per reachable git endpoint, all of them the instance's one human
+principal's bots:
+
+- **name** — also the relay's name: `github.com`, `gitea`.
+- **canonical URL prefix** — how repositories are designated everywhere
+  (`https://github.com/`, the Gitea front URL).
+- **wire URL prefix** — where the bytes actually go:
+  `https://github.com/` resolved to the relay by network alias, or
+  plain `http://gitea:<port>/` through the gitea relay.
+- **credential file** — a read-only mounted token file, one per
+  endpoint.  The agent never sees it; no scribe-writable or
+  librarian-readable path contains it.
+- **bot identity** — commit author name/email.  The GitHub and Gitea
+  bots are different actors, so identity rides with the endpoint, not
+  the instance.  `provision` writes it repo-locally for interop, but
+  `checkpoint` pins author and committer per invocation from the
+  table — an agent that edits `.git/config` (possible post-M3) cannot
+  spoof the author of an archivist checkpoint.
+
+The table is the allowlist: a remote URL whose host has no entry is
+refused before git ever runs — which structurally refuses `file://`,
+ssh, and bare paths, and therefore every host repository.  The
+archivist is never pointed at the operator's own tree.
+
+**Egress is always a named relay** (the kagi-relay pattern: a blind
+socat pipe per endpoint, `fork` re-resolving per connection):
+
+- **https endpoints** (`github.com`, `api.github.com`) each get a relay
+  carrying a **network alias equal to the real hostname** on gitegress.
+  Git dials `https://github.com/`, Docker's embedded DNS resolves the
+  alias to the relay, and socat pipes ciphertext to the real host — TLS
+  end-to-end, certificate verification passing because the dialed name
+  is the certificate's name.
+- **The gitea endpoint speaks plain http to the jailed instance**: its
+  relay pipes to the LAN port that reaches only Gitea, never through
+  the TLS front — the https alternative would expose every vhost the
+  reverse proxy fronts, trading a protocol nicety for real reach.
+  Canonical designations keep the Gitea front URL; a per-invocation
+  `url.<wire>.insteadOf=<canonical>` maps them to the wire.  Accepted
+  cost, already priced by the LAN-jail threat model: the Gitea token
+  transits the LAN in cleartext on the relay→Gitea hop (worst case
+  remains attributed graffiti on protected branches).  Operational
+  note: the Gitea-side lockdown that restricts that port to the TLS
+  front alone (docs/gitea.md, untracked) must also admit the cell
+  hosts' relays before it is applied, or the archivist's route dies
+  with it.
+
+[GITHUB_SETUP.md](GITHUB_SETUP.md) is the replication recipe for the
+GitHub bot: bot account, token, collaborator grant, and the branch
+ruleset that keeps `main` requiring a human PR approval and green
+checks.
 
 ## Topology
 
 ```
 archivist:
-  volumes:  ${WORKSPACE}:/workspace     # rw: worktree ops rewrite files; sole .git toucher
+  volumes:
+    - grange:/workspace       # a dedicated volume, NEVER ${WORKSPACE} —
+                              # the operator's host tree does not enter
+    - endpoints.yaml (ro) + one read-only token file per endpoint
   networks:
     - buildnet     # reachable by the agent (inbound MCP, :9600)
-    - statenet     # audit records for remote ops
-    - gitegress    # to the github relays ONLY (internal)
+    - statenet     # audit records for remote + lifecycle ops
+    - gitegress    # to the endpoint relays ONLY (internal)
 
-github-relay / github-api-relay:
-  # kagi-relay pattern: blind socat pipes, pinned to github.com:443 and
-  # api.github.com:443; the only holders of `egress` besides the kagi-relay.
+github.com / api.github.com / gitea relays:
+  # kagi-relay pattern: one blind socat pipe per endpoint, named for it.
+  # https relays carry a network alias equal to their hostname, so git
+  # dials the real name, Docker DNS resolves it to the relay, and TLS
+  # verifies end-to-end; the gitea relay pipes plain http to the jailed
+  # instance's LAN port.  The https relays join the kagi-relay as the
+  # only holders of `egress`; the gitea relay holds only the LAN route.
+  # The archivist has no other resolver — Docker DNS knows only the
+  # aliases, so the DNS side channel is gone for free.
 ```
 
-compose-lint grows the matching invariants: the archivist holds no
-`egress`/`frontend` network; the relays are pinned; the scholar's isolation
-is unchanged (it gains no route to the archivist or the workspace).
+compose-lint grows the matching invariants, landing in the same PR as
+the topology — no commit exists where the archivist is unjailed: the
+archivist's networks are exactly buildnet + statenet + gitegress;
+gitegress membership is the archivist and its relays alone; each
+relay's socat destination is a literal and each https relay's alias
+equals its name; only relays hold `egress`; the scholar's isolation is
+unchanged (it gains no route to the archivist or the workspace).
 
-Worktree interplay is documented semantics, not magic: the scribe, the
-builder, and the archivist all write the same tree, so `restore`,
-`set_aside`, and `sync_from_upstream` can clobber uncommitted edits —
-sequencing is the agent's responsibility, and `current_state()` before
-destructive verbs is the documented idiom.  Audit for remote ops rides a
-new typed detail on the existing envelope (op, branch, PR number, target).
+The archivist is a **cell member**, instantiated with its cell — never
+a fleet standing outside the cells.  The agent finds it the way it
+finds the scribe today: the service name on the cell's own buildnet.
+Pairing an agent with its archivist is cell membership, not discovery
+machinery, and the cell instance itself carries the human/workspace
+identity.
+
+Worktree interplay is documented semantics, not magic: until the
+mediators retire (grange M3) the scribe, the builder, and the archivist
+all write the same tree, and after M3 the agent's native tools take
+their place as the other writer.  Either way `restore`, `set_aside`,
+and `sync_from_upstream` can clobber uncommitted edits — sequencing is
+the agent's responsibility, and `current_state()` before destructive
+verbs is the documented idiom.  Audit for remote ops rides a new typed
+detail on the existing envelope (op, branch, PR number, target).
 
 ## Future backends
 
@@ -151,17 +300,32 @@ Subversion (or others) later means an adapter behind the same verbs:
 contract deliberately never mentions refs, remotes, rebases, or staging —
 those are realization details of the git adapter.
 
-## Phasing
+## Execution sequencing (M1 plan of record, 2026-07-29)
 
-0. DONE (PR #34): workspace confinement rejects `.git/**` — the scribe can
-   never be the archivist's confused deputy.
-1. `internal/archive`: the hardened git runner (hooks off, config
-   isolated, env-scrubbed) + the local verb set, with an injected clock
-   and a fake-remote test rig.
-2. Worker mode + MCP surface for local verbs; compose entry (no egress
-   yet — local-only cells work fully).
-3. The relays, remote verbs, client-side refusals, and the remote-op
-   audit detail; GITHUB_SETUP.md becomes load-bearing.
-4. `await_review` long-poll with progress notifications.
-5. ARCHITECTURE.md updates from PLANNED to real; compose-lint invariants.
-6. Someday: the subversion adapter proves the verb contract honest.
+0. DONE (PR #34): workspace confinement rejects `.git/**` — the scribe
+   can never be the archivist's confused deputy.
+1. **`internal/archive`** — the hardened git runner (hooks off, config
+   isolated, env-scrubbed, injected clock) and the full local verb set,
+   tested against real git on temp repos with a local bare repo as the
+   fake remote.  No network surface, no MCP, no compose.
+2. **Worker mode** — the `archivist` role link and flag set, the MCP
+   surface for the local verbs, the healthcheck.  Exercised through
+   tests and local runs only; deliberately NO compose entry — the
+   archivist never exists in the topology unjailed.
+3. **The jail, one PR** — the per-endpoint relays (aliases, literal
+   socat destinations), the internal gitegress network, the compose
+   service on a dedicated grange volume, the remote verbs behind the
+   endpoint table, the client-side refusals, the remote-op audit
+   detail, and the compose-lint invariants pinning all of it.  Topology
+   and lint move together.
+4. **Grange lifecycle** — `provision`/`dispose`, the provenance marker,
+   the forgelint-backed provision gate, lifecycle audit records.
+5. **`await_review`** — the long-poll with progress notifications.
+6. **Record cutover** — this doc's status, ARCHITECTURE.md's PLANNED
+   sections, grange.md's M1 milestone.  (The CLAUDE.md invariant
+   rewrite stays at grange M5.)
+
+GitHub is M1's only forge adapter; the endpoint table and the adapter
+seam are shaped for the Gitea backend, which follows once the pilot
+answers its protection-read questions ([grange.md](grange.md)).
+Someday: the subversion adapter proves the verb contract honest.
