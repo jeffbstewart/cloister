@@ -35,6 +35,11 @@
 //	librarian      the read side of the cell: mechanical read tools on
 //	               :9400 served from an in-memory, shield-filtered model
 //	               of the workspace; denials (only) audited to state.
+//	archivist      the cell's version-control authority: the hardened git
+//	               runner behind VCS-agnostic local verbs served as MCP
+//	               tools on :9600.  Local verbs only until the git jail
+//	               lands; deliberately absent from compose until then —
+//	               no commit exists where the archivist is unjailed.
 //	agency         the sole inference door on :11434, in the shared infra
 //	               stack (not the cell): routes the OpenAI-compatible /v1
 //	               API by ENGINE CLASS (the request's model field) to the
@@ -52,8 +57,9 @@
 //
 // This file is only the front door: role resolution and dispatch.  Each
 // role's flag set and bootstrap live in its own file (builder.go,
-// scribe.go, scholar.go, statesvc.go, librarian.go, agency.go); shared
-// serving plumbing in serve.go.
+// scribe.go, scholar.go, statesvc.go, librarian.go, archivist.go,
+// agency.go); shared serving plumbing in serve.go.  The wiring pattern
+// and the new-role checklist are docs/worker-roles.md.
 package main
 
 import (
@@ -84,10 +90,11 @@ var roles = map[string]roleParser{
 	"scribe":        scribeRole,
 	"scholar":       scholarRole,
 	"librarian":     librarianRole,
+	"archivist":     archivistRole,
 	"agency":        agencyRole,
 }
 
-const workerModes = "builder | state-service | scribe | scholar | librarian | agency"
+const workerModes = "builder | state-service | scribe | scholar | librarian | archivist | agency"
 
 // healthcheckName is the pseudo-role behind the generic `-healthcheck`
 // form.  It is resolved only from that leading flag — `-worker-mode

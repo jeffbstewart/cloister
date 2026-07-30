@@ -1,12 +1,15 @@
 # The archivist — source-control sidecar design
 
-Status: **design, not yet implemented; execution plan fixed**.
-Decisions from the 2026-07-07 design review, amended 2026-07-29 for the
-grange transformation ([grange.md](grange.md)): the archivist gains the
-grange lifecycle verbs, a one-instance-one-workspace binding, and
-per-endpoint egress.  "Execution sequencing" below is the M1 plan of
-record.  Rationale style follows [DESIGN.md](DESIGN.md); the runtime
-picture is in [ARCHITECTURE.md](ARCHITECTURE.md) (marked PLANNED).
+Status: **in implementation — M1 steps 0–2 DONE** (PR #34: `.git/**`
+confinement; PR #95: the hardened runner and the local verb set in
+`internal/archive`; then the worker mode and its MCP surface in
+`internal/archivist`).  Decisions from the 2026-07-07 design review,
+amended 2026-07-29 for the grange transformation
+([grange.md](grange.md)): the archivist gains the grange lifecycle
+verbs, a one-instance-one-workspace binding, and per-endpoint egress.
+"Execution sequencing" below is the M1 plan of record.  Rationale style
+follows [DESIGN.md](DESIGN.md); the runtime picture is in
+[ARCHITECTURE.md](ARCHITECTURE.md) (marked PLANNED).
 
 ## Problem
 
@@ -168,11 +171,22 @@ the workspace's boundary events:
 
 The archivist drives the real git binary — but never with ambient trust:
 
-- Hooks neutralized (`core.hooksPath` pointed at an empty directory) on
-  every invocation; the archivist never executes repository-supplied code.
+- Hooks neutralized (`core.hooksPath` pointed at an empty directory the
+  runner owns) on every invocation; the archivist never executes
+  repository-supplied code.
 - Global/system config disabled (`GIT_CONFIG_GLOBAL=/dev/null`,
-  `GIT_CONFIG_SYSTEM=/dev/null`); dangerous keys (fsmonitor, filters,
-  aliases) overridden per-invocation with `-c`.
+  `GIT_CONFIG_SYSTEM=/dev/null`).  The repo-local config — agent-written
+  post-M3, and an execution surface, not a preference file (filter/diff/
+  merge drivers, `remote.*.uploadpack`, `core.worktree`) — is guarded by
+  **allowlist refusal**, not override: the exec-capable key space is
+  open-ended (driver sections are named by whoever writes the config),
+  so the archivist refuses to run git at all in a workspace whose
+  `.git/config` carries a key outside the benign-clone-key allowlist.
+  Per-invocation `-c` overrides of the known program-naming keys remain
+  as belt, along with `--git-dir`/`--work-tree` pinned per invocation
+  and untrusted-input parsing of everything read back out of the
+  repository (branch names, history records — NUL-framed so a crafted
+  commit subject cannot forge a record).
 - Remotes restricted to the endpoint allowlist (below), checked before
   git ever runs; `http.followRedirects` off per invocation.  No
   credential helpers — the endpoint's token is injected per call (via
@@ -304,14 +318,18 @@ those are realization details of the git adapter.
 
 0. DONE (PR #34): workspace confinement rejects `.git/**` — the scribe
    can never be the archivist's confused deputy.
-1. **`internal/archive`** — the hardened git runner (hooks off, config
-   isolated, env-scrubbed, injected clock) and the full local verb set,
-   tested against real git on temp repos with a local bare repo as the
-   fake remote.  No network surface, no MCP, no compose.
-2. **Worker mode** — the `archivist` role link and flag set, the MCP
-   surface for the local verbs, the healthcheck.  Exercised through
-   tests and local runs only; deliberately NO compose entry — the
-   archivist never exists in the topology unjailed.
+1. DONE (PR #95): **`internal/archive`** — the hardened git runner
+   (hooks off, config allowlist-guarded, env-scrubbed, injected clock)
+   and the full local verb set, tested against real git on temp repos
+   with a local bare repo as the fake remote.  No network surface, no
+   MCP, no compose.
+2. DONE: **Worker mode** — the `archivist` role link and flag set, the
+   MCP surface for the local verbs (internal/archivist), the
+   healthcheck.  Exercised through tests and local runs only;
+   deliberately NO compose entry — the archivist never exists in the
+   topology unjailed.  The checkpoint identity is pinned to a TODO
+   placeholder until the endpoint table (step 3) supplies the real
+   one; nothing deployed exercises it before then.
 3. **The jail, one PR** — the per-endpoint relays (aliases, literal
    socat destinations), the internal gitegress network, the compose
    service on a dedicated grange volume, the remote verbs behind the
