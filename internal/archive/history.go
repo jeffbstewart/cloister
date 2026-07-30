@@ -38,10 +38,15 @@ const historyCap = 200
 // defaultHistoryLimit applies when the caller does not choose.
 const defaultHistoryLimit = 50
 
-// logFormat renders one Change per record: unit-separated fields,
-// record-separated entries, no user-controlled text before the last
-// field (the subject is the only field an agent influences).
-const logFormat = "--format=%H%x1f%ct%x1f%an%x1f%ae%x1f%s%x1e"
+// logFormat renders one Change per record: unit-separated fields, no
+// user-controlled text before the last field.  Record framing is left
+// to `log -z` (NUL between records) rather than an in-band terminator
+// in the format string: a commit message can carry any byte but NUL, so
+// a crafted subject in a fetched or agent-authored commit could smuggle
+// a terminator and forge a phantom record with an attacker-chosen id
+// and author — the exact fields callers trust.  NUL framing makes
+// records unforgeable.
+const logFormat = "--format=%H%x1f%ct%x1f%an%x1f%ae%x1f%s"
 
 // HistoryQuery scopes a history read.  Zero values mean: the current
 // branch, the whole tree, defaultHistoryLimit entries.
@@ -53,6 +58,9 @@ type HistoryQuery struct {
 
 // History lists checkpoints newest-first.
 func (a *Archive) History(ctx context.Context, q HistoryQuery) ([]Change, error) {
+	if err := a.guardConfig(ctx); err != nil {
+		return nil, err
+	}
 	limit := q.Limit
 	switch {
 	case limit <= 0:
@@ -60,7 +68,7 @@ func (a *Archive) History(ctx context.Context, q HistoryQuery) ([]Change, error)
 	case limit > historyCap:
 		limit = historyCap
 	}
-	args := []string{"log", "--no-decorate", logFormat, "-n", strconv.Itoa(limit)}
+	args := []string{"log", "-z", "--no-decorate", logFormat, "-n", strconv.Itoa(limit)}
 	if !q.Ref.IsZero() {
 		args = append(args, q.Ref.String())
 	}
@@ -77,11 +85,10 @@ func (a *Archive) History(ctx context.Context, q HistoryQuery) ([]Change, error)
 	return parseChanges(out)
 }
 
-// parseChanges splits logFormat output into Changes.
+// parseChanges splits `log -z` logFormat output into Changes.
 func parseChanges(out string) ([]Change, error) {
 	var changes []Change
-	for _, rec := range strings.Split(out, "\x1e") {
-		rec = strings.TrimLeft(rec, "\n")
+	for _, rec := range strings.Split(out, "\x00") {
 		if rec == "" {
 			continue
 		}
@@ -120,7 +127,10 @@ func (a *Archive) ShowChange(ctx context.Context, id CheckpointID) (ChangeWithDi
 	if id.IsZero() {
 		return ChangeWithDiff{}, fmt.Errorf("archive: show_change: a checkpoint id is required")
 	}
-	meta, err := a.run.out(ctx, "log", "--no-decorate", "-1", logFormat, id.String())
+	if err := a.guardConfig(ctx); err != nil {
+		return ChangeWithDiff{}, err
+	}
+	meta, err := a.run.out(ctx, "log", "-z", "--no-decorate", "-1", logFormat, id.String())
 	if err != nil {
 		return ChangeWithDiff{}, err
 	}
@@ -151,6 +161,9 @@ func (a *Archive) FileAt(ctx context.Context, ref Ref, path string) ([]byte, err
 	}
 	if err := validPath(path); err != nil {
 		return nil, fmt.Errorf("archive: file_at: %w", err)
+	}
+	if err := a.guardConfig(ctx); err != nil {
+		return nil, err
 	}
 	// cat-file with the explicit blob type: a rev:path that names a
 	// directory (a tree) is an error, not a listing.  raw, not out —

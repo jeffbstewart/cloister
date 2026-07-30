@@ -49,7 +49,17 @@ type FileChange struct {
 // CurrentState reports branch, publication standing, dirty files, and
 // set-aside count in one read.
 func (a *Archive) CurrentState(ctx context.Context) (State, error) {
-	st := State{Default: a.def}
+	if err := a.guardConfig(ctx); err != nil {
+		return State{}, err
+	}
+	return a.currentState(ctx)
+}
+
+// currentState is CurrentState without the config guard, for the verbs
+// that have already run it (the guard is a per-verb precondition, not a
+// per-invocation one).
+func (a *Archive) currentState(ctx context.Context) (State, error) {
+	st := State{Default: a.def.String()}
 	branch, err := a.currentBranch(ctx)
 	if err != nil {
 		return State{}, err
@@ -80,7 +90,6 @@ func (a *Archive) CurrentState(ctx context.Context) (State, error) {
 		return State{}, err
 	}
 	if code == 0 { // refs/stash exists only while parcels are parked
-
 		count, err := a.run.out(ctx, "rev-list", "--walk-reflogs", "--count", "refs/stash")
 		if err != nil {
 			return State{}, err
@@ -172,6 +181,9 @@ type Pending struct {
 // PendingChanges reports the delta between the working tree and the
 // last checkpoint — the whole tree, or one path.
 func (a *Archive) PendingChanges(ctx context.Context, path string) (Pending, error) {
+	if err := a.guardConfig(ctx); err != nil {
+		return Pending{}, err
+	}
 	args := []string{"diff", "--no-ext-diff", "--no-textconv", "HEAD"}
 	if path != "" {
 		if err := validPath(path); err != nil {
@@ -183,7 +195,7 @@ func (a *Archive) PendingChanges(ctx context.Context, path string) (Pending, err
 	if err != nil {
 		return Pending{}, err
 	}
-	st, err := a.CurrentState(ctx)
+	st, err := a.currentState(ctx)
 	if err != nil {
 		return Pending{}, err
 	}

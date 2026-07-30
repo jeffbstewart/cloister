@@ -65,10 +65,15 @@ func (a *Archive) StartWork(ctx context.Context, name BranchName) error {
 	if name.IsZero() {
 		return fmt.Errorf("archive: start_work: a branch name is required")
 	}
-	if name.String() == a.def {
+	if name.String() == a.def.String() {
 		return fmt.Errorf("%w: start_work(%s)", ErrDefaultBranch, name)
 	}
-	_, err := a.run.out(ctx, "switch", "-c", name.String(), a.def)
+	if err := a.guardConfig(ctx); err != nil {
+		return err
+	}
+	// --end-of-options is belt on a parsed name: even a future parser bug
+	// cannot turn the start point into a flag.
+	_, err := a.run.out(ctx, "switch", "-c", name.String(), "--end-of-options", a.def.String())
 	return err
 }
 
@@ -81,10 +86,13 @@ func (a *Archive) AbandonWork(ctx context.Context, name BranchName) error {
 	if name.IsZero() {
 		return fmt.Errorf("archive: abandon_work: a branch name is required")
 	}
-	if name.String() == a.def {
+	if name.String() == a.def.String() {
 		return fmt.Errorf("%w: abandon_work(%s)", ErrDefaultBranch, name)
 	}
-	st, err := a.CurrentState(ctx)
+	if err := a.guardConfig(ctx); err != nil {
+		return err
+	}
+	st, err := a.currentState(ctx)
 	if err != nil {
 		return err
 	}
@@ -92,7 +100,7 @@ func (a *Archive) AbandonWork(ctx context.Context, name BranchName) error {
 		return fmt.Errorf("%w: abandon_work would discard them with the branch; checkpoint, set_aside, or restore first", ErrDirtyTree)
 	}
 	if st.Branch == name.String() {
-		if _, err := a.run.out(ctx, "switch", a.def); err != nil {
+		if _, err := a.run.out(ctx, "switch", "--end-of-options", a.def.String()); err != nil {
 			return err
 		}
 	}
@@ -104,19 +112,25 @@ func (a *Archive) AbandonWork(ctx context.Context, name BranchName) error {
 // paths — as one checkpoint, and returns its id.  There are no staging
 // verbs: the tree is re-staged from scratch here, every time.
 func (a *Archive) Checkpoint(ctx context.Context, message string, paths []string) (CheckpointID, error) {
-	if strings.TrimSpace(message) == "" {
-		return CheckpointID{}, fmt.Errorf("archive: checkpoint: a message is required")
+	if err := validMessage(message); err != nil {
+		return CheckpointID{}, fmt.Errorf("archive: checkpoint: %w", err)
 	}
 	for _, p := range paths {
 		if err := validPath(p); err != nil {
 			return CheckpointID{}, fmt.Errorf("archive: checkpoint: %w", err)
 		}
 	}
+	if err := a.guardConfig(ctx); err != nil {
+		return CheckpointID{}, err
+	}
 	branch, err := a.currentBranch(ctx)
 	if err != nil {
 		return CheckpointID{}, err
 	}
-	if branch == a.def {
+	if branch == "" {
+		return CheckpointID{}, fmt.Errorf("archive: checkpoint: not on a branch — a checkpoint recorded on a detached HEAD belongs to no line of work")
+	}
+	if branch == a.def.String() {
 		return CheckpointID{}, fmt.Errorf("%w: checkpoints belong on a line of work — start_work first", ErrDefaultBranch)
 	}
 
@@ -134,7 +148,7 @@ func (a *Archive) Checkpoint(ctx context.Context, message string, paths []string
 	}
 	// Detect emptiness before committing so "nothing changed" is a
 	// typed answer, not a parsed git message.
-	diffArgs := []string{"diff", "--cached", "--quiet"}
+	diffArgs := []string{"diff", "--no-ext-diff", "--no-textconv", "--cached", "--quiet"}
 	if len(paths) > 0 {
 		diffArgs = append(diffArgs, "--")
 		diffArgs = append(diffArgs, paths...)
@@ -177,13 +191,20 @@ type RestoreResult struct {
 //	checkpoint only           the whole tree to that checkpoint
 //	neither                   discard all local edits (to the last checkpoint)
 //
-// Whole-tree restore to a checkpoint obeys "published history is
-// append-only": while every published checkpoint remains an ancestor of
-// the target, history rewinds; otherwise the checkpoint's content is
-// restored into the tree and recording it is the next checkpoint's job.
-// Untracked files are never deleted — parking or discarding them is
-// set_aside's or dispose's business.
+// Whole-tree restore to a checkpoint is a rollback, so the checkpoint
+// must lie on the current line of work (an ancestor of HEAD) — anything
+// else would silently relocate the branch onto foreign history — and it
+// is refused on the default branch, whose only legitimate motion is
+// sync_from_upstream.  It obeys "published history is append-only":
+// while every published checkpoint remains an ancestor of the target,
+// history rewinds; otherwise the checkpoint's content is restored into
+// the tree and recording it is the next checkpoint's job.  Untracked
+// files are never deleted — parking or discarding them is set_aside's
+// or dispose's business.
 func (a *Archive) Restore(ctx context.Context, checkpoint CheckpointID, path string) (RestoreResult, error) {
+	if err := a.guardConfig(ctx); err != nil {
+		return RestoreResult{}, err
+	}
 	if path != "" {
 		if err := validPath(path); err != nil {
 			return RestoreResult{}, fmt.Errorf("archive: restore: %w", err)
@@ -196,13 +217,25 @@ func (a *Archive) Restore(ctx context.Context, checkpoint CheckpointID, path str
 		return RestoreResult{}, err
 	}
 	if checkpoint.IsZero() {
-		_, err := a.run.out(ctx, "reset", "--hard", "HEAD")
-		return RestoreResult{Rewound: true}, err
+		if _, err := a.run.out(ctx, "reset", "--hard", "HEAD"); err != nil {
+			return RestoreResult{}, err
+		}
+		return RestoreResult{Rewound: true}, nil
 	}
 
 	branch, err := a.currentBranch(ctx)
 	if err != nil {
 		return RestoreResult{}, err
+	}
+	if branch == a.def.String() {
+		return RestoreResult{}, fmt.Errorf("%w: whole-tree restore to a checkpoint", ErrDefaultBranch)
+	}
+	reachable, err := a.isAncestor(ctx, checkpoint.String(), "HEAD")
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	if !reachable {
+		return RestoreResult{}, fmt.Errorf("archive: restore: %s is not a checkpoint on the current line of work (history lists the ones that are)", checkpoint)
 	}
 	rewindSafe := true
 	if branch != "" {
@@ -220,8 +253,10 @@ func (a *Archive) Restore(ctx context.Context, checkpoint CheckpointID, path str
 		}
 	}
 	if rewindSafe {
-		_, err := a.run.out(ctx, "reset", "--hard", checkpoint.String())
-		return RestoreResult{Rewound: true}, err
+		if _, err := a.run.out(ctx, "reset", "--hard", checkpoint.String()); err != nil {
+			return RestoreResult{}, err
+		}
+		return RestoreResult{Rewound: true}, nil
 	}
 	// Forward motion: the checkpoint's content, the branch's history.
 	if _, err := a.run.out(ctx, "restore", "--source="+checkpoint.String(), "--worktree", "--staged", "--", "."); err != nil {
@@ -233,7 +268,10 @@ func (a *Archive) Restore(ctx context.Context, checkpoint CheckpointID, path str
 // SetAside parks all uncommitted work — tracked edits and untracked
 // files — so the tree matches the last checkpoint.  Resume recovers it.
 func (a *Archive) SetAside(ctx context.Context) error {
-	st, err := a.CurrentState(ctx)
+	if err := a.guardConfig(ctx); err != nil {
+		return err
+	}
+	st, err := a.currentState(ctx)
 	if err != nil {
 		return err
 	}
@@ -249,7 +287,10 @@ func (a *Archive) SetAside(ctx context.Context) error {
 // work done since leaves the conflict markers in the tree and keeps the
 // parcel parked, exactly as git does; current_state shows both.
 func (a *Archive) Resume(ctx context.Context) error {
-	st, err := a.CurrentState(ctx)
+	if err := a.guardConfig(ctx); err != nil {
+		return err
+	}
+	st, err := a.currentState(ctx)
 	if err != nil {
 		return err
 	}
@@ -277,7 +318,10 @@ type SyncResult struct {
 // would need a refused force-push).  A conflicted replay is aborted —
 // tree restored, *ConflictError returned — rather than left half-done.
 func (a *Archive) SyncFromUpstream(ctx context.Context) (SyncResult, error) {
-	st, err := a.CurrentState(ctx)
+	if err := a.guardConfig(ctx); err != nil {
+		return SyncResult{}, err
+	}
+	st, err := a.currentState(ctx)
 	if err != nil {
 		return SyncResult{}, err
 	}
@@ -288,18 +332,25 @@ func (a *Archive) SyncFromUpstream(ctx context.Context) (SyncResult, error) {
 		return SyncResult{}, fmt.Errorf("%w: sync_from_upstream replays history; checkpoint or set_aside first", ErrDirtyTree)
 	}
 
-	if st.Branch == a.def {
-		if _, err := a.run.out(ctx, "fetch", "origin"); err != nil {
+	def := a.def.String()
+	if st.Branch == def {
+		// The refspec is explicit even here, where `fetch origin` would
+		// do: a bare `fetch origin` obeys the configured refspecs, and a
+		// configured refspec is something .git/config could have made
+		// force-update local refs.  (guardConfig refuses a '+' refspec
+		// too; naming the refspec means not depending on that.)
+		if _, err := a.run.out(ctx, "fetch", "--end-of-options", originRemote,
+			"refs/heads/"+def+":refs/remotes/"+originRemote+"/"+def); err != nil {
 			return SyncResult{}, err
 		}
-		_, err := a.run.out(ctx, "merge", "--ff-only", "origin/"+a.def)
+		_, err := a.run.out(ctx, "merge", "--ff-only", "--end-of-options", originRemote+"/"+def)
 		return SyncResult{}, err
 	}
 
 	// Updating the unchecked-out default: fetch refuses non-fast-forward
 	// on its own (no leading '+' on the refspec), which is exactly the
 	// append-only stance.
-	if _, err := a.run.out(ctx, "fetch", "origin", a.def+":"+a.def); err != nil {
+	if _, err := a.run.out(ctx, "fetch", "--end-of-options", originRemote, def+":"+def); err != nil {
 		return SyncResult{}, err
 	}
 
@@ -308,30 +359,40 @@ func (a *Archive) SyncFromUpstream(ctx context.Context) (SyncResult, error) {
 		return SyncResult{}, err
 	}
 	if up == "" {
-		if _, err := a.run.out(ctx, append(a.identityArgs(), "rebase", a.def)...); err != nil {
+		if _, err := a.run.out(ctx, append(a.identityArgs(), "rebase", "--end-of-options", def)...); err != nil {
 			return SyncResult{}, a.abortReplay(ctx, "rebase", err)
 		}
 		return SyncResult{Replayed: true}, nil
 	}
 	if _, err := a.run.out(ctx, append(a.identityArgs(),
-		"merge", "--no-edit", "-m", "sync_from_upstream: merge "+a.def, a.def)...); err != nil {
+		"merge", "--no-edit", "-m", "sync_from_upstream: merge "+def, "--end-of-options", def)...); err != nil {
 		return SyncResult{}, a.abortReplay(ctx, "merge", err)
 	}
 	return SyncResult{Replayed: true, Merged: true}, nil
 }
 
 // abortReplay turns a conflicted rebase/merge into a clean tree and a
-// typed ConflictError; any other replay failure passes through.
+// typed ConflictError; any other replay failure passes through.  The
+// abort itself is verified by exit code — a ConflictError promises the
+// tree is back where it was, and a failed abort (which git reports as a
+// non-zero exit, not a spawn error) would make that promise a lie.
 func (a *Archive) abortReplay(ctx context.Context, op string, cause error) error {
-	files, err := a.run.out(ctx, "diff", "--name-only", "--diff-filter=U")
-	if err != nil || files == "" {
-		// Not a content conflict (or unreadable): abort best-effort and
-		// surface the original failure.
+	// Read the conflicted files before the abort wipes them.  -z framing:
+	// a path may contain anything but NUL.
+	files, filesErr := a.run.out(ctx, "diff", "-z", "--no-ext-diff", "--no-textconv", "--name-only", "--diff-filter=U")
+	if filesErr != nil || files == "" {
+		// Not a content conflict (or unreadable): there may be no replay
+		// in progress to abort, so abort best-effort and surface the
+		// original failure.
 		a.run.exit(ctx, op, "--abort")
 		return cause
 	}
-	if _, _, err := a.run.exit(ctx, op, "--abort"); err != nil {
-		return fmt.Errorf("archive: aborting the conflicted %s: %w (original: %v)", op, err, cause)
+	_, code, err := a.run.exit(ctx, op, "--abort")
+	if err != nil {
+		return fmt.Errorf("archive: aborting the conflicted %s: %v; the workspace needs manual recovery: %w", op, err, cause)
 	}
-	return &ConflictError{Files: strings.Split(files, "\n")}
+	if code != 0 {
+		return fmt.Errorf("archive: `%s --abort` exited %d; the workspace needs manual recovery: %w", op, code, cause)
+	}
+	return &ConflictError{Files: strings.Split(strings.TrimRight(files, "\x00"), "\x00")}
 }

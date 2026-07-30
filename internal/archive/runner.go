@@ -30,9 +30,12 @@ import (
 //
 //   - points core.hooksPath at an empty directory we own, so
 //     repository-supplied hooks never execute;
-//   - disables global and system config (the repo-local file remains —
-//     it is archivist-written until grange M3 — and the dangerous keys
-//     it could carry are overridden per invocation below);
+//   - pins the git dir and the work tree, so no config key can relocate
+//     what git reads or writes;
+//   - disables global and system config, overrides the program-naming
+//     keys below, and — because that override list can never be
+//     complete — refuses outright (guardConfig) to run in a workspace
+//     whose repo-local config carries an unrecognized key;
 //   - runs with a scrubbed environment: an allowlist of platform
 //     plumbing, never the parent's GIT_* or credential variables;
 //   - pins author/committer dates from the injected clock, so recorded
@@ -42,14 +45,24 @@ import (
 // config-named external commands never run; ssh/git/ext transports are
 // refused outright (https for the relays, plain paths for test rigs).
 type runner struct {
-	git   string
-	dir   string // the worktree root; every command runs -C here
-	hooks string // the empty hooks directory
-	now   func() time.Time
+	git    string
+	dir    string // the worktree root; every command runs -C here
+	gitDir string // dir/.git, pinned with --git-dir on every command
+	hooks  string // the empty hooks directory
+	now    func() time.Time
 }
 
 // hardening is prepended to every invocation.  -c overrides beat the
 // repo-local config, which is the only config file left readable.
+//
+// This list is defense in depth, NOT the containment boundary: -c can
+// only override keys whose names are known ahead of time, and the
+// exec-capable part of git's config space is open-ended (a filter,
+// diff, or merge driver is named by the attacker: filter.<any>.clean).
+// The boundary is guardConfig in config.go, which refuses to run git at
+// all in a workspace whose repo-local config carries a key outside the
+// allowlist.  Keys appear here anyway so that a config the guard has
+// not yet learned about still lands on a safe default.
 var hardening = []string{
 	"-c", "credential.helper=",
 	"-c", "core.fsmonitor=false",
@@ -61,6 +74,28 @@ var hardening = []string{
 	"-c", "tag.gpgsign=false",
 	"-c", "color.ui=false",
 	"-c", "advice.detachedHead=false",
+	// Config keys that name a program to run.  core.editor and
+	// core.pager are pointed at "false"/"cat" rather than emptied so a
+	// verb that unexpectedly wants one fails closed instead of opening
+	// whatever the repository named.
+	"-c", "core.askpass=",
+	"-c", "core.sshCommand=",
+	"-c", "core.alternateRefsCommand=",
+	"-c", "core.editor=false",
+	"-c", "sequence.editor=false",
+	"-c", "diff.external=",
+	"-c", "uploadpack.packObjectsHook=",
+	// Signature verification is the only thing that runs gpg.program;
+	// turn the triggers off and leave the program unset.
+	"-c", "merge.verifySignatures=false",
+	"-c", "pull.verifySignatures=false",
+	"-c", "log.showSignature=false",
+	"-c", "gpg.program=",
+	// Submodules are not part of the contract, and a submodule update
+	// honors `submodule.<name>.update = !command` from the repo-local
+	// config.  Never recurse, never fetch them.
+	"-c", "submodule.recurse=false",
+	"-c", "fetch.recurseSubmodules=no",
 }
 
 // envKeep is the environment allowlist: platform plumbing git and its
@@ -75,8 +110,16 @@ var envKeep = []string{
 
 // command assembles one hardened invocation.
 func (r *runner) command(ctx context.Context, args []string) *exec.Cmd {
-	full := make([]string, 0, len(hardening)+len(args)+4)
-	full = append(full, "-C", r.dir)
+	full := make([]string, 0, len(hardening)+len(args)+8)
+	// The repository location is pinned per invocation, never discovered:
+	// --work-tree beats a repo-local `core.worktree`, which would
+	// otherwise relocate the tree git reads and writes to any path the
+	// archivist can reach (post-M3 the agent writes .git/config, so
+	// discovery would mean `checkpoint` could be aimed at, say, the
+	// mounted credential).  --git-dir keeps the search from walking up
+	// out of the mount.  New verifies both paths once; these flags make
+	// every later invocation independent of what .git/config now says.
+	full = append(full, "-C", r.dir, "--git-dir="+r.gitDir, "--work-tree="+r.dir)
 	full = append(full, hardening...)
 	full = append(full, "-c", "core.hooksPath="+r.hooks)
 	full = append(full, args...)
@@ -95,72 +138,85 @@ func (r *runner) command(ctx context.Context, args []string) *exec.Cmd {
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_PAGER=cat",
 		"LC_ALL=C",
+		// No system-wide attributes file, so the only attributes are the
+		// repository's own (which the config guard's refusal of filter
+		// and diff drivers renders inert).
+		"GIT_ATTR_NOSYSTEM=1",
+		// refs/replace/* in an agent-written .git could substitute one
+		// object for another, making every read — history, show_change,
+		// file_at — testify about content the checkpoint never held.
+		"GIT_NO_REPLACE_OBJECTS=1",
+		// Note: GIT_LITERAL_PATHSPECS is deliberately NOT set.  It would
+		// also disable the magic git uses internally — `stash push
+		// --include-untracked` stops removing untracked files, silently —
+		// and pathspec magic in an agent-supplied path is already refused
+		// at the door by validPath's leading-':' rule.
+		// The endpoint's token will arrive through an askpass helper this
+		// runner sets deliberately (phase 3); until then no helper at all.
+		"GIT_ASKPASS=",
 		"GIT_AUTHOR_DATE="+stamp,
 		"GIT_COMMITTER_DATE="+stamp,
 	)
 	return cmd
 }
 
-// exit runs git and returns trimmed stdout and the exit code; err is
-// non-nil only when the process could not run at all (bad binary,
-// context cancellation).  Callers that read specific exit codes as
-// answers (merge-base --is-ancestor, symbolic-ref --quiet) use this;
-// everyone else wants out.
-func (r *runner) exit(ctx context.Context, args ...string) (string, int, error) {
+// run is the shared execution core: stdout, stderr, and the exit code.
+// err is non-nil only when the process could not run at all (bad
+// binary, context cancellation) — a non-zero exit is a code, not an
+// error, and each wrapper decides what it means.
+func (r *runner) run(ctx context.Context, args []string) (stdout []byte, stderr string, code int, err error) {
 	cmd := r.command(ctx, args)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
+	var so, se bytes.Buffer
+	cmd.Stdout = &so
+	cmd.Stderr = &se
+	runErr := cmd.Run()
 	if ctx.Err() != nil {
-		return "", -1, fmt.Errorf("archive: git %s: %w", args[0], ctx.Err())
+		return nil, "", -1, fmt.Errorf("archive: git %s: %w", args[0], ctx.Err())
 	}
-	if err != nil {
+	if runErr != nil {
 		var xe *exec.ExitError
-		if !errors.As(err, &xe) {
-			return "", -1, fmt.Errorf("archive: running %s: %w", r.git, err)
+		if !errors.As(runErr, &xe) {
+			return nil, "", -1, fmt.Errorf("archive: running %s: %w", r.git, runErr)
 		}
-		return strings.TrimRight(stdout.String(), "\n"), xe.ExitCode(), nil
+		return so.Bytes(), se.String(), xe.ExitCode(), nil
 	}
-	return strings.TrimRight(stdout.String(), "\n"), 0, nil
+	return so.Bytes(), se.String(), 0, nil
+}
+
+// exit runs git and returns trimmed stdout and the exit code.  Callers
+// that read specific exit codes as answers (merge-base --is-ancestor,
+// symbolic-ref --quiet) use this; everyone else wants out.
+func (r *runner) exit(ctx context.Context, args ...string) (string, int, error) {
+	stdout, _, code, err := r.run(ctx, args)
+	if err != nil {
+		return "", -1, err
+	}
+	return strings.TrimRight(string(stdout), "\n"), code, nil
 }
 
 // raw runs git and returns stdout byte-for-byte — for file content,
-// where a trimmed trailing newline would be corruption.
+// where a trimmed trailing newline would be corruption.  A non-zero
+// exit folds into an error carrying git's stderr — the actionable text.
 func (r *runner) raw(ctx context.Context, args ...string) ([]byte, error) {
-	cmd := r.command(ctx, args)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() != nil {
-			return nil, fmt.Errorf("archive: git %s: %w", args[0], ctx.Err())
-		}
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = strings.TrimSpace(stdout.String())
-		}
-		return nil, fmt.Errorf("archive: git %s: %s: %w", args[0], msg, err)
+	stdout, stderr, code, err := r.run(ctx, args)
+	if err != nil {
+		return nil, err
 	}
-	return stdout.Bytes(), nil
+	if code != 0 {
+		msg := strings.TrimSpace(stderr)
+		if msg == "" {
+			msg = strings.TrimSpace(string(stdout))
+		}
+		return nil, fmt.Errorf("archive: git %s: %s: exit status %d", args[0], msg, code)
+	}
+	return stdout, nil
 }
 
-// out runs git and returns trimmed stdout, folding a non-zero exit into
-// an error that carries git's stderr — the actionable text.
+// out runs git and returns trimmed stdout, with raw's error contract.
 func (r *runner) out(ctx context.Context, args ...string) (string, error) {
-	cmd := r.command(ctx, args)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() != nil {
-			return "", fmt.Errorf("archive: git %s: %w", args[0], ctx.Err())
-		}
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = strings.TrimSpace(stdout.String())
-		}
-		return "", fmt.Errorf("archive: git %s: %s: %w", args[0], msg, err)
+	stdout, err := r.raw(ctx, args...)
+	if err != nil {
+		return "", err
 	}
-	return strings.TrimRight(stdout.String(), "\n"), nil
+	return strings.TrimRight(string(stdout), "\n"), nil
 }

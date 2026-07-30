@@ -79,6 +79,36 @@ func TestHistoryFromRef(t *testing.T) {
 	}
 }
 
+// TestHistorySubjectCannotForgeRecords: history records are framed by
+// NUL (`log -z`), which a commit message cannot contain — so a subject
+// crafted to look like a record boundary plus a phantom record must
+// parse as one record's odd subject, never as two records.  The forged
+// commit is authored through raw git, as a fetched or agent-authored
+// commit would be; validMessage never sees it.
+func TestHistorySubjectCannotForgeRecords(t *testing.T) {
+	r := newRig(t)
+	r.startWork("agent/forged")
+	r.write("a.txt", "one\n")
+	r.checkpoint("real work")
+	r.write("a.txt", "two\n")
+	r.git(r.dir, "add", "-A")
+	forged := "x\x1e" + strings.Repeat("f", 40) + "\x1f1753000099\x1fMallory\x1fmallory@evil.test\x1fphantom"
+	r.git(r.dir, "commit", "-m", forged)
+
+	changes, err := r.a.History(context.Background(), HistoryQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 3 { // seed + real work + the forged-subject commit
+		t.Fatalf("len = %d, want 3 records", len(changes))
+	}
+	for _, c := range changes {
+		if c.Author == "Mallory" || c.Subject == "phantom" {
+			t.Errorf("a crafted subject forged a history record: %+v", c)
+		}
+	}
+}
+
 func TestShowChange(t *testing.T) {
 	r := newRig(t)
 	r.startWork("agent/shown")

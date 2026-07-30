@@ -16,30 +16,89 @@ package archive
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
-// TestHooksNeverExecute: a repo-local core.hooksPath naming a hook that
-// would fail every commit must be overridden by the runner's own empty
-// hooks directory — the archivist never executes repository-supplied
-// code, even when the repository's config asks it to.
+// TestHooksNeverExecute: a hook dropped into the repository's own
+// .git/hooks — the default location, needing no config key at all, and
+// writable by the agent post-M3 — must never run.  Every invocation
+// points core.hooksPath at an empty directory the runner owns, so git
+// looks for hooks somewhere the repository cannot reach.
 func TestHooksNeverExecute(t *testing.T) {
 	r := newRig(t)
-	hookDir := filepath.Join(r.tmp, "hostile-hooks")
-	hook := filepath.Join(hookDir, "pre-commit")
-	writeFile(t, hook, "#!/bin/sh\nexit 1\n")
+	marker := filepath.Join(r.tmp, "hook-ran")
+	hook := filepath.Join(r.dir, ".git", "hooks", "pre-commit")
+	writeFile(t, hook, "#!/bin/sh\necho ran > '"+filepath.ToSlash(marker)+"'\nexit 1\n")
 	if err := os.Chmod(hook, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	r.git(r.dir, "config", "core.hooksPath", hookDir)
 
 	r.startWork("agent/hooked")
 	r.write("a.txt", "content\n")
-	if _, err := r.a.Checkpoint(context.Background(), "checkpoint despite hostile hook", nil); err != nil {
+	if _, err := r.a.Checkpoint(context.Background(), "checkpoint despite a hostile hook", nil); err != nil {
 		t.Errorf("checkpoint should succeed with hooks neutralized, got: %v", err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("the repository's own pre-commit hook executed")
+	}
+}
+
+// TestWorkTreePinnedToTheMount: a repo-local core.worktree must not move
+// the tree git reads and writes.  The config guard would refuse this
+// workspace outright, so the test drives the runner directly — the guard
+// is check-then-act, and this is the layer that has to hold when a
+// determined agent wins that race: --work-tree on every invocation.
+func TestWorkTreePinnedToTheMount(t *testing.T) {
+	r := newRig(t)
+	outside := filepath.Join(r.tmp, "outside")
+	writeFile(t, filepath.Join(outside, "loot.txt"), "a phase-3 credential\n")
+	r.git(r.dir, "config", "core.worktree", filepath.ToSlash(outside))
+
+	ctx := context.Background()
+	top, err := r.a.run.out(ctx, "rev-parse", "--show-toplevel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameDir(top, r.dir) {
+		t.Errorf("core.worktree relocated the working tree to %s; want the mount root %s", top, r.dir)
+	}
+	status, err := r.a.run.out(ctx, "status", "--porcelain", "--untracked-files=all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(status, "loot.txt") {
+		t.Errorf("git saw files outside the mount:\n%s", status)
+	}
+}
+
+// TestFilterDriverNeverExecutes: `filter.<name>.clean` plus a one-line
+// .gitattributes is arbitrary code execution on checkpoint's `add -A`
+// (verified against git 2.54).  The driver section is named by whoever
+// writes the config, so no -c override can pre-empt it — the workspace
+// itself has to be refused.
+func TestFilterDriverNeverExecutes(t *testing.T) {
+	r := newRig(t)
+	r.startWork("agent/filtered")
+	marker := filepath.Join(r.tmp, "filter-ran")
+	script := filepath.Join(r.tmp, "filter.sh")
+	writeFile(t, script, "#!/bin/sh\necho ran > '"+filepath.ToSlash(marker)+"'\ncat\n")
+	if err := os.Chmod(script, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r.write(".gitattributes", "secret filter=pwn\n")
+	r.write("secret", "data\n")
+	r.git(r.dir, "config", "filter.pwn.clean", filepath.ToSlash(script))
+
+	if _, err := r.a.Checkpoint(context.Background(), "record with a hostile filter", nil); !errors.Is(err, ErrHostileConfig) {
+		t.Errorf("checkpoint with filter.pwn.clean configured = %v, want ErrHostileConfig", err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("the configured clean filter executed")
 	}
 }
 

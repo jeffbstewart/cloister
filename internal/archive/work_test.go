@@ -81,6 +81,18 @@ func TestCheckpointSelectivePaths(t *testing.T) {
 	}
 }
 
+func TestCheckpointRefusedOnDetachedHead(t *testing.T) {
+	r := newRig(t)
+	r.startWork("agent/detached")
+	r.write("a.txt", "one\n")
+	r.checkpoint("v1")
+	r.git(r.dir, "switch", "--detach", "HEAD")
+	r.write("a.txt", "two\n")
+	if _, err := r.a.Checkpoint(context.Background(), "into the void", nil); err == nil {
+		t.Error("checkpoint on a detached HEAD should refuse; it would commit onto no line of work")
+	}
+}
+
 func TestCheckpointNothingToRecord(t *testing.T) {
 	r := newRig(t)
 	r.startWork("agent/empty")
@@ -218,6 +230,37 @@ func TestRestoreToPublishedTipStillRewinds(t *testing.T) {
 	}
 	if head := r.git(r.dir, "rev-parse", "HEAD"); head != published.String() {
 		t.Errorf("HEAD = %s, want the published tip %s", head, published)
+	}
+}
+
+func TestRestoreRefusesForeignCheckpoint(t *testing.T) {
+	r := newRig(t)
+	r.startWork("agent/line-one")
+	r.write("a.txt", "one\n")
+	foreign := r.checkpoint("on line one")
+	r.startWork("agent/line-two")
+
+	before := r.git(r.dir, "rev-parse", "HEAD")
+	res, err := r.a.Restore(context.Background(), foreign, "")
+	if err == nil {
+		t.Error("restore to a checkpoint from another line of work should refuse; it would relocate the branch onto foreign history")
+	}
+	if res.Rewound {
+		t.Errorf("refused restore reported %+v, want the zero result", res)
+	}
+	if after := r.git(r.dir, "rev-parse", "HEAD"); after != before {
+		t.Errorf("HEAD moved across a refused restore: %s -> %s", before, after)
+	}
+}
+
+func TestRestoreToCheckpointRefusedOnDefault(t *testing.T) {
+	r := newRig(t)
+	head, err := ParseCheckpointID(r.git(r.dir, "rev-parse", "HEAD"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.a.Restore(context.Background(), head, ""); !errors.Is(err, ErrDefaultBranch) {
+		t.Errorf("whole-tree restore to a checkpoint on the default branch = %v, want ErrDefaultBranch", err)
 	}
 }
 

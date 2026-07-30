@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // The identifier types below follow the repo's domain-ID rule: a struct
@@ -127,6 +128,12 @@ var driveRE = regexp.MustCompile(`^[A-Za-z]:`)
 // rev:path syntax: forward slashes only, relative, no '..', no leading
 // '-', no control bytes.  Less a correctness filter than an injection
 // guard — git decides whether the path exists.
+//
+// Paths are NOT restricted to ASCII: a repository may legitimately hold
+// UTF-8 filenames, and refusing them would be a correctness bug dressed
+// as security.  What is refused is every byte that could confuse a
+// display, a log line, or a NUL-delimited parse: the C0 and C1 control
+// ranges and DEL, plus text that is not valid UTF-8 at all.
 func validPath(s string) error {
 	switch {
 	case s == "" || len(s) > 4096:
@@ -139,11 +146,94 @@ func validPath(s string) error {
 		return fmt.Errorf("invalid path %q: must be workspace-relative", s)
 	case s == ".." || strings.HasPrefix(s, "../") || strings.HasSuffix(s, "/..") || strings.Contains(s, "/../"):
 		return fmt.Errorf("invalid path %q: '..' is refused", s)
-	case strings.ContainsAny(s, "\x00\n\r\t"):
+	case !utf8.ValidString(s):
+		return fmt.Errorf("invalid path %q: not valid UTF-8", s)
+	case hasControl(s):
 		return fmt.Errorf("invalid path %q: control characters are refused", s)
 	case strings.HasPrefix(s, ":"):
 		// A leading ':' is git pathspec-magic syntax (":(glob)", ":!").
 		return fmt.Errorf("invalid path %q: pathspec magic is refused", s)
+	}
+	return nil
+}
+
+// hasControl reports whether s carries a C0 control byte, DEL, or a C1
+// control rune.
+func hasControl(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return true
+		}
+	}
+	return false
+}
+
+// messageMax bounds a checkpoint message.  A checkpoint subject and a
+// paragraph of reasoning fit; a megabyte of model output does not, and
+// the message travels into a commit object the archivist testifies about.
+const messageMax = 2000
+
+// attributionRE spots the git trailers that assign credit or sign-off.
+// The agent may describe its work; it may not attribute it.  Identity is
+// pinned from the endpoint table, and a message carrying
+// "Signed-off-by: <a human>" or "Co-authored-by: <a human>" would put
+// words in that human's mouth in the published history — the same
+// spoofing the pinned author/committer exists to prevent, one field over.
+var attributionRE = regexp.MustCompile(`(?im)^[ \t]*(signed-off-by|co-authored-by|acked-by|reviewed-by|tested-by|reported-by)[ \t]*:`)
+
+// validMessage vets an agent-supplied checkpoint message: printable
+// ASCII plus newline, bounded, non-blank, no attribution trailers.
+//
+// ASCII rather than UTF-8: a message is free text the agent composes, it
+// lands in a commit object that operators, the corrector, and the forge
+// all re-render, and there is no legitimate need for direction-override
+// marks, zero-width joiners, or homoglyphs in a machine's checkpoint
+// message.  Refusing the whole non-ASCII range is one rule with no
+// interesting edges, where "allow UTF-8 but not confusables" is a
+// permanent maintenance burden.
+func validMessage(s string) error {
+	if strings.TrimSpace(s) == "" {
+		return fmt.Errorf("a message is required")
+	}
+	if len(s) > messageMax {
+		return fmt.Errorf("message is %d bytes, over the %d-byte limit", len(s), messageMax)
+	}
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c != '\n' && (c < 0x20 || c > 0x7e) {
+			return fmt.Errorf("message byte %d (%#x) is not printable ASCII; checkpoint messages are ASCII text plus newlines", i, c)
+		}
+	}
+	if m := attributionRE.FindString(s); m != "" {
+		return fmt.Errorf("message carries the attribution trailer %q; the archivist pins who a checkpoint is credited to and the agent may not add credit for anyone", strings.TrimSpace(m))
+	}
+	return nil
+}
+
+// validIdentity vets the bot identity from the endpoint table.  It is
+// operator config rather than agent input, but it is interpolated into
+// `-c user.name=` and lands in a commit's ident line, where a newline or
+// an angle bracket would corrupt the object git writes — so it is
+// checked with the same rule as a message: printable ASCII, no control
+// bytes, no ident metacharacters.
+func validIdentity(id Identity) error {
+	if id.Name == "" || id.Email == "" {
+		return fmt.Errorf("archive: identity requires both name and email")
+	}
+	for _, f := range []struct{ what, val string }{{"name", id.Name}, {"email", id.Email}} {
+		if len(f.val) > 200 {
+			return fmt.Errorf("archive: identity %s is over 200 bytes", f.what)
+		}
+		for i := 0; i < len(f.val); i++ {
+			if c := f.val[i]; c < 0x20 || c > 0x7e {
+				return fmt.Errorf("archive: identity %s byte %d (%#x) is not printable ASCII", f.what, i, c)
+			}
+		}
+		if strings.ContainsAny(f.val, "<>\n") {
+			return fmt.Errorf("archive: identity %s may not contain '<' or '>'", f.what)
+		}
+	}
+	if !strings.Contains(id.Email, "@") {
+		return fmt.Errorf("archive: identity email %q is not an address", id.Email)
 	}
 	return nil
 }

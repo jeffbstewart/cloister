@@ -54,9 +54,13 @@ type Identity struct {
 // disk; Close releases it.
 type Archive struct {
 	run   *runner
-	def   string // the default branch name, e.g. "main"
+	def   BranchName // the default branch, e.g. "main"
 	ident Identity
 }
+
+// originRemote is the only remote the archivist speaks to; a grange clone
+// has exactly one.
+const originRemote = "origin"
 
 // config collects the New options.
 type config struct {
@@ -94,8 +98,8 @@ func WithDefaultBranch(name string) Option {
 // up-tree of its mount — and detects the default branch from the
 // clone's origin/HEAD unless WithDefaultBranch overrides it.
 func New(dir string, ident Identity, opts ...Option) (*Archive, error) {
-	if ident.Name == "" || ident.Email == "" {
-		return nil, fmt.Errorf("archive: identity requires both name and email")
+	if err := validIdentity(ident); err != nil {
+		return nil, err
 	}
 	cfg := config{gitPath: "git", now: time.Now}
 	for _, o := range opts {
@@ -104,6 +108,16 @@ func New(dir string, ident Identity, opts ...Option) (*Archive, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, fmt.Errorf("archive: resolving %q: %w", dir, err)
+	}
+	// .git must be a real directory under the mount root.  A gitfile
+	// ("gitdir: /elsewhere") is still followed by git even when handed to
+	// --git-dir, so refusing it here is what makes the pinned --git-dir
+	// mean what it says.
+	gitDir := filepath.Join(abs, ".git")
+	if info, err := os.Stat(gitDir); err != nil {
+		return nil, fmt.Errorf("archive: %s has no .git directory: %w", abs, err)
+	} else if !info.IsDir() {
+		return nil, fmt.Errorf("archive: %s/.git is not a directory; the archivist refuses a workspace whose repository lives elsewhere", abs)
 	}
 	// The hooks path handed to every invocation: an empty directory we
 	// own, so repository-supplied hooks can never execute.  A missing
@@ -114,28 +128,42 @@ func New(dir string, ident Identity, opts ...Option) (*Archive, error) {
 		return nil, fmt.Errorf("archive: creating the empty hooks dir: %w", err)
 	}
 	a := &Archive{
-		run:   &runner{git: cfg.gitPath, dir: abs, hooks: hooks, now: cfg.now},
-		def:   cfg.def,
+		run:   &runner{git: cfg.gitPath, dir: abs, gitDir: gitDir, hooks: hooks, now: cfg.now},
 		ident: ident,
 	}
 	ctx := context.Background()
+	fail := func(format string, args ...any) (*Archive, error) {
+		os.RemoveAll(hooks)
+		return nil, fmt.Errorf(format, args...)
+	}
+	if err := a.guardConfig(ctx); err != nil {
+		return fail("archive: opening %s: %w", abs, err)
+	}
 	top, err := a.run.out(ctx, "rev-parse", "--show-toplevel")
 	if err != nil {
-		os.RemoveAll(hooks)
-		return nil, fmt.Errorf("archive: %s is not a git working tree: %w", abs, err)
+		return fail("archive: %s is not a git working tree: %w", abs, err)
 	}
 	if !sameDir(abs, top) {
-		os.RemoveAll(hooks)
-		return nil, fmt.Errorf("archive: %s is inside the working tree rooted at %s; the archivist operates only on its own mount root", abs, top)
+		return fail("archive: %s is inside the working tree rooted at %s; the archivist operates only on its own mount root", abs, top)
 	}
-	if a.def == "" {
-		head, err := a.run.out(ctx, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+	// The default branch is interpolated into later argv — `rebase <def>`,
+	// `switch -c <name> <def>` — so it is parsed, not trusted.  It comes
+	// either from the operator (WithDefaultBranch) or from origin/HEAD,
+	// which is a file inside the agent-writable .git: a ref may legally be
+	// named "--exec=/tmp/pwn", and `rebase --exec=...` runs it.
+	raw := cfg.def
+	if raw == "" {
+		head, err := a.run.out(ctx, "symbolic-ref", "--short", "refs/remotes/"+originRemote+"/HEAD")
 		if err != nil {
-			os.RemoveAll(hooks)
-			return nil, fmt.Errorf("archive: cannot detect the default branch (no origin/HEAD in %s); a grange clone always has one — pass WithDefaultBranch only for hand-built checkouts: %w", abs, err)
+			return fail("archive: cannot detect the default branch (no origin/HEAD in %s); a grange clone always has one — pass WithDefaultBranch only for hand-built checkouts: %w", abs, err)
 		}
-		a.def = strings.TrimPrefix(head, "origin/")
+		raw = strings.TrimPrefix(head, originRemote+"/")
 	}
+	def, err := ParseBranchName(raw)
+	if err != nil {
+		return fail("archive: the default branch of %s is not a name the archivist will hand to git: %w", abs, err)
+	}
+	a.def = def
 	return a, nil
 }
 
@@ -147,7 +175,7 @@ func (a *Archive) Close() error {
 
 // DefaultBranch reports the branch the checkout regards as default —
 // the base for start_work and the merge source for sync_from_upstream.
-func (a *Archive) DefaultBranch() string { return a.def }
+func (a *Archive) DefaultBranch() string { return a.def.String() }
 
 // sameDir reports whether two paths name the same directory once
 // platform quirks (case, separators, symlinks) are normalized away.
@@ -165,20 +193,36 @@ func sameDir(x, y string) bool {
 
 // currentBranch names the checked-out branch, or "" when HEAD is
 // detached (a state no verb creates; surfaced so callers can say so).
+// The answer is parsed before it is believed: .git/HEAD is agent-written
+// content, a ref named "-x" is check-ref-format-valid, and the name
+// returned here is interpolated into later argv.  Exit codes are read
+// strictly — symbolic-ref says 1 for detached, anything else non-zero
+// (128: corrupt or unreadable HEAD) is an error, not "detached".
 func (a *Archive) currentBranch(ctx context.Context) (string, error) {
 	out, code, err := a.run.exit(ctx, "symbolic-ref", "--quiet", "--short", "HEAD")
-	if err != nil {
+	switch {
+	case err != nil:
 		return "", err
-	}
-	if code != 0 {
+	case code == 1:
 		return "", nil // detached HEAD
+	case code != 0:
+		return "", fmt.Errorf("archive: reading HEAD: symbolic-ref exited %d", code)
 	}
-	return out, nil
+	name, err := ParseBranchName(out)
+	if err != nil {
+		return "", fmt.Errorf("archive: HEAD names a branch the archivist will not hand to git: %w", err)
+	}
+	return name.String(), nil
 }
 
 // upstreamOf resolves branch's published counterpart ("" when the branch
 // has never been published).  Publication state is what flips restore
 // and sync from history rewrite to forward motion.
+//
+// Any non-zero exit reads as "unpublished" deliberately: rev-parse
+// @{upstream} exits 128 both for a branch with no upstream and for a
+// real error (verified on git 2.43), so there is no code to distinguish
+// on, and a corrupt repository fails loudly at the next real operation.
 func (a *Archive) upstreamOf(ctx context.Context, branch string) (string, error) {
 	out, code, err := a.run.exit(ctx, "rev-parse", "--abbrev-ref", "--symbolic-full-name", branch+"@{upstream}")
 	if err != nil {
@@ -191,11 +235,18 @@ func (a *Archive) upstreamOf(ctx context.Context, branch string) (string, error)
 }
 
 // isAncestor reports whether ancestor is an ancestor of (or equal to)
-// descendant — the fast-forward test behind the append-only rule.
+// descendant — the fast-forward test behind the append-only rule.  Only
+// exit 1 means "no": treating, say, 128 (unknown revision) as "no"
+// would let a corrupt workspace answer a question it cannot answer.
 func (a *Archive) isAncestor(ctx context.Context, ancestor, descendant string) (bool, error) {
-	_, code, err := a.run.exit(ctx, "merge-base", "--is-ancestor", ancestor, descendant)
-	if err != nil {
+	_, code, err := a.run.exit(ctx, "merge-base", "--is-ancestor", "--end-of-options", ancestor, descendant)
+	switch {
+	case err != nil:
 		return false, err
+	case code == 0:
+		return true, nil
+	case code == 1:
+		return false, nil
 	}
-	return code == 0, nil
+	return false, fmt.Errorf("archive: merge-base --is-ancestor %s %s exited %d", ancestor, descendant, code)
 }

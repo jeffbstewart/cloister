@@ -220,6 +220,18 @@ func TestNewRefusesSubdirectory(t *testing.T) {
 	}
 }
 
+// TestCurrentBranchRefusesHostileHead: .git/HEAD is agent-writable, a
+// ref named "-x" is check-ref-format-valid, and the current branch name
+// is interpolated into later argv — so a dashy name read from HEAD must
+// come back as an error, not as a value.
+func TestCurrentBranchRefusesHostileHead(t *testing.T) {
+	r := newRig(t)
+	writeFile(t, filepath.Join(r.dir, ".git", "HEAD"), "ref: refs/heads/-x\n")
+	if _, err := r.a.CurrentState(context.Background()); err == nil {
+		t.Error("a HEAD naming refs/heads/-x should read as an error, not a branch")
+	}
+}
+
 func TestNewRefusesNonRepo(t *testing.T) {
 	requireGit(t)
 	if _, err := New(t.TempDir(), botIdent); err == nil {
