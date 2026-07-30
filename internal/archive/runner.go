@@ -70,6 +70,13 @@ var hardening = []string{
 	"-c", "protocol.ssh.allow=never",
 	"-c", "protocol.git.allow=never",
 	"-c", "protocol.ext.allow=never",
+	// A redirect is a way off the relay: the wire host resolves to the
+	// relay by alias, and following a Location header would carry the
+	// request (and its auth header) to wherever the response says.
+	// NOTE: http.extraheader is deliberately NOT pinned here — the
+	// remote overlay injects it via GIT_CONFIG_* env, and a -c would
+	// override the env pair.
+	"-c", "http.followRedirects=false",
 	"-c", "commit.gpgsign=false",
 	"-c", "tag.gpgsign=false",
 	"-c", "color.ui=false",
@@ -108,8 +115,17 @@ var envKeep = []string{
 	"SystemRoot", "SystemDrive", "ComSpec", "PATHEXT", "TEMP", "TMP",
 }
 
+// overlay is what one remote-touching invocation carries beyond the
+// hardened baseline: the wire mapping as extra -c pairs, and the
+// credential as GIT_CONFIG_* environment entries — env, never argv,
+// because argv is world-readable in /proc.
+type overlay struct {
+	cfg []string // extra -c pairs, appended after the hardening list
+	env []string // extra environment entries
+}
+
 // command assembles one hardened invocation.
-func (r *runner) command(ctx context.Context, args []string) *exec.Cmd {
+func (r *runner) command(ctx context.Context, o overlay, args []string) *exec.Cmd {
 	full := make([]string, 0, len(hardening)+len(args)+8)
 	// The repository location is pinned per invocation, never discovered:
 	// --work-tree beats a repo-local `core.worktree`, which would
@@ -122,6 +138,7 @@ func (r *runner) command(ctx context.Context, args []string) *exec.Cmd {
 	full = append(full, "-C", r.dir, "--git-dir="+r.gitDir, "--work-tree="+r.dir)
 	full = append(full, hardening...)
 	full = append(full, "-c", "core.hooksPath="+r.hooks)
+	full = append(full, o.cfg...)
 	full = append(full, args...)
 	cmd := exec.CommandContext(ctx, r.git, full...)
 	env := make([]string, 0, len(envKeep)+8)
@@ -157,6 +174,7 @@ func (r *runner) command(ctx context.Context, args []string) *exec.Cmd {
 		"GIT_AUTHOR_DATE="+stamp,
 		"GIT_COMMITTER_DATE="+stamp,
 	)
+	cmd.Env = append(cmd.Env, o.env...)
 	return cmd
 }
 
@@ -165,7 +183,12 @@ func (r *runner) command(ctx context.Context, args []string) *exec.Cmd {
 // binary, context cancellation) — a non-zero exit is a code, not an
 // error, and each wrapper decides what it means.
 func (r *runner) run(ctx context.Context, args []string) (stdout []byte, stderr string, code int, err error) {
-	cmd := r.command(ctx, args)
+	return r.runWith(ctx, overlay{}, args)
+}
+
+// runWith is run with a remote overlay applied.
+func (r *runner) runWith(ctx context.Context, o overlay, args []string) (stdout []byte, stderr string, code int, err error) {
+	cmd := r.command(ctx, o, args)
 	var so, se bytes.Buffer
 	cmd.Stdout = &so
 	cmd.Stderr = &se
@@ -198,7 +221,12 @@ func (r *runner) exit(ctx context.Context, args ...string) (string, int, error) 
 // where a trimmed trailing newline would be corruption.  A non-zero
 // exit folds into an error carrying git's stderr — the actionable text.
 func (r *runner) raw(ctx context.Context, args ...string) ([]byte, error) {
-	stdout, stderr, code, err := r.run(ctx, args)
+	return r.rawWith(ctx, overlay{}, args...)
+}
+
+// rawWith is raw with a remote overlay applied.
+func (r *runner) rawWith(ctx context.Context, o overlay, args ...string) ([]byte, error) {
+	stdout, stderr, code, err := r.runWith(ctx, o, args)
 	if err != nil {
 		return nil, err
 	}
@@ -214,7 +242,13 @@ func (r *runner) raw(ctx context.Context, args ...string) ([]byte, error) {
 
 // out runs git and returns trimmed stdout, with raw's error contract.
 func (r *runner) out(ctx context.Context, args ...string) (string, error) {
-	stdout, err := r.raw(ctx, args...)
+	return r.outWith(ctx, overlay{}, args...)
+}
+
+// outWith is out with a remote overlay applied — the network-touching
+// verbs' path.
+func (r *runner) outWith(ctx context.Context, o overlay, args ...string) (string, error) {
+	stdout, err := r.rawWith(ctx, o, args...)
 	if err != nil {
 		return "", err
 	}

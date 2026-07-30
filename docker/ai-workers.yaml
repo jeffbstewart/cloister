@@ -55,6 +55,10 @@
 #                  custom billing limit LOW as a spend backstop.
 #   SCHOLAR_POLICY host path of the read-only egress policy yaml (engine + deny list)
 #   BRAVE_API_KEY  only if the policy sets search.engine: brave (else leave unset)
+#   ARCHIVIST_ENDPOINTS host path of the archivist's endpoint table yaml
+#                  (etc/endpoints.example.yaml is the template)
+#   GITHUB_TOKEN_FILE host path of the bot-account token file the table's
+#                  credentialFile points at (mounted read-only)
 #
 # The agent registers the builder, scribe, scholar, AND librarian MCP servers
 # in /home/node/.qwen/settings.json (persisted in the qwen_home volume), plus a
@@ -66,14 +70,17 @@
 #       "builder":   { "httpUrl": "http://builder:9200/mcp",   "timeout": 2400000 },
 #       "scribe":    { "httpUrl": "http://scribe:9300/mcp",    "timeout": 2400000 },
 #       "scholar":   { "httpUrl": "http://scholar:9500/mcp",   "timeout": 2400000 },
-#       "librarian": { "httpUrl": "http://librarian:9400/mcp", "timeout": 2400000 } } }
+#       "librarian": { "httpUrl": "http://librarian:9400/mcp", "timeout": 2400000 },
+#       "archivist": { "httpUrl": "http://archivist:9600/mcp", "timeout": 2400000 } } }
 #
 # Least-privilege network map (every edge is a network hop or token-gated API):
-#   agent   ── infernet ────> agency        agent   ── buildnet ─────> builder + scribe + librarian (MCP)
+#   agent   ── infernet ────> agency        agent   ── buildnet ─────> builder + scribe + librarian + archivist (MCP)
 #   librarian ─ statenet ───> state (denial audit); ro workspace — the agent's ONLY source view
 #   agent   ── researchnet ─> scholar (MCP)  scholar ── infernet ────> agency (model)
 #   builder ── statenet ───> state (sink)    scribe  ── statenet ─────> state (audit + diffs)
 #   scholar ── scholarstate > state (audit)  scholar ── kagiegress ──> kagi-relay ── egress ─> kagi.com
+#   archivist ─ statenet ───> state (remote-op audit); grange volume, NEVER the host workspace
+#   archivist ─ gitegress ──> github(-api)-relay ── egress ─> github.com / api.github.com (aliases)
 #   state   ── statepub ───> status relay    status  ── frontend ────> host publish
 # So: all inference rides through the agency (raw `infer` sits behind it on the
 # infra stack's private modelnet); infer never shares a net with builder/scribe;
@@ -376,15 +383,50 @@ services:
                                          # NOT statenet: keeps the scholar off builder/scribe
       - kagiegress                       # to the kagi-relay ONLY (internal; no internet)
 
+  archivist:
+    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${WORKERS_IMAGE}
+    container_name: ${PROJECT}-archivist
+    # Fixed image uid, not *wsuser: the workspace here is the grange
+    # named volume — image-initialized and owned by the image's worker
+    # uid — never the operator's host tree.
+    user: "1000:1000"
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/archivist"]
+    environment:
+      - *tz
+      - STATE_URL=http://state:9201
+      - STATE_TOKEN=${STATE_TOKEN}
+    volumes:
+      # A dedicated grange volume, NEVER ${WORKSPACE} — the operator's
+      # host tree does not enter the archivist (docs/archivist.md).
+      - grange:/workspace
+      - ${ARCHIVIST_ENDPOINTS:?set ARCHIVIST_ENDPOINTS to the host path of the endpoint table yaml}:/etc/cloister/endpoints.yaml:ro
+      - ${GITHUB_TOKEN_FILE:?set GITHUB_TOKEN_FILE to the host path of the bot token file}:/run/secrets/github-token:ro
+    working_dir: /workspace
+    read_only: true
+    tmpfs:
+      - /tmp                             # the runner's empty hooks dir lives here
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/archivist", "-healthcheck"]
+      interval: 30s
+    dns: 127.0.0.1                       # dead upstream — the git relays are its only routes out
+    networks:
+      - buildnet                         # reachable by the agent (inbound MCP)
+      - statenet                         # remote-op audit to state
+      - gitegress                        # to the git relays ONLY (internal)
+
   kagi-relay:
     image: alpine/socat:1.8.0.3          # same image as the status relay
     container_name: ${PROJECT}-kagi-relay
     user: "65534:65534"                  # nobody
     restart: unless-stopped
-    # The ONLY container holding the `egress` network. Hard-wired to Kagi: the
-    # scholar dials kagi-relay:8443, socat forwards raw TCP to kagi.com:443. TLS
-    # stays end-to-end (the relay pipes ciphertext); `fork` re-resolves per
-    # connection so Kagi CDN rotation is handled.
+    # Hard-wired to Kagi: the scholar dials kagi-relay:8443, socat forwards raw
+    # TCP to kagi.com:443. TLS stays end-to-end (the relay pipes ciphertext);
+    # `fork` re-resolves per connection so Kagi CDN rotation is handled.
     command: ["TCP-LISTEN:8443,fork,reuseaddr", "TCP:kagi.com:443"]
     environment:
       - *tz
@@ -395,7 +437,50 @@ services:
     mem_limit: 64m
     networks:
       - kagiegress                       # reachable by the scholar
-      - egress                           # the ONLY container touching the internet
+      - egress                           # with the git relays, the only containers touching the internet
+
+  github-relay:
+    image: alpine/socat:1.8.0.3
+    container_name: ${PROJECT}-github-relay
+    user: "65534:65534"                  # nobody
+    restart: unless-stopped
+    # The alias IS the hostname (the kagi-relay pattern, one hop up the
+    # stack): the archivist dials https://github.com/, Docker DNS
+    # resolves the alias to this relay, and socat pipes ciphertext to
+    # the real host — TLS end-to-end, certificate verification passing
+    # because the dialed name is the certificate's name.  Unprivileged
+    # :443 binds under Docker's default ip_unprivileged_port_start=0.
+    command: ["TCP-LISTEN:443,fork,reuseaddr", "TCP:github.com:443"]
+    environment:
+      - *tz
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 64
+    mem_limit: 64m
+    networks:
+      gitegress:
+        aliases: [github.com]            # the archivist's `github.com`
+      egress: {}
+
+  github-api-relay:
+    image: alpine/socat:1.8.0.3
+    container_name: ${PROJECT}-github-api-relay
+    user: "65534:65534"                  # nobody
+    restart: unless-stopped
+    # The PR verbs' door: same alias pattern, pinned to the API host.
+    command: ["TCP-LISTEN:443,fork,reuseaddr", "TCP:api.github.com:443"]
+    environment:
+      - *tz
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 64
+    mem_limit: 64m
+    networks:
+      gitegress:
+        aliases: [api.github.com]        # the archivist's `api.github.com`
+      egress: {}
 
 networks:
   infernet:
@@ -413,7 +498,9 @@ networks:
     internal: true                       # agent <-> scholar
   kagiegress:
     internal: true                       # scholar <-> kagi-relay (no internet)
-  egress: {}                             # kagi-relay -> internet (ONLY the relay holds this)
+  gitegress:
+    internal: true                       # archivist <-> git relays (no internet)
+  egress: {}                             # relays -> internet (ONLY the relays hold this)
   frontend: {}                           # relay's host-publish path
 
 volumes:
@@ -426,6 +513,8 @@ volumes:
     name: ${PROJECT}_builder_state
   scholar_burn:
     name: ${PROJECT}_scholar_burn
+  grange:
+    name: ${PROJECT}_grange              # the archivist's workspace; provision fills it, dispose empties it
   agency_status:
     external: true                       # created by the shared inference stack
     name: agency_status                  # (deploy it first), like infernet

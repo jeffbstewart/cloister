@@ -51,6 +51,7 @@ networks:
   researchnet: { internal: true }
   scholarstate: { internal: true }
   kagiegress: { internal: true }
+  gitegress: { internal: true }
   statenet: { internal: true }
   buildnet: { internal: true }
   egress: {}
@@ -64,6 +65,23 @@ services:
   kagi-relay:
     command: ` + relayCmd + `
     networks: [kagiegress, egress]
+  archivist:
+    user: "1000:1000"
+    image: ${REGISTRY:-x}/${WORKERS_IMAGE}
+    entrypoint: ["/usr/local/bin/archivist"]
+    dns: "127.0.0.1"
+    networks: [buildnet, statenet, gitegress]
+    volumes: ["grange:/workspace"]
+  github-relay:
+    command: ["TCP-LISTEN:443,fork,reuseaddr", "TCP:github.com:443"]
+    networks:
+      gitegress: { aliases: [github.com] }
+      egress: {}
+  github-api-relay:
+    command: ["TCP-LISTEN:443,fork,reuseaddr", "TCP:api.github.com:443"]
+    networks:
+      gitegress: { aliases: [api.github.com] }
+      egress: {}
   agent:
     dns: "127.0.0.1"
     networks: [buildnet]
@@ -169,6 +187,20 @@ services:
 `, ""),
 		"jailed worker dns not the dead loopback": strings.Replace(cleanCompose(),
 			`dns: "127.0.0.1"`, `dns: "8.8.8.8"`, 1),
+		// The git jail (docs/archivist.md): grange volume only, exact
+		// network membership, literal relay pins, hostname aliases.
+		"archivist mounts the host workspace": strings.Replace(cleanCompose(),
+			`volumes: ["grange:/workspace"]`, `volumes: ["${WORKSPACE}:/workspace"]`, 1),
+		"archivist holds egress": strings.Replace(cleanCompose(),
+			`networks: [buildnet, statenet, gitegress]`, `networks: [buildnet, statenet, gitegress, egress]`, 1),
+		"git relay destination not literal": strings.Replace(cleanCompose(),
+			`"TCP:github.com:443"`, `"TCP:${GH_HOST}:443"`, 1),
+		"git relay missing the hostname alias": strings.Replace(cleanCompose(),
+			`gitegress: { aliases: [github.com] }`, `gitegress: {}`, 1),
+		"outsider on gitegress": base(clean, noVols, kagiCmd, agentClean, librarianClean, `  sneaky:
+    dns: "127.0.0.1"
+    networks: [gitegress]
+`),
 	}
 	for name, yaml := range cases {
 		t.Run(name, func(t *testing.T) {

@@ -165,12 +165,13 @@ type networkDef struct {
 
 // egressCapableNetworks are the networks with a path out of their stack:
 // `egress` is the internet, `frontend` publishes to the host, `kagiegress`
-// leads to the kagi-relay (and through it to kagi.com), `lanegress` is the
+// leads to the kagi-relay (and through it to kagi.com), `gitegress` leads
+// to the git relays (and through them to the forges), `lanegress` is the
 // deepthink-relay's LAN path, and `infernet_big` leads to that relay (and
 // through it to the deep-think node).  Every no-egress assertion checks
 // membership against this one list, naming any legitimate exception
 // explicitly.
-var egressCapableNetworks = []string{"egress", "frontend", "kagiegress", "lanegress", "infernet_big"}
+var egressCapableNetworks = []string{"egress", "frontend", "kagiegress", "gitegress", "lanegress", "infernet_big"}
 
 func (s service) hasNet(n string) bool {
 	for _, x := range s.Networks {
@@ -288,8 +289,8 @@ func Check(data []byte) ([]string, error) {
 		}
 	}
 	sort.Strings(egressHolders)
-	if len(egressHolders) != 1 || egressHolders[0] != "kagi-relay" {
-		v = append(v, fmt.Sprintf("exactly `kagi-relay` may hold `egress`; holders = %v", egressHolders))
+	if !slices.Equal(egressHolders, []string{"github-api-relay", "github-relay", "kagi-relay"}) {
+		v = append(v, fmt.Sprintf("only the relays may hold `egress` (kagi-relay, github-relay, github-api-relay); holders = %v", egressHolders))
 	}
 
 	relay, ok := c.Services["kagi-relay"]
@@ -327,11 +328,77 @@ func Check(data []byte) ([]string, error) {
 		}
 	}
 
+	// The git jail (docs/archivist.md): the archivist exists, holds
+	// exactly buildnet + statenet + gitegress, works only in the grange
+	// volume — the operator's host tree never enters — and reaches out
+	// only through the aliased git relays.
+	arc, ok := c.Services["archivist"]
+	if !ok {
+		v = append(v, "no `archivist` service defined — the cell's version control has no jailed owner without it")
+	} else {
+		nets := arc.Networks.names()
+		sort.Strings(nets)
+		if !slices.Equal(nets, []string{"buildnet", "gitegress", "statenet"}) {
+			v = append(v, fmt.Sprintf("archivist networks must be exactly buildnet+statenet+gitegress; got %v", nets))
+		}
+		wsMounts := 0
+		for _, vol := range arc.Volumes {
+			if strings.Contains(vol, "${WORKSPACE") {
+				v = append(v, "archivist mounts ${WORKSPACE} — the operator's host tree must never enter; the grange volume is its workspace")
+			}
+			if strings.Contains(vol, ":/workspace") {
+				wsMounts++
+				if !strings.HasPrefix(vol, "grange:") {
+					v = append(v, fmt.Sprintf("archivist /workspace must be the dedicated grange volume; mount = %q", vol))
+				}
+				if strings.HasSuffix(vol, ":ro") {
+					v = append(v, "archivist grange mount is `:ro` — the worktree verbs write")
+				}
+			}
+		}
+		if wsMounts != 1 {
+			v = append(v, fmt.Sprintf("archivist must mount exactly one workspace (the grange volume); found %d", wsMounts))
+		}
+	}
+	if def, defined := c.Networks["gitegress"]; !defined || !def.Internal {
+		v = append(v, "gitegress must be defined `internal: true` — it is a hop to the relays, never the internet")
+	}
+	var gitHolders []string
+	for name, s := range c.Services {
+		if s.hasNet("gitegress") {
+			gitHolders = append(gitHolders, name)
+		}
+	}
+	sort.Strings(gitHolders)
+	if !slices.Equal(gitHolders, []string{"archivist", "github-api-relay", "github-relay"}) {
+		v = append(v, fmt.Sprintf("gitegress membership must be exactly the archivist and its relays; got %v", gitHolders))
+	}
+	// The git relays: a literal socat destination (no ${} indirection a
+	// deploy could repoint) and a network alias equal to the real
+	// hostname — the alias IS how the archivist's dial lands on the
+	// relay while TLS verifies the real name.
+	for _, r := range []struct{ service, host string }{
+		{"github-relay", "github.com"},
+		{"github-api-relay", "api.github.com"},
+	} {
+		relay, ok := c.Services[r.service]
+		if !ok {
+			v = append(v, fmt.Sprintf("no `%s` service defined — the archivist has no route to %s without it", r.service, r.host))
+			continue
+		}
+		if !targetsHost(relay.Command, r.host+":443") {
+			v = append(v, fmt.Sprintf("%s must pipe to the literal TCP:%s:443; command = %v", r.service, r.host, relay.Command))
+		}
+		if !slices.Contains(relay.Networks.aliasesOn("gitegress"), r.host) {
+			v = append(v, fmt.Sprintf("%s must carry the network alias %q on gitegress", r.service, r.host))
+		}
+	}
+
 	// Workspace-touching workers must run as a non-root user: root would bypass
 	// the per-user 0700 workspace perms (reading any tree) and drop root-owned
 	// files into a user's source.  The uid is a deploy-time var; this catches a
 	// missing or hardcoded-root `user:`.
-	for _, name := range []string{"librarian", "scribe", "builder"} {
+	for _, name := range []string{"librarian", "scribe", "builder", "archivist"} {
 		if svc, ok := c.Services[name]; ok && svc.runsAsRoot() {
 			v = append(v, fmt.Sprintf("%s must run as a non-root user (the workspace owner's uid); user = %q", name, svc.User))
 		}
@@ -348,6 +415,7 @@ func Check(data []byte) ([]string, error) {
 		{"scholar", "WORKERS_IMAGE"},
 		{"scribe", "WORKERS_IMAGE"},
 		{"state", "WORKERS_IMAGE"},
+		{"archivist", "WORKERS_IMAGE"},
 	} {
 		svc, ok := c.Services[w.service]
 		if !ok {
@@ -362,7 +430,7 @@ func Check(data []byte) ([]string, error) {
 	// says what each container is and no service can run another's role.
 	for _, w := range []struct{ service, role string }{
 		{"builder", "builder"}, {"librarian", "librarian"}, {"scholar", "scholar"},
-		{"scribe", "scribe"}, {"state", "state-service"},
+		{"scribe", "scribe"}, {"state", "state-service"}, {"archivist", "archivist"},
 	} {
 		v = append(v, wantsRoleEntrypoint(c, w.service, w.role)...)
 	}

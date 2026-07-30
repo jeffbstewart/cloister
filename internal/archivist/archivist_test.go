@@ -44,6 +44,13 @@ type fixture struct {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
+	return newFixtureWith(t, Config{Version: "test"})
+}
+
+// newFixtureWith builds the rig with the caller's Config; the Archive
+// field is filled in here.
+func newFixtureWith(t *testing.T, cfg Config) *fixture {
+	t.Helper()
 	tmp := t.TempDir()
 	_, dir := archivetest.Seed(t, tmp)
 
@@ -65,7 +72,8 @@ func newFixture(t *testing.T) *fixture {
 	}
 	t.Cleanup(func() { a.Close() })
 
-	srv := New(Config{Version: "test", Archive: a})
+	cfg.Archive = a
+	srv := New(cfg)
 	clientT, serverT := mcp.NewInMemoryTransports()
 	ctx := context.Background()
 	if _, err := srv.mcp.Connect(ctx, serverT, nil); err != nil {

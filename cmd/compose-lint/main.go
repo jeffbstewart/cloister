@@ -43,7 +43,7 @@ import (
 
 // okSummary is the one-line clean verdict printed per stack kind.
 var okSummary = map[composelint.Stack]string{
-	composelint.StackCell:  "scholar contained, egress pinned to kagi.com, agent mount-free, librarian read-only, consumers dial the agency",
+	composelint.StackCell:  "scholar contained, egress pinned to kagi.com, agent mount-free, librarian read-only, archivist jailed on grange + gitegress, consumers dial the agency",
 	composelint.StackInfra: "infer behind the agency on a closed modelnet, relay fronts the door, deep-think path env-pinned, no egress",
 }
 

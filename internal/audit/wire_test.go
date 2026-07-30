@@ -44,6 +44,7 @@ func TestWireRoundTripEveryKind(t *testing.T) {
 		&SearchDetail{Query: "X", Engine: "kagi"},
 		&ExtractDetail{URL: "https://example.com/doc"},
 		&ReadDetail{Paths: []string{"a.env", "b.key"}},
+		&RemoteDetail{Op: "propose", Endpoint: "github.com", Branch: "agent/x", PR: 7},
 	}
 	for _, d := range details {
 		t.Run(string(d.Kind()), func(t *testing.T) {

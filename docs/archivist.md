@@ -1,9 +1,10 @@
 # The archivist — source-control sidecar design
 
-Status: **in implementation — M1 steps 0–2 DONE** (PR #34: `.git/**`
+Status: **in implementation — M1 steps 0–3 DONE** (PR #34: `.git/**`
 confinement; PR #95: the hardened runner and the local verb set in
-`internal/archive`; then the worker mode and its MCP surface in
-`internal/archivist`).  Decisions from the 2026-07-07 design review,
+`internal/archive`; PR #96: the worker mode and its MCP surface in
+`internal/archivist`; then the jail: endpoint table, remote verbs,
+relays, topology, and the compose-lint invariants, in one PR).  Decisions from the 2026-07-07 design review,
 amended 2026-07-29 for the grange transformation
 ([grange.md](grange.md)): the archivist gains the grange lifecycle
 verbs, a one-instance-one-workspace binding, and per-endpoint egress.
@@ -189,10 +190,14 @@ The archivist drives the real git binary — but never with ambient trust:
   repository (branch names, history records — NUL-framed so a crafted
   commit subject cannot forge a record).
 - Remotes restricted to the endpoint allowlist (below), checked before
-  git ever runs; `http.followRedirects` off per invocation.  No
-  credential helpers — the endpoint's token is injected per call (via
-  askpass, never argv: argv is world-readable in /proc), never stored
-  in config inside the workspace.
+  git ever runs; `http.followRedirects` off on every invocation (a
+  redirect is a way off the relay).  No credential helpers — the
+  endpoint's token is injected per call through the environment
+  (`GIT_CONFIG_COUNT`/`KEY`/`VALUE` carrying `http.extraheader`), never
+  argv (world-readable in /proc) and never stored in config inside the
+  workspace.  The design once said "askpass"; the workers image is
+  FROM scratch with no shell to run one, and the env-config route has
+  the same secrecy property with no exec at all.
 
 The `.git` directory the archivist maintains lives in the grange
 volume, never a host mount.  Until grange M3 every cell-side toucher of
@@ -331,12 +336,15 @@ those are realization details of the git adapter.
    topology unjailed.  The checkpoint identity is pinned to a TODO
    placeholder until the endpoint table (step 3) supplies the real
    one; nothing deployed exercises it before then.
-3. **The jail, one PR** — the per-endpoint relays (aliases, literal
-   socat destinations), the internal gitegress network, the compose
-   service on a dedicated grange volume, the remote verbs behind the
-   endpoint table, the client-side refusals, the remote-op audit
-   detail, and the compose-lint invariants pinning all of it.  Topology
-   and lint move together.
+3. DONE: **The jail, one PR** — the per-endpoint relays
+   (`github-relay`/`github-api-relay`, each carrying its hostname as a
+   network alias, literal socat destinations), the internal gitegress
+   network, the compose service on the dedicated grange volume, the
+   endpoint table (internal/endpoint) with the remote verbs behind it
+   (publish + the forge PR verbs via internal/forge), the client-side
+   refusals, the remote-op audit detail (KindRemote), and the
+   compose-lint invariants pinning all of it.  Topology and lint moved
+   together.
 4. **Grange lifecycle** — `provision`/`dispose`, the provenance marker,
    the forgelint-backed provision gate, lifecycle audit records.
 5. **`await_review`** — the long-poll with progress notifications.

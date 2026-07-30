@@ -39,6 +39,7 @@ const scholarUrl = process.env.SCHOLAR_MCP_URL || 'http://scholar:9500/mcp';
 // headroom; the gates return before this fires.
 const scholarTimeout = Number(process.env.SCHOLAR_MCP_TIMEOUT || 2400000);
 const librarianUrl = process.env.LIBRARIAN_MCP_URL || 'http://librarian:9400/mcp';
+const archivistUrl = process.env.ARCHIVIST_MCP_URL || 'http://archivist:9600/mcp';
 
 // tools.core: the capability ALLOWLIST. Only these built-ins are offered to
 // the model. The file mutators (Edit / WriteFile / NotebookEdit), the file
@@ -112,6 +113,9 @@ try {
   cfg.mcpServers.scribe = { httpUrl: scribeUrl, timeout: scribeTimeout };
   cfg.mcpServers.scholar = { httpUrl: scholarUrl, timeout: scholarTimeout, trust: true };
   cfg.mcpServers.librarian = { httpUrl: librarianUrl, timeout, trust: true };
+  // Untrusted like the scribe: the archivist's verbs move history and
+  // publish work, so the client-side dialog stays on unless YOLO.
+  cfg.mcpServers.archivist = { httpUrl: archivistUrl, timeout };
 
   // Platform-managed security control: authoritatively set the allowlist so the
   // built-in mutators stay disabled regardless of prior settings. qwen-code nests
@@ -132,8 +136,8 @@ try {
   writeFileSync(path, JSON.stringify(cfg, null, 2) + '\n');
   console.error(
     `qwen-mcp-init: registered builder -> ${builderUrl}, scribe -> ${scribeUrl}, ` +
-      `scholar -> ${scholarUrl}, librarian -> ${librarianUrl} ` +
-      `(builder/scholar/librarian trusted; scribe prompts unless YOLO); ` +
+      `scholar -> ${scholarUrl}, librarian -> ${librarianUrl}, archivist -> ${archivistUrl} ` +
+      `(builder/scholar/librarian trusted; scribe/archivist prompt unless YOLO); ` +
       `tools.core allowlist = ${coreTools.length} tools (mutators + readers + shell + web excluded); ` +
       `skills = ${allowedSkills.join(', ')}`,
   );

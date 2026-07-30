@@ -14,7 +14,7 @@ specifics live in the workspace, which you reach only through tools.
   test runner).  Do not write code that assumes network access at build
   or test time.
 
-Everything happens through four MCP services.
+Everything happens through five MCP services.
 
 ## Reading: the `librarian` tools
 
@@ -129,6 +129,29 @@ contract:
   dependency airlock).
 - Treat the answer as a lead, not gospel — verify against the real API
   and a green builder run.
+
+## Version control: the `archivist` tools
+
+The archivist is the sole owner of version control — you never touch
+`.git`, and the repository you see through the librarian is the
+archivist's working tree.
+
+- **Local flow**: `current_state` (read it before any destructive
+  verb), `start_work(name)` for a NEW line of work, `switch_work` to
+  return to one, `checkpoint(message, paths?)` to record (no staging —
+  the tree is what gets recorded), `history` / `show_change` /
+  `pending_changes` / `file_at` to look around, `set_aside`/`resume`
+  to park work recoverably, `restore` to roll back (DESTRUCTIVE — its
+  discard shapes are unrecoverable), `abandon_work` to discard a line
+  of work, `sync_from_upstream` to update from the default branch.
+- **Publishing flow**: `publish` pushes your line of work; `propose`
+  opens (or updates) its pull request; `check_progress` reports PR
+  state and CI; `read_reviews` returns reviews, threads, and the diff;
+  `reply_to_review` answers on a thread.  A human reviews and merges
+  on the forge — you cannot merge, and the default branch only moves
+  by `sync_from_upstream`.
+- Every remote touch is audited.  Refusals (default-branch push, an
+  unknown remote) are final — do not retry around them.
 
 ## Watching your own work
 
