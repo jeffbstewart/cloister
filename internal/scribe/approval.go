@@ -27,6 +27,7 @@ import (
 
 	"github.com/jeffbstewart/cloister/internal/approval"
 	"github.com/jeffbstewart/cloister/internal/audit"
+	"github.com/jeffbstewart/cloister/internal/mcpserve"
 	"github.com/jeffbstewart/cloister/internal/runid"
 	"github.com/jeffbstewart/cloister/internal/workspace"
 )
@@ -146,17 +147,17 @@ func (s *Server) resolveStaged(rec audit.Record, op stagedOp, d approval.Decisio
 		rec.Decision = decApplied
 		rec.Mutation().HasDiff = true
 		s.audit(rec)
-		return jsonResult(map[string]any{"opId": op.OpID, "path": op.Path, "status": "applied_after_approval"})
+		return mcpserve.JSONResult(map[string]any{"opId": op.OpID, "path": op.Path, "status": "applied_after_approval"})
 	case approval.Timeout:
 		rec.Decision = decTimeout
 		rec.Status = "approval timed out"
 		s.audit(rec)
-		return errResult("rejected: approval timed out — STOP, do not retry")
+		return mcpserve.ErrResult("rejected: approval timed out — STOP, do not retry")
 	default: // Rejected
 		rec.Decision = decRejected
 		rec.Status = "rejected by a human"
 		s.audit(rec)
-		return errResult("rejected: a human declined this change")
+		return mcpserve.ErrResult("rejected: a human declined this change")
 	}
 }
 

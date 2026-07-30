@@ -21,12 +21,9 @@
 package archivist
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -36,6 +33,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/jeffbstewart/cloister/internal/archive"
+	"github.com/jeffbstewart/cloister/internal/mcpserve"
 )
 
 // Result caps: the consumer is a model context, not a pager, so every
@@ -83,34 +81,7 @@ func New(cfg Config) *Server {
 
 // Handler serves MCP at /mcp and a liveness probe at /healthz.
 func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(
-		func(*http.Request) *mcp.Server { return s.mcp }, nil))
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, "ok")
-	})
-	return mux
-}
-
-func str(desc string) *jsonschema.Schema {
-	return &jsonschema.Schema{Type: "string", Description: desc}
-}
-func integer(desc string) *jsonschema.Schema {
-	return &jsonschema.Schema{Type: "integer", Description: desc}
-}
-func boolean(desc string) *jsonschema.Schema {
-	return &jsonschema.Schema{Type: "boolean", Description: desc}
-}
-
-// noExtras is JSON Schema's `additionalProperties: false`: unknown
-// argument keys are rejected, never ignored.  On a surface with
-// destructive verbs a misspelled optional key must be an error — a
-// restore call whose only argument was misspelled would otherwise
-// decode to the zero shape and act on the whole tree.  decode enforces
-// the same rule server-side.
-func noExtras() *jsonschema.Schema {
-	return &jsonschema.Schema{Not: &jsonschema.Schema{}}
+	return mcpserve.Handler(s.mcp)
 }
 
 // add registers one tool with the worktree lock taken around its
@@ -129,7 +100,7 @@ func (s *Server) registerTools() {
 		Description: "Where the working tree stands: branch, publication state, ahead/behind, " +
 			"dirty and untracked files, set-aside parcels.  Read this before any destructive verb.  " +
 			"ahead/behind count against the last-synced remote state and can be stale until sync_from_upstream.",
-		InputSchema: &jsonschema.Schema{Type: "object", AdditionalProperties: noExtras()},
+		InputSchema: &jsonschema.Schema{Type: "object", AdditionalProperties: mcpserve.NoExtras()},
 	}, s.currentState)
 
 	s.add(&mcp.Tool{
@@ -138,11 +109,11 @@ func (s *Server) registerTools() {
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"ref":   str("start revision: a branch name, checkpoint id, or HEAD, optionally with ~N/^ suffixes; default HEAD"),
-				"path":  str("only checkpoints touching this workspace-relative path"),
-				"limit": integer("max entries (default 50, max 200)"),
+				"ref":   mcpserve.Str("start revision: a branch name, checkpoint id, or HEAD, optionally with ~N/^ suffixes; default HEAD"),
+				"path":  mcpserve.Str("only checkpoints touching this workspace-relative path"),
+				"limit": mcpserve.Integer("max entries (default 50, max 200)"),
 			},
-			AdditionalProperties: noExtras(),
+			AdditionalProperties: mcpserve.NoExtras(),
 		},
 	}, s.history)
 
@@ -152,10 +123,10 @@ func (s *Server) registerTools() {
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"id": str("checkpoint id: 4-64 lowercase hex digits (not HEAD — history lists ids)"),
+				"id": mcpserve.Str("checkpoint id: 4-64 lowercase hex digits (not HEAD — history lists ids)"),
 			},
 			Required:             []string{"id"},
-			AdditionalProperties: noExtras(),
+			AdditionalProperties: mcpserve.NoExtras(),
 		},
 	}, s.showChange)
 
@@ -165,11 +136,11 @@ func (s *Server) registerTools() {
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"ref":  str("revision: a branch name, checkpoint id, or HEAD, optionally with ~N/^ suffixes"),
-				"path": str("workspace-relative file path"),
+				"ref":  mcpserve.Str("revision: a branch name, checkpoint id, or HEAD, optionally with ~N/^ suffixes"),
+				"path": mcpserve.Str("workspace-relative file path"),
 			},
 			Required:             []string{"ref", "path"},
-			AdditionalProperties: noExtras(),
+			AdditionalProperties: mcpserve.NoExtras(),
 		},
 	}, s.fileAt)
 
@@ -179,9 +150,9 @@ func (s *Server) registerTools() {
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"path": str("limit to this workspace-relative path"),
+				"path": mcpserve.Str("limit to this workspace-relative path"),
 			},
-			AdditionalProperties: noExtras(),
+			AdditionalProperties: mcpserve.NoExtras(),
 		},
 	}, s.pendingChanges)
 
@@ -192,10 +163,10 @@ func (s *Server) registerTools() {
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"name": str("branch name, e.g. agent/fix-thing: letters, digits, '.', '_', '/', '-', not starting with '.' or '-'"),
+				"name": mcpserve.Str("branch name, e.g. agent/fix-thing: letters, digits, '.', '_', '/', '-', not starting with '.' or '-'"),
 			},
 			Required:             []string{"name"},
-			AdditionalProperties: noExtras(),
+			AdditionalProperties: mcpserve.NoExtras(),
 		},
 	}, s.startWork)
 
@@ -206,10 +177,10 @@ func (s *Server) registerTools() {
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"name": str("the existing branch to return to"),
+				"name": mcpserve.Str("the existing branch to return to"),
 			},
 			Required:             []string{"name"},
-			AdditionalProperties: noExtras(),
+			AdditionalProperties: mcpserve.NoExtras(),
 		},
 	}, s.switchWork)
 
@@ -220,10 +191,10 @@ func (s *Server) registerTools() {
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"name": str("the doomed branch"),
+				"name": mcpserve.Str("the doomed branch"),
 			},
 			Required:             []string{"name"},
-			AdditionalProperties: noExtras(),
+			AdditionalProperties: mcpserve.NoExtras(),
 		},
 	}, s.abandonWork)
 
@@ -235,11 +206,11 @@ func (s *Server) registerTools() {
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"message": str("what this checkpoint is: printable ASCII up to 2000 bytes; attribution trailers (Signed-off-by, Co-authored-by, ...) are refused"),
-				"paths":   {Type: "array", Items: str("workspace-relative path"), Description: "record only these paths"},
+				"message": mcpserve.Str("what this checkpoint is: printable ASCII up to 2000 bytes; attribution trailers (Signed-off-by, Co-authored-by, ...) are refused"),
+				"paths":   {Type: "array", Items: mcpserve.Str("workspace-relative path"), Description: "record only these paths"},
 			},
 			Required:             []string{"message"},
-			AdditionalProperties: noExtras(),
+			AdditionalProperties: mcpserve.NoExtras(),
 		},
 	}, s.checkpoint)
 
@@ -253,11 +224,11 @@ func (s *Server) registerTools() {
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"checkpoint": str("checkpoint id: 4-64 lowercase hex digits (history lists ids)"),
-				"path":       str("workspace-relative file path"),
-				"all":        boolean("true to discard every local edit (must be the only argument)"),
+				"checkpoint": mcpserve.Str("checkpoint id: 4-64 lowercase hex digits (history lists ids)"),
+				"path":       mcpserve.Str("workspace-relative file path"),
+				"all":        mcpserve.Boolean("true to discard every local edit (must be the only argument)"),
 			},
-			AdditionalProperties: noExtras(),
+			AdditionalProperties: mcpserve.NoExtras(),
 		},
 	}, s.restore)
 
@@ -265,20 +236,20 @@ func (s *Server) registerTools() {
 		Name: "set_aside",
 		Description: "Park all uncommitted work — tracked edits and untracked files — so the tree matches the last checkpoint.  " +
 			"Recoverable: resume brings the parcel back (unlike restore, which discards).  Refused when the tree is already clean.",
-		InputSchema: &jsonschema.Schema{Type: "object", AdditionalProperties: noExtras()},
+		InputSchema: &jsonschema.Schema{Type: "object", AdditionalProperties: mcpserve.NoExtras()},
 	}, s.setAside)
 
 	s.add(&mcp.Tool{
 		Name:        "resume",
 		Description: "Recover the most recently parked parcel (the counterpart to set_aside).  A conflict leaves markers in the tree and keeps the parcel parked; current_state shows both.",
-		InputSchema: &jsonschema.Schema{Type: "object", AdditionalProperties: noExtras()},
+		InputSchema: &jsonschema.Schema{Type: "object", AdditionalProperties: mcpserve.NoExtras()},
 	}, s.resume)
 
 	s.add(&mcp.Tool{
 		Name: "sync_from_upstream",
 		Description: "Update the local default branch from its remote and replay the current line of work on it.  " +
 			"Requires a clean tree (untracked files count).  A conflicted replay is aborted — the tree is restored and the answer lists the conflicting files.",
-		InputSchema: &jsonschema.Schema{Type: "object", AdditionalProperties: noExtras()},
+		InputSchema: &jsonschema.Schema{Type: "object", AdditionalProperties: mcpserve.NoExtras()},
 	}, s.syncFromUpstream)
 }
 
@@ -287,7 +258,7 @@ func (s *Server) registerTools() {
 func (s *Server) currentState(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	st, err := s.cfg.Archive.CurrentState(ctx)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return mcpserve.ErrResult(err.Error()), nil
 	}
 	dirty := make([]map[string]any, 0, len(st.Dirty))
 	for _, f := range st.Dirty {
@@ -298,7 +269,7 @@ func (s *Server) currentState(ctx context.Context, _ *mcp.CallToolRequest) (*mcp
 		dirty = append(dirty, d)
 	}
 	untracked, total := capUntracked(st.Untracked)
-	return jsonResult(map[string]any{
+	return mcpserve.JSONResult(map[string]any{
 		"branch":          st.Branch,
 		"default":         st.Default,
 		"published":       st.Published,
@@ -317,42 +288,42 @@ func (s *Server) history(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Ca
 		Path  string `json:"path"`
 		Limit int    `json:"limit"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	q := archive.HistoryQuery{Path: a.Path, Limit: a.Limit}
 	if a.Ref != "" {
 		ref, err := archive.ParseRef(a.Ref)
 		if err != nil {
-			return errResult("bad arguments: " + err.Error()), nil
+			return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 		}
 		q.Ref = ref
 	}
 	changes, err := s.cfg.Archive.History(ctx, q)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return mcpserve.ErrResult(err.Error()), nil
 	}
 	out := make([]map[string]any, 0, len(changes))
 	for _, c := range changes {
 		out = append(out, changeOut(c))
 	}
-	return jsonResult(map[string]any{"changes": out}), nil
+	return mcpserve.JSONResult(map[string]any{"changes": out}), nil
 }
 
 func (s *Server) showChange(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var a struct {
 		ID string `json:"id"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	id, err := archive.ParseCheckpointID(a.ID)
 	if err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	c, err := s.cfg.Archive.ShowChange(ctx, id)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return mcpserve.ErrResult(err.Error()), nil
 	}
 	out := changeOut(c.Change)
 	diff, truncated := capDiff(c.Diff)
@@ -360,7 +331,7 @@ func (s *Server) showChange(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 	if truncated {
 		out["diff_truncated"] = true
 	}
-	return jsonResult(out), nil
+	return mcpserve.JSONResult(out), nil
 }
 
 func (s *Server) fileAt(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -368,40 +339,40 @@ func (s *Server) fileAt(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 		Ref  string `json:"ref"`
 		Path string `json:"path"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	ref, err := archive.ParseRef(a.Ref)
 	if err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	content, err := s.cfg.Archive.FileAt(ctx, ref, a.Path)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return mcpserve.ErrResult(err.Error()), nil
 	}
 	// Refusals, not silent degradation: JSON transport would replace
 	// invalid bytes with U+FFFD, handing back corrupted content under a
 	// success status; and a truncated file presented as the file is the
 	// same lie one cap over.
 	if !utf8.Valid(content) {
-		return errResult(fmt.Sprintf("file_at: %s at %s is not UTF-8 text (%d bytes); binary content is not served", a.Path, a.Ref, len(content))), nil
+		return mcpserve.ErrResult(fmt.Sprintf("file_at: %s at %s is not UTF-8 text (%d bytes); binary content is not served", a.Path, a.Ref, len(content))), nil
 	}
 	if len(content) > MaxFileBytes {
-		return errResult(fmt.Sprintf("file_at: %s at %s is %d bytes, over the %d-byte cap", a.Path, a.Ref, len(content), MaxFileBytes)), nil
+		return mcpserve.ErrResult(fmt.Sprintf("file_at: %s at %s is %d bytes, over the %d-byte cap", a.Path, a.Ref, len(content), MaxFileBytes)), nil
 	}
-	return textResult(string(content)), nil
+	return mcpserve.TextResult(string(content)), nil
 }
 
 func (s *Server) pendingChanges(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var a struct {
 		Path string `json:"path"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	p, err := s.cfg.Archive.PendingChanges(ctx, a.Path)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return mcpserve.ErrResult(err.Error()), nil
 	}
 	diff, diffTruncated := capDiff(p.Diff)
 	untracked, total := capUntracked(p.Untracked)
@@ -409,65 +380,65 @@ func (s *Server) pendingChanges(ctx context.Context, req *mcp.CallToolRequest) (
 	if diffTruncated {
 		out["diff_truncated"] = true
 	}
-	return jsonResult(out), nil
+	return mcpserve.JSONResult(out), nil
 }
 
 func (s *Server) startWork(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var a struct {
 		Name string `json:"name"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	name, err := archive.ParseBranchName(a.Name)
 	if err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	if err := s.cfg.Archive.StartWork(ctx, name); err != nil {
-		return errResult(err.Error()), nil
+		return mcpserve.ErrResult(err.Error()), nil
 	}
-	return textResult(fmt.Sprintf("working on %s (off %s)", name, s.cfg.Archive.DefaultBranch())), nil
+	return mcpserve.TextResult(fmt.Sprintf("working on %s (off %s)", name, s.cfg.Archive.DefaultBranch())), nil
 }
 
 func (s *Server) switchWork(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var a struct {
 		Name string `json:"name"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	name, err := archive.ParseBranchName(a.Name)
 	if err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	if err := s.cfg.Archive.SwitchWork(ctx, name); err != nil {
-		return errResult(err.Error()), nil
+		return mcpserve.ErrResult(err.Error()), nil
 	}
-	return textResult(fmt.Sprintf("working on %s", name)), nil
+	return mcpserve.TextResult(fmt.Sprintf("working on %s", name)), nil
 }
 
 func (s *Server) abandonWork(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var a struct {
 		Name string `json:"name"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	name, err := archive.ParseBranchName(a.Name)
 	if err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	if err := s.cfg.Archive.AbandonWork(ctx, name); err != nil {
-		return errResult(err.Error()), nil
+		return mcpserve.ErrResult(err.Error()), nil
 	}
 	// Report the branch actually checked out: the engine only switches
 	// to the default branch when the doomed branch was current, and a
 	// caller told "on main" while on another line of work would record
 	// its next checkpoint in the wrong place.
 	if st, err := s.cfg.Archive.CurrentState(ctx); err == nil {
-		return textResult(fmt.Sprintf("abandoned %s; on %s", name, st.Branch)), nil
+		return mcpserve.TextResult(fmt.Sprintf("abandoned %s; on %s", name, st.Branch)), nil
 	}
-	return textResult(fmt.Sprintf("abandoned %s", name)), nil
+	return mcpserve.TextResult(fmt.Sprintf("abandoned %s", name)), nil
 }
 
 func (s *Server) checkpoint(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -475,14 +446,14 @@ func (s *Server) checkpoint(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 		Message string   `json:"message"`
 		Paths   []string `json:"paths"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	id, err := s.cfg.Archive.Checkpoint(ctx, a.Message, a.Paths)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return mcpserve.ErrResult(err.Error()), nil
 	}
-	return jsonResult(map[string]any{"checkpoint": id.String()}), nil
+	return mcpserve.JSONResult(map[string]any{"checkpoint": id.String()}), nil
 }
 
 func (s *Server) restore(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -491,30 +462,30 @@ func (s *Server) restore(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Ca
 		Path       string `json:"path"`
 		All        bool   `json:"all"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	// The discard-everything shape must be asked for by name.  Without
 	// this, an empty call would be the most destructive one — and with
 	// it, "all" alongside a narrower target is a contradiction to refuse,
 	// not to guess about.
 	if a.All && (a.Checkpoint != "" || a.Path != "") {
-		return errResult("bad arguments: all: true discards every local edit and takes no other argument"), nil
+		return mcpserve.ErrResult("bad arguments: all: true discards every local edit and takes no other argument"), nil
 	}
 	if !a.All && a.Checkpoint == "" && a.Path == "" {
-		return errResult("bad arguments: restore needs a target — a path, a checkpoint, or all: true to discard every local edit (set_aside parks work recoverably instead)"), nil
+		return mcpserve.ErrResult("bad arguments: restore needs a target — a path, a checkpoint, or all: true to discard every local edit (set_aside parks work recoverably instead)"), nil
 	}
 	var cp archive.CheckpointID
 	if a.Checkpoint != "" {
 		parsed, err := archive.ParseCheckpointID(a.Checkpoint)
 		if err != nil {
-			return errResult("bad arguments: " + err.Error()), nil
+			return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 		}
 		cp = parsed
 	}
 	res, err := s.cfg.Archive.Restore(ctx, cp, a.Path)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return mcpserve.ErrResult(err.Error()), nil
 	}
 	// The same request realizes differently by shape and publication
 	// state; name what actually happened rather than a bare bool.
@@ -530,21 +501,21 @@ func (s *Server) restore(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Ca
 		out["action"] = "content_restored"
 		out["note"] = "the tree now holds the checkpoint's content on unchanged history; run checkpoint to record it"
 	}
-	return jsonResult(out), nil
+	return mcpserve.JSONResult(out), nil
 }
 
 func (s *Server) setAside(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	if err := s.cfg.Archive.SetAside(ctx); err != nil {
-		return errResult(err.Error()), nil
+		return mcpserve.ErrResult(err.Error()), nil
 	}
-	return textResult("set aside; the tree matches the last checkpoint"), nil
+	return mcpserve.TextResult("set aside; the tree matches the last checkpoint"), nil
 }
 
 func (s *Server) resume(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	if err := s.cfg.Archive.Resume(ctx); err != nil {
-		return errResult(err.Error()), nil
+		return mcpserve.ErrResult(err.Error()), nil
 	}
-	return textResult("resumed the most recent parcel"), nil
+	return mcpserve.TextResult("resumed the most recent parcel"), nil
 }
 
 func (s *Server) syncFromUpstream(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -558,7 +529,7 @@ func (s *Server) syncFromUpstream(ctx context.Context, _ *mcp.CallToolRequest) (
 		// plain error text.
 		var conflict *archive.ConflictError
 		if errors.As(err, &conflict) {
-			r := jsonResult(map[string]any{
+			r := mcpserve.JSONResult(map[string]any{
 				"conflict":      true,
 				"files":         conflict.Files,
 				"aborted":       true,
@@ -567,9 +538,9 @@ func (s *Server) syncFromUpstream(ctx context.Context, _ *mcp.CallToolRequest) (
 			r.IsError = true
 			return r, nil
 		}
-		return errResult(err.Error()), nil
+		return mcpserve.ErrResult(err.Error()), nil
 	}
-	return jsonResult(map[string]any{"replayed": res.Replayed, "merged": res.Merged}), nil
+	return mcpserve.JSONResult(map[string]any{"replayed": res.Replayed, "merged": res.Merged}), nil
 }
 
 // --- helpers ---
@@ -606,34 +577,4 @@ func capUntracked(untracked []string) ([]string, int) {
 		return untracked[:MaxUntracked], total
 	}
 	return untracked, total
-}
-
-// decode is strict, unlike the read-side workers' copies: unknown keys
-// are rejected, because on this surface a misspelled optional argument
-// must never quietly select a different — possibly destructive — shape.
-func decode(req *mcp.CallToolRequest, v any) error {
-	if len(req.Params.Arguments) == 0 {
-		return nil
-	}
-	dec := json.NewDecoder(bytes.NewReader(req.Params.Arguments))
-	dec.DisallowUnknownFields()
-	return dec.Decode(v)
-}
-
-func textResult(text string) *mcp.CallToolResult {
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
-}
-
-func errResult(msg string) *mcp.CallToolResult {
-	r := textResult(msg)
-	r.IsError = true
-	return r
-}
-
-func jsonResult(v any) *mcp.CallToolResult {
-	b, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return errResult(fmt.Sprintf("internal: marshal result: %v", err))
-	}
-	return textResult(string(b))
 }

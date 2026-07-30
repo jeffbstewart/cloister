@@ -22,9 +22,7 @@ package scholar
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -36,6 +34,7 @@ import (
 	"github.com/jeffbstewart/cloister/internal/approval"
 	"github.com/jeffbstewart/cloister/internal/audit"
 	"github.com/jeffbstewart/cloister/internal/egress"
+	"github.com/jeffbstewart/cloister/internal/mcpserve"
 	"github.com/jeffbstewart/cloister/internal/runid"
 )
 
@@ -121,7 +120,7 @@ func New(cfg Config) *Server {
 		&mcp.Tool{
 			Name:        "research",
 			Description: "Answer a self-contained question using web search and page retrieval. Returns {answer, sources}. Blocks until answered, refused, or timed out.",
-			InputSchema: &jsonschema.Schema{
+			InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 				Type: "object",
 				Properties: map[string]*jsonschema.Schema{
 					"query": {Type: "string", Description: "a self-contained question; the scholar has no other context and no project access"},
@@ -136,31 +135,24 @@ func New(cfg Config) *Server {
 
 // Handler serves MCP at /mcp and a liveness probe at /healthz.
 func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(
-		func(*http.Request) *mcp.Server { return s.mcp }, nil))
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, "ok")
-	})
-	return mux
+	return mcpserve.Handler(s.mcp)
 }
 
 func (s *Server) handleResearch(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var args struct {
 		Query string `json:"query"`
 	}
-	if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &args); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	if strings.TrimSpace(args.Query) == "" {
-		return errResult("query is required"), nil
+		return mcpserve.ErrResult("query is required"), nil
 	}
 	// opID correlates the research record, its search/extract records, and
 	// the transcript.
 	opID, err := runid.New()
 	if err != nil {
-		return errResult("internal: mint op id: " + err.Error()), nil
+		return mcpserve.ErrResult("internal: mint op id: " + err.Error()), nil
 	}
 	start := time.Now()
 
@@ -171,10 +163,10 @@ func (s *Server) handleResearch(ctx context.Context, req *mcp.CallToolRequest) (
 	case approval.Approved:
 	case approval.Timeout:
 		s.auditResearch(opID, args.Query, decRejectedTimeout, time.Since(start))
-		return errResult("research query was not approved in time — STOP, do not retry"), nil
+		return mcpserve.ErrResult("research query was not approved in time — STOP, do not retry"), nil
 	default:
 		s.auditResearch(opID, args.Query, decRejected, time.Since(start))
-		return errResult("research query was declined by the operator — STOP"), nil
+		return mcpserve.ErrResult("research query was declined by the operator — STOP"), nil
 	}
 
 	res, err := s.research(ctx, opID, args.Query)
@@ -196,10 +188,10 @@ func (s *Server) handleResearch(ctx context.Context, req *mcp.CallToolRequest) (
 		if errors.As(err, &ref) {
 			rec.Limit = ref.limit
 			finalize(ref.decision)
-			return errResult(ref.msg), nil
+			return mcpserve.ErrResult(ref.msg), nil
 		}
 		finalize(decError)
-		return errResult(err.Error()), nil
+		return mcpserve.ErrResult(err.Error()), nil
 	}
 
 	// Answer gate config knob: the answer is the one artifact crossing into the
@@ -211,17 +203,17 @@ func (s *Server) handleResearch(ctx context.Context, req *mcp.CallToolRequest) (
 		case approval.Approved:
 		case approval.Timeout:
 			finalize(decRejectedTimeout)
-			return errResult("answer was not approved in time — STOP"), nil
+			return mcpserve.ErrResult("answer was not approved in time — STOP"), nil
 		default:
 			finalize(decRejected)
-			return errResult("answer was declined by the operator — STOP"), nil
+			return mcpserve.ErrResult("answer was declined by the operator — STOP"), nil
 		}
 	}
 
 	rec.Research().AnswerBytes = len(res.answer.Answer)
 	rec.Research().AnswerSHA256 = sha256Hex(res.answer.Answer)
 	finalize(decAnswered)
-	return jsonResult(res.answer), nil
+	return mcpserve.JSONResult(res.answer), nil
 }
 
 // storeTranscript uploads the URLs-only transcript, returning whether it landed.
@@ -305,22 +297,4 @@ func statusTag(r audit.Record) string {
 		return ""
 	}
 	return " status=" + clip(r.Status, 200)
-}
-
-func textResult(text string) *mcp.CallToolResult {
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
-}
-
-func errResult(msg string) *mcp.CallToolResult {
-	r := textResult(msg)
-	r.IsError = true
-	return r
-}
-
-func jsonResult(v any) *mcp.CallToolResult {
-	b, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return errResult("internal: marshal result: " + err.Error())
-	}
-	return textResult(string(b))
 }

@@ -24,6 +24,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/jeffbstewart/cloister/internal/audit"
+	"github.com/jeffbstewart/cloister/internal/mcpserve"
 	"github.com/jeffbstewart/cloister/internal/workspace"
 )
 
@@ -61,7 +62,7 @@ func (s *Server) finishNonUTF8(rec audit.Record, p workspace.Path, oldRaw, final
 	if string(finalBytes) == string(oldRaw) {
 		rec.Decision = decNoChange
 		s.audit(rec)
-		return jsonResult(map[string]any{"opId": rec.RunID, "path": rec.Mutation().Path, "status": "no_change", "changed": false})
+		return mcpserve.JSONResult(map[string]any{"opId": rec.RunID, "path": rec.Mutation().Path, "status": "no_change", "changed": false})
 	}
 	added, removed := diffStat(viewDiff)
 	rec.Mutation().BytesBefore = int64(len(oldRaw))
@@ -73,7 +74,7 @@ func (s *Server) finishNonUTF8(rec audit.Record, p workspace.Path, oldRaw, final
 	if dryRun {
 		rec.Decision = decDryRun
 		s.audit(rec)
-		return jsonResult(map[string]any{"opId": rec.RunID, "path": rec.Mutation().Path, "diff": viewDiff, "dryRun": true, "permitNonUtf8": true})
+		return mcpserve.JSONResult(map[string]any{"opId": rec.RunID, "path": rec.Mutation().Path, "diff": viewDiff, "dryRun": true, "permitNonUtf8": true})
 	}
 	payload, _ := diffPayload("", viewDiff)
 	return s.awaitApproval(rec, stagedOp{OpID: rec.RunID, Tool: rec.Tool, Path: s.rel(p), Content: finalBytes, Perm: uint32(perm), Payload: payload}, notify)
@@ -89,7 +90,7 @@ func (s *Server) applyDiffRepair(rec audit.Record, p workspace.Path, diff string
 	if errors.Is(err, workspace.ErrAlreadyApplied) {
 		rec.Decision = decNoChange
 		s.audit(rec)
-		return jsonResult(map[string]any{"opId": rec.RunID, "path": rec.Mutation().Path, "status": "already_applied", "changed": false})
+		return mcpserve.JSONResult(map[string]any{"opId": rec.RunID, "path": rec.Mutation().Path, "status": "already_applied", "changed": false})
 	}
 	if err != nil {
 		return s.rejectDiff(rec, decError, err, diff)

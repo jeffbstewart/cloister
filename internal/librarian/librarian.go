@@ -25,10 +25,8 @@ package librarian
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"regexp"
@@ -39,6 +37,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/jeffbstewart/cloister/internal/audit"
+	"github.com/jeffbstewart/cloister/internal/mcpserve"
 	"github.com/jeffbstewart/cloister/internal/repo"
 	"github.com/jeffbstewart/cloister/internal/runid"
 	"github.com/jeffbstewart/cloister/internal/shield"
@@ -88,30 +87,16 @@ func New(cfg Config) *Server {
 
 // Handler serves MCP at /mcp and a liveness probe at /healthz.
 func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(
-		func(*http.Request) *mcp.Server { return s.mcp }, nil))
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, "ok")
-	})
-	return mux
-}
-
-func str(desc string) *jsonschema.Schema {
-	return &jsonschema.Schema{Type: "string", Description: desc}
-}
-func integer(desc string) *jsonschema.Schema {
-	return &jsonschema.Schema{Type: "integer", Description: desc}
+	return mcpserve.Handler(s.mcp)
 }
 
 func (s *Server) registerTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "read_file",
 		Description: "Read a workspace text file. Files marked unreadable (permission bits without r) refuse; binaries and oversized files are not served.",
-		InputSchema: &jsonschema.Schema{
+		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 			Type:       "object",
-			Properties: map[string]*jsonschema.Schema{"path": str("workspace-relative file path")},
+			Properties: map[string]*jsonschema.Schema{"path": mcpserve.Str("workspace-relative file path")},
 			Required:   []string{"path"},
 		},
 	}, s.readFile)
@@ -119,12 +104,12 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "read_range",
 		Description: "Read lines start..end of a text file (1-based, inclusive).",
-		InputSchema: &jsonschema.Schema{
+		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"path":  str("workspace-relative file path"),
-				"start": integer("first line, 1-based"),
-				"end":   integer("last line, inclusive"),
+				"path":  mcpserve.Str("workspace-relative file path"),
+				"start": mcpserve.Integer("first line, 1-based"),
+				"end":   mcpserve.Integer("last line, inclusive"),
 			},
 			Required: []string{"path", "start", "end"},
 		},
@@ -133,11 +118,11 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "read_head",
 		Description: "Read the first N lines of a text file.",
-		InputSchema: &jsonschema.Schema{
+		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"path": str("workspace-relative file path"),
-				"n":    integer("how many lines"),
+				"path": mcpserve.Str("workspace-relative file path"),
+				"n":    mcpserve.Integer("how many lines"),
 			},
 			Required: []string{"path", "n"},
 		},
@@ -146,11 +131,11 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "read_tail",
 		Description: "Read the last N lines of a text file.",
-		InputSchema: &jsonschema.Schema{
+		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"path": str("workspace-relative file path"),
-				"n":    integer("how many lines"),
+				"path": mcpserve.Str("workspace-relative file path"),
+				"n":    mcpserve.Integer("how many lines"),
 			},
 			Required: []string{"path", "n"},
 		},
@@ -159,10 +144,10 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "batch_read",
 		Description: fmt.Sprintf("Read up to %d text files in one call. Per-path errors are reported alongside successful contents.", MaxBatchFiles),
-		InputSchema: &jsonschema.Schema{
+		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"paths": {Type: "array", Items: str("workspace-relative file path"), Description: "files to read"},
+				"paths": {Type: "array", Items: mcpserve.Str("workspace-relative file path"), Description: "files to read"},
 			},
 			Required: []string{"paths"},
 		},
@@ -171,9 +156,9 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "stat_file",
 		Description: "Metadata for one path: size, mtime, line count, sha256, permission bits (r/x stripped means the content is off-limits).",
-		InputSchema: &jsonschema.Schema{
+		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 			Type:       "object",
-			Properties: map[string]*jsonschema.Schema{"path": str("workspace-relative path")},
+			Properties: map[string]*jsonschema.Schema{"path": mcpserve.Str("workspace-relative path")},
 			Required:   []string{"path"},
 		},
 	}, s.statFile)
@@ -181,20 +166,20 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "list_dir",
 		Description: "List a directory's immediate children with permission bits, sizes, and mtimes.",
-		InputSchema: &jsonschema.Schema{
+		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 			Type:       "object",
-			Properties: map[string]*jsonschema.Schema{"path": str("workspace-relative directory ('.' for the root)")},
+			Properties: map[string]*jsonschema.Schema{"path": mcpserve.Str("workspace-relative directory ('.' for the root)")},
 		},
 	}, s.listDir)
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "tree",
 		Description: fmt.Sprintf("Recursive listing under a directory, depth-limited (default 3, max %d), capped at %d entries.", MaxTreeDepth, MaxListEntries),
-		InputSchema: &jsonschema.Schema{
+		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"path":  str("workspace-relative directory ('.' for the root)"),
-				"depth": integer("levels below the start (default 3)"),
+				"path":  mcpserve.Str("workspace-relative directory ('.' for the root)"),
+				"depth": mcpserve.Integer("levels below the start (default 3)"),
 			},
 		},
 	}, s.tree)
@@ -202,9 +187,9 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "glob",
 		Description: "Paths matching an anchored glob: path.Match per segment, '**' spans directories ('*.go' is root-only — use '**/*.go' for any depth).",
-		InputSchema: &jsonschema.Schema{
+		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 			Type:       "object",
-			Properties: map[string]*jsonschema.Schema{"pattern": str("anchored glob pattern")},
+			Properties: map[string]*jsonschema.Schema{"pattern": mcpserve.Str("anchored glob pattern")},
 			Required:   []string{"pattern"},
 		},
 	}, s.glob)
@@ -212,15 +197,15 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "search",
 		Description: fmt.Sprintf("RE2 search over readable text files. mode: 'context' (matching lines with surrounding context, default), 'files' (paths only), 'count' (per-file match counts), 'total' (one number). Optional glob and path-prefix filters. Matches cap at %d with truncation reported.", MaxSearchMatches),
-		InputSchema: &jsonschema.Schema{
+		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"pattern": str("RE2 regular expression"),
-				"mode":    str("'context' (default) | 'files' | 'count' | 'total'"),
-				"glob":    str("only files matching this anchored glob"),
-				"path":    str("only files under this directory prefix"),
-				"before":  integer("context lines before each match (mode context, default 0)"),
-				"after":   integer("context lines after each match (mode context, default 0)"),
+				"pattern": mcpserve.Str("RE2 regular expression"),
+				"mode":    mcpserve.Str("'context' (default) | 'files' | 'count' | 'total'"),
+				"glob":    mcpserve.Str("only files matching this anchored glob"),
+				"path":    mcpserve.Str("only files under this directory prefix"),
+				"before":  mcpserve.Integer("context lines before each match (mode context, default 0)"),
+				"after":   mcpserve.Integer("context lines after each match (mode context, default 0)"),
 			},
 			Required: []string{"pattern"},
 		},
@@ -229,9 +214,9 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "recently_modified",
 		Description: "Files ordered by modification time, newest first (default 20).",
-		InputSchema: &jsonschema.Schema{
+		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 			Type:       "object",
-			Properties: map[string]*jsonschema.Schema{"limit": integer("how many (default 20)")},
+			Properties: map[string]*jsonschema.Schema{"limit": mcpserve.Integer("how many (default 20)")},
 		},
 	}, s.recentlyModified)
 }
@@ -242,14 +227,14 @@ func (s *Server) readFile(_ context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 	var a struct {
 		Path string `json:"path"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	ar, err := s.cfg.Repo.Read(a.Path)
 	if err != nil {
 		return s.refuse("read_file", err, a.Path), nil
 	}
-	return textResult(ar.String()), nil
+	return mcpserve.TextResult(ar.String()), nil
 }
 
 func (s *Server) readRange(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -258,11 +243,11 @@ func (s *Server) readRange(_ context.Context, req *mcp.CallToolRequest) (*mcp.Ca
 		Start int    `json:"start"`
 		End   int    `json:"end"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	if a.Start < 1 || a.End < a.Start {
-		return errResult("start must be >= 1 and end >= start"), nil
+		return mcpserve.ErrResult("start must be >= 1 and end >= start"), nil
 	}
 	return s.serveLines("read_range", a.Path, func(total int) (int, int) {
 		return min(a.Start-1, total), min(a.End, total)
@@ -274,11 +259,11 @@ func (s *Server) readHead(_ context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 		Path string `json:"path"`
 		N    int    `json:"n"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	if a.N < 1 {
-		return errResult("n must be >= 1"), nil
+		return mcpserve.ErrResult("n must be >= 1"), nil
 	}
 	return s.serveLines("read_head", a.Path, func(total int) (int, int) {
 		return 0, min(a.N, total)
@@ -290,11 +275,11 @@ func (s *Server) readTail(_ context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 		Path string `json:"path"`
 		N    int    `json:"n"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	if a.N < 1 {
-		return errResult("n must be >= 1"), nil
+		return mcpserve.ErrResult("n must be >= 1"), nil
 	}
 	return s.serveLines("read_tail", a.Path, func(total int) (int, int) {
 		return max(0, total-a.N), total
@@ -333,7 +318,7 @@ func (s *Server) serveLines(tool, path string, window func(total int) (int, int)
 		return s.refuse(tool, err, path), nil
 	}
 	text, from, to, total := lineSlice(ar.CopyBytes(), window)
-	return jsonResult(map[string]any{
+	return mcpserve.JSONResult(map[string]any{
 		"path": path, "fromLine": from + 1, "toLine": to, "totalLines": total,
 		"content": text,
 	}), nil
@@ -343,11 +328,11 @@ func (s *Server) batchRead(_ context.Context, req *mcp.CallToolRequest) (*mcp.Ca
 	var a struct {
 		Paths []string `json:"paths"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	if len(a.Paths) == 0 || len(a.Paths) > MaxBatchFiles {
-		return errResult(fmt.Sprintf("paths must name 1..%d files", MaxBatchFiles)), nil
+		return mcpserve.ErrResult(fmt.Sprintf("paths must name 1..%d files", MaxBatchFiles)), nil
 	}
 	type fileOut struct {
 		Path    string `json:"path"`
@@ -370,29 +355,29 @@ func (s *Server) batchRead(_ context.Context, req *mcp.CallToolRequest) (*mcp.Ca
 	}
 	// One denial record carries every denied path of the batch.
 	s.auditDenial("batch_read", denied...)
-	return jsonResult(map[string]any{"files": out}), nil
+	return mcpserve.JSONResult(map[string]any{"files": out}), nil
 }
 
 func (s *Server) statFile(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var a struct {
 		Path string `json:"path"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	e, err := s.cfg.Repo.Stat(a.Path)
 	if err != nil {
 		return s.refuse("stat_file", err, a.Path), nil
 	}
-	return jsonResult(entryOut(e)), nil
+	return mcpserve.JSONResult(entryOut(e)), nil
 }
 
 func (s *Server) listDir(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var a struct {
 		Path string `json:"path"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	if a.Path == "" {
 		a.Path = "."
@@ -401,7 +386,7 @@ func (s *Server) listDir(_ context.Context, req *mcp.CallToolRequest) (*mcp.Call
 	if err != nil {
 		return s.refuse("list_dir", err, a.Path), nil
 	}
-	return jsonResult(map[string]any{"path": a.Path, "entries": entriesOut(entries, MaxListEntries)}), nil
+	return mcpserve.JSONResult(map[string]any{"path": a.Path, "entries": entriesOut(entries, MaxListEntries)}), nil
 }
 
 func (s *Server) tree(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -409,8 +394,8 @@ func (s *Server) tree(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToo
 		Path  string `json:"path"`
 		Depth int    `json:"depth"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	if a.Path == "" {
 		a.Path = "."
@@ -440,18 +425,18 @@ func (s *Server) tree(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToo
 		}
 		picked = append(picked, e)
 	}
-	return jsonResult(map[string]any{"path": a.Path, "depth": a.Depth, "entries": entriesOut(picked, MaxListEntries)}), nil
+	return mcpserve.JSONResult(map[string]any{"path": a.Path, "depth": a.Depth, "entries": entriesOut(picked, MaxListEntries)}), nil
 }
 
 func (s *Server) glob(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var a struct {
 		Pattern string `json:"pattern"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	if a.Pattern == "" {
-		return errResult("pattern is required"), nil
+		return mcpserve.ErrResult("pattern is required"), nil
 	}
 	var picked []repo.Entry
 	for _, e := range s.cfg.Repo.All() {
@@ -459,7 +444,7 @@ func (s *Server) glob(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToo
 			picked = append(picked, e)
 		}
 	}
-	return jsonResult(map[string]any{"pattern": a.Pattern, "entries": entriesOut(picked, MaxListEntries)}), nil
+	return mcpserve.JSONResult(map[string]any{"pattern": a.Pattern, "entries": entriesOut(picked, MaxListEntries)}), nil
 }
 
 // grepResident is the shared scan skeleton behind both search and
@@ -499,12 +484,12 @@ func (s *Server) search(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallT
 		Before  int    `json:"before"`
 		After   int    `json:"after"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	re, err := regexp.Compile(a.Pattern) // RE2: linear time, no ReDoS
 	if err != nil {
-		return errResult("bad regex: " + err.Error()), nil
+		return mcpserve.ErrResult("bad regex: " + err.Error()), nil
 	}
 	if a.Mode == "" {
 		a.Mode = "context"
@@ -541,7 +526,7 @@ func (s *Server) search(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallT
 		}
 	})
 	if scanErr != nil {
-		return errResult("search: " + scanErr.Error()), nil
+		return mcpserve.ErrResult("search: " + scanErr.Error()), nil
 	}
 
 	out := map[string]any{"pattern": a.Pattern, "mode": a.Mode, "totalMatches": total, "truncated": truncated}
@@ -555,17 +540,17 @@ func (s *Server) search(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallT
 	case "total":
 		// totalMatches already present
 	default:
-		return errResult("mode must be context | files | count | total"), nil
+		return mcpserve.ErrResult("mode must be context | files | count | total"), nil
 	}
-	return jsonResult(out), nil
+	return mcpserve.JSONResult(out), nil
 }
 
 func (s *Server) recentlyModified(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var a struct {
 		Limit int `json:"limit"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	if a.Limit <= 0 {
 		a.Limit = 20
@@ -580,7 +565,7 @@ func (s *Server) recentlyModified(_ context.Context, req *mcp.CallToolRequest) (
 	if len(files) > a.Limit {
 		files = files[:a.Limit]
 	}
-	return jsonResult(map[string]any{"entries": entriesOut(files, a.Limit)}), nil
+	return mcpserve.JSONResult(map[string]any{"entries": entriesOut(files, a.Limit)}), nil
 }
 
 // --- helpers ---
@@ -590,9 +575,9 @@ func (s *Server) recentlyModified(_ context.Context, req *mcp.CallToolRequest) (
 func (s *Server) refuse(tool string, err error, paths ...string) *mcp.CallToolResult {
 	if errors.Is(err, repo.ErrForbidden) {
 		s.auditDenial(tool, paths...)
-		return errResult("denied: " + err.Error())
+		return mcpserve.ErrResult("denied: " + err.Error())
 	}
-	return errResult(err.Error())
+	return mcpserve.ErrResult(err.Error())
 }
 
 // auditDenial appends one denial record naming the denied paths.
@@ -668,29 +653,4 @@ func sortedKeys(m map[string]int) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-func decode(req *mcp.CallToolRequest, v any) error {
-	if len(req.Params.Arguments) == 0 {
-		return nil
-	}
-	return json.Unmarshal(req.Params.Arguments, v)
-}
-
-func textResult(text string) *mcp.CallToolResult {
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
-}
-
-func errResult(msg string) *mcp.CallToolResult {
-	r := textResult(msg)
-	r.IsError = true
-	return r
-}
-
-func jsonResult(v any) *mcp.CallToolResult {
-	b, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return errResult(fmt.Sprintf("internal: marshal result: %v", err))
-	}
-	return textResult(string(b))
 }

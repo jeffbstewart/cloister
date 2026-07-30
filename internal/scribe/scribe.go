@@ -30,10 +30,8 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -46,6 +44,7 @@ import (
 
 	"github.com/jeffbstewart/cloister/internal/approval"
 	"github.com/jeffbstewart/cloister/internal/audit"
+	"github.com/jeffbstewart/cloister/internal/mcpserve"
 	"github.com/jeffbstewart/cloister/internal/runid"
 	"github.com/jeffbstewart/cloister/internal/workspace"
 )
@@ -118,36 +117,19 @@ func New(cfg Config) *Server {
 
 // Handler serves MCP at /mcp and a liveness probe at /healthz.
 func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(
-		func(*http.Request) *mcp.Server { return s.mcp }, nil))
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, "ok")
-	})
-	return mux
-}
-
-func str(desc string) *jsonschema.Schema {
-	return &jsonschema.Schema{Type: "string", Description: desc}
-}
-func boolean(desc string) *jsonschema.Schema {
-	return &jsonschema.Schema{Type: "boolean", Description: desc}
-}
-func integer(desc string) *jsonschema.Schema {
-	return &jsonschema.Schema{Type: "integer", Description: desc}
+	return mcpserve.Handler(s.mcp)
 }
 
 func (s *Server) registerTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "create_text_file",
 		Description: "Create a NEW UTF-8 text file with the given content. Fails if the file already exists — use apply_diff or replace_* to edit an existing file. Parent directories are created as needed.",
-		InputSchema: &jsonschema.Schema{
+		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"path":    str("workspace-relative path of the new file"),
-				"content": str("full UTF-8 file content"),
-				"dryRun":  boolean("if true, validate and report but do not write"),
+				"path":    mcpserve.Str("workspace-relative path of the new file"),
+				"content": mcpserve.Str("full UTF-8 file content"),
+				"dryRun":  mcpserve.Boolean("if true, validate and report but do not write"),
 			},
 			Required: []string{"path", "content"},
 		},
@@ -156,12 +138,12 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "apply_diff",
 		Description: "Apply a unified-style diff to an EXISTING file. Hunks are located by their surrounding CONTEXT, not line numbers (the @@ numbers are ignored), so include enough context to make each change unambiguous. One file per call; UTF-8 in and out. Use create_text_file for new files.",
-		InputSchema: &jsonschema.Schema{
+		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"path":   str("workspace-relative path of the existing file"),
-				"diff":   str("the diff to apply — hunks of space (context), - (remove), + (add) lines"),
-				"dryRun": boolean("if true, return the resulting diff without writing"),
+				"path":   mcpserve.Str("workspace-relative path of the existing file"),
+				"diff":   mcpserve.Str("the diff to apply — hunks of space (context), - (remove), + (add) lines"),
+				"dryRun": mcpserve.Boolean("if true, return the resulting diff without writing"),
 			},
 			Required: []string{"path", "diff"},
 		},
@@ -170,15 +152,15 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "replace_string",
 		Description: "Replace a literal substring in an existing file. scope is 'first' (default) or 'all'; expectedCount asserts how many times `find` occurs (guards runaway edits). UTF-8 in and out.",
-		InputSchema: &jsonschema.Schema{
+		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"path":          str("workspace-relative file path"),
-				"find":          str("literal substring to find (must be non-empty)"),
-				"replace":       str("replacement text"),
-				"scope":         str("'first' (default) or 'all'"),
-				"expectedCount": integer("assert `find` occurs exactly this many times, else fail"),
-				"dryRun":        boolean("if true, return the diff without writing"),
+				"path":          mcpserve.Str("workspace-relative file path"),
+				"find":          mcpserve.Str("literal substring to find (must be non-empty)"),
+				"replace":       mcpserve.Str("replacement text"),
+				"scope":         mcpserve.Str("'first' (default) or 'all'"),
+				"expectedCount": mcpserve.Integer("assert `find` occurs exactly this many times, else fail"),
+				"dryRun":        mcpserve.Boolean("if true, return the diff without writing"),
 			},
 			Required: []string{"path", "find", "replace"},
 		},
@@ -187,15 +169,15 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "replace_regex",
 		Description: "Replace matches of an RE2 regular expression in an existing file, with $1 capture-group references in the replacement. scope is 'first' (default) or 'all'; expectedCount asserts the match count. UTF-8 in and out.",
-		InputSchema: &jsonschema.Schema{
+		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"path":          str("workspace-relative file path"),
-				"pattern":       str("RE2 regular expression"),
-				"replacement":   str("replacement (supports $1, ${name} capture refs)"),
-				"scope":         str("'first' (default) or 'all'"),
-				"expectedCount": integer("assert this many matches, else fail"),
-				"dryRun":        boolean("if true, return the diff without writing"),
+				"path":          mcpserve.Str("workspace-relative file path"),
+				"pattern":       mcpserve.Str("RE2 regular expression"),
+				"replacement":   mcpserve.Str("replacement (supports $1, ${name} capture refs)"),
+				"scope":         mcpserve.Str("'first' (default) or 'all'"),
+				"expectedCount": mcpserve.Integer("assert this many matches, else fail"),
+				"dryRun":        mcpserve.Boolean("if true, return the diff without writing"),
 			},
 			Required: []string{"path", "pattern", "replacement"},
 		},
@@ -204,12 +186,12 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "write_binary_file",
 		Description: "Replace a whole file with opaque (base64-encoded) bytes. ALWAYS requires human approval — binary content can't be reviewed as a diff. Use the text ops for source; this is for binary assets.",
-		InputSchema: &jsonschema.Schema{
+		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"path":        str("workspace-relative file path"),
-				"bytesBase64": str("file content, base64-encoded"),
-				"overwrite":   boolean("if true, replace an existing file"),
+				"path":        mcpserve.Str("workspace-relative file path"),
+				"bytesBase64": mcpserve.Str("file content, base64-encoded"),
+				"overwrite":   mcpserve.Boolean("if true, replace an existing file"),
 			},
 			Required: []string{"path", "bytesBase64"},
 		},
@@ -218,9 +200,9 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "create_directory",
 		Description: "Create a directory (and any missing parents) within the workspace.",
-		InputSchema: &jsonschema.Schema{
+		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 			Type:       "object",
-			Properties: map[string]*jsonschema.Schema{"path": str("workspace-relative directory path")},
+			Properties: map[string]*jsonschema.Schema{"path": mcpserve.Str("workspace-relative directory path")},
 			Required:   []string{"path"},
 		},
 	}, s.createDirectory)
@@ -228,12 +210,12 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "move_file",
 		Description: "Rename or move a file within the workspace. Both ends are confined.",
-		InputSchema: &jsonschema.Schema{
+		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"from":      str("source file path"),
-				"to":        str("destination path"),
-				"overwrite": boolean("if true, replace an existing destination file"),
+				"from":      mcpserve.Str("source file path"),
+				"to":        mcpserve.Str("destination path"),
+				"overwrite": mcpserve.Boolean("if true, replace an existing destination file"),
 			},
 			Required: []string{"from", "to"},
 		},
@@ -242,11 +224,11 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "move_directory",
 		Description: "Rename or move a directory subtree within the workspace. The destination must not already exist.",
-		InputSchema: &jsonschema.Schema{
+		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"from": str("source directory path"),
-				"to":   str("destination path"),
+				"from": mcpserve.Str("source directory path"),
+				"to":   mcpserve.Str("destination path"),
 			},
 			Required: []string{"from", "to"},
 		},
@@ -255,12 +237,12 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "copy_file",
 		Description: "Copy a file within the workspace, preserving its contents (so the agent need not read+rewrite it). Both ends are confined; the destination must not exist unless overwrite is set.",
-		InputSchema: &jsonschema.Schema{
+		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"from":      str("source file path"),
-				"to":        str("destination path"),
-				"overwrite": boolean("if true, replace an existing destination file"),
+				"from":      mcpserve.Str("source file path"),
+				"to":        mcpserve.Str("destination path"),
+				"overwrite": mcpserve.Boolean("if true, replace an existing destination file"),
 			},
 			Required: []string{"from", "to"},
 		},
@@ -269,9 +251,9 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "delete_file",
 		Description: "Delete a file (not a directory) within the workspace. Recoverable via git.",
-		InputSchema: &jsonschema.Schema{
+		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 			Type:       "object",
-			Properties: map[string]*jsonschema.Schema{"path": str("workspace-relative file path")},
+			Properties: map[string]*jsonschema.Schema{"path": mcpserve.Str("workspace-relative file path")},
 			Required:   []string{"path"},
 		},
 	}, s.deleteFile)
@@ -279,11 +261,11 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "delete_directory",
 		Description: "Delete a directory within the workspace. With recursive=true, deletes the whole subtree; otherwise the directory must be empty. Recoverable via git.",
-		InputSchema: &jsonschema.Schema{
+		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"path":      str("workspace-relative directory path"),
-				"recursive": boolean("if true, delete the directory and all its contents"),
+				"path":      mcpserve.Str("workspace-relative directory path"),
+				"recursive": mcpserve.Boolean("if true, delete the directory and all its contents"),
 			},
 			Required: []string{"path"},
 		},
@@ -292,15 +274,15 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "list_workspace_roots",
 		Description: "Report the writable workspace root(s). Read-only.",
-		InputSchema: &jsonschema.Schema{Type: "object"},
+		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(), Type: "object"},
 	}, s.listWorkspaceRoots)
 
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "get_diff",
 		Description: "Fetch the stored diff for a prior mutation by its opId — the diff the model submitted and the diff actually applied. Read-only.",
-		InputSchema: &jsonschema.Schema{
+		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 			Type:       "object",
-			Properties: map[string]*jsonschema.Schema{"opId": str("the opId returned by a prior mutation")},
+			Properties: map[string]*jsonschema.Schema{"opId": mcpserve.Str("the opId returned by a prior mutation")},
 			Required:   []string{"opId"},
 		},
 	}, s.getDiff)
@@ -314,12 +296,12 @@ func (s *Server) createTextFile(ctx context.Context, req *mcp.CallToolRequest) (
 		Content string `json:"content"`
 		DryRun  bool   `json:"dryRun"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	rec, err := newToolRecord("create_text_file")
 	if err != nil {
-		return errResult("internal: mint op id: " + err.Error()), nil
+		return mcpserve.ErrResult("internal: mint op id: " + err.Error()), nil
 	}
 	rec.Detail = &audit.MutationDetail{Path: a.Path}
 
@@ -333,7 +315,7 @@ func (s *Server) createTextFile(ctx context.Context, req *mcp.CallToolRequest) (
 	if a.DryRun {
 		rec.Decision = decDryRun
 		s.audit(rec)
-		return jsonResult(map[string]any{"opId": rec.RunID, "path": a.Path, "wouldCreate": true, "bytes": len(a.Content)}), nil
+		return mcpserve.JSONResult(map[string]any{"opId": rec.RunID, "path": a.Path, "wouldCreate": true, "bytes": len(a.Content)}), nil
 	}
 	resultDiff := workspace.Unified("/dev/null", "b/"+a.Path, nil, []byte(a.Content), workspace.DefaultContext)
 	added, _ := diffStat(resultDiff)
@@ -361,7 +343,7 @@ func (s *Server) createTextFile(ctx context.Context, req *mcp.CallToolRequest) (
 	}
 	rec.Decision = decApplied
 	s.audit(rec)
-	return jsonResult(map[string]any{"opId": rec.RunID, "path": a.Path, "bytes": len(a.Content), "linesAdded": added}), nil
+	return mcpserve.JSONResult(map[string]any{"opId": rec.RunID, "path": a.Path, "bytes": len(a.Content), "linesAdded": added}), nil
 }
 
 func (s *Server) applyDiff(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -371,12 +353,12 @@ func (s *Server) applyDiff(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 		PermitNonUTF8 bool   `json:"permit_non_utf8"`
 		DryRun        bool   `json:"dryRun"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	rec, err := newToolRecord("apply_diff")
 	if err != nil {
-		return errResult("internal: mint op id: " + err.Error()), nil
+		return mcpserve.ErrResult("internal: mint op id: " + err.Error()), nil
 	}
 	rec.Detail = &audit.MutationDetail{Path: a.Path}
 	p, res := s.resolveConfined(rec, a.Path)
@@ -394,7 +376,7 @@ func (s *Server) applyDiff(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 	if errors.Is(err, workspace.ErrAlreadyApplied) {
 		rec.Decision = decNoChange
 		s.audit(rec)
-		return jsonResult(map[string]any{"opId": rec.RunID, "path": a.Path, "status": "already_applied", "changed": false}), nil
+		return mcpserve.JSONResult(map[string]any{"opId": rec.RunID, "path": a.Path, "status": "already_applied", "changed": false}), nil
 	}
 	if err != nil {
 		return s.rejectDiff(rec, decError, err, a.Diff), nil
@@ -415,12 +397,12 @@ func (s *Server) replaceString(ctx context.Context, req *mcp.CallToolRequest) (*
 		PermitNonUTF8 bool   `json:"permit_non_utf8"`
 		DryRun        bool   `json:"dryRun"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	rec, err := newToolRecord("replace_string")
 	if err != nil {
-		return errResult("internal: mint op id: " + err.Error()), nil
+		return mcpserve.ErrResult("internal: mint op id: " + err.Error()), nil
 	}
 	rec.Detail = &audit.MutationDetail{Path: a.Path}
 	if a.Find == "" {
@@ -466,12 +448,12 @@ func (s *Server) replaceRegex(ctx context.Context, req *mcp.CallToolRequest) (*m
 		PermitNonUTF8 bool   `json:"permit_non_utf8"`
 		DryRun        bool   `json:"dryRun"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	rec, err := newToolRecord("replace_regex")
 	if err != nil {
-		return errResult("internal: mint op id: " + err.Error()), nil
+		return mcpserve.ErrResult("internal: mint op id: " + err.Error()), nil
 	}
 	rec.Detail = &audit.MutationDetail{Path: a.Path}
 	re, err := regexp.Compile(a.Pattern) // RE2: linear time, no ReDoS
@@ -516,12 +498,12 @@ func (s *Server) writeBinaryFile(ctx context.Context, req *mcp.CallToolRequest) 
 		BytesBase64 string `json:"bytesBase64"`
 		Overwrite   bool   `json:"overwrite"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	rec, err := newToolRecord("write_binary_file")
 	if err != nil {
-		return errResult("internal: mint op id: " + err.Error()), nil
+		return mcpserve.ErrResult("internal: mint op id: " + err.Error()), nil
 	}
 	rec.Detail = &audit.MutationDetail{Path: a.Path}
 	data, err := base64.StdEncoding.DecodeString(a.BytesBase64)
@@ -592,7 +574,7 @@ func (s *Server) finishEdit(rec audit.Record, p workspace.Path, old, newContent 
 	if string(newContent) == string(old) {
 		rec.Decision = decNoChange
 		s.audit(rec)
-		return jsonResult(map[string]any{"opId": rec.RunID, "path": rec.Mutation().Path, "status": "no_change", "changed": false}), nil
+		return mcpserve.JSONResult(map[string]any{"opId": rec.RunID, "path": rec.Mutation().Path, "status": "no_change", "changed": false}), nil
 	}
 	resultDiff := workspace.Unified("a/"+rec.Mutation().Path, "b/"+rec.Mutation().Path, old, newContent, workspace.DefaultContext)
 	added, removed := diffStat(resultDiff)
@@ -606,7 +588,7 @@ func (s *Server) finishEdit(rec audit.Record, p workspace.Path, old, newContent 
 	if dryRun {
 		rec.Decision = decDryRun
 		s.audit(rec)
-		return jsonResult(map[string]any{"opId": rec.RunID, "path": rec.Mutation().Path, "diff": resultDiff, "linesAdded": added, "linesRemoved": removed, "dryRun": true}), nil
+		return mcpserve.JSONResult(map[string]any{"opId": rec.RunID, "path": rec.Mutation().Path, "diff": resultDiff, "linesAdded": added, "linesRemoved": removed, "dryRun": true}), nil
 	}
 	payload, truncated := diffPayload(inputDiff, resultDiff)
 	rec.Mutation().DiffTruncated = truncated
@@ -625,28 +607,28 @@ func (s *Server) finishEdit(rec audit.Record, p workspace.Path, old, newContent 
 	}
 	rec.Decision = decApplied
 	s.audit(rec)
-	return jsonResult(map[string]any{"opId": rec.RunID, "path": rec.Mutation().Path, "diff": resultDiff, "bytes": len(newContent), "linesAdded": added, "linesRemoved": removed}), nil
+	return mcpserve.JSONResult(map[string]any{"opId": rec.RunID, "path": rec.Mutation().Path, "diff": resultDiff, "bytes": len(newContent), "linesAdded": added, "linesRemoved": removed}), nil
 }
 
 func (s *Server) getDiff(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var a struct {
 		OpId string `json:"opId"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	id, err := runid.Parse(a.OpId)
 	if err != nil {
-		return errResult("invalid opId: " + err.Error()), nil
+		return mcpserve.ErrResult("invalid opId: " + err.Error()), nil
 	}
 	if s.cfg.Diffs == nil {
-		return errResult("diff store not configured"), nil
+		return mcpserve.ErrResult("diff store not configured"), nil
 	}
 	payload, err := s.cfg.Diffs.FetchDiff(id)
 	if err != nil {
-		return errResult("no diff for op " + a.OpId), nil
+		return mcpserve.ErrResult("no diff for op " + a.OpId), nil
 	}
-	return textResult(string(payload)), nil
+	return mcpserve.TextResult(string(payload)), nil
 }
 
 // putDiff stores a diff payload best-effort: a mutation is real even if the
@@ -710,12 +692,12 @@ func (s *Server) createDirectory(_ context.Context, req *mcp.CallToolRequest) (*
 	var a struct {
 		Path string `json:"path"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	rec, err := newToolRecord("create_directory")
 	if err != nil {
-		return errResult("internal: mint op id: " + err.Error()), nil
+		return mcpserve.ErrResult("internal: mint op id: " + err.Error()), nil
 	}
 	rec.Detail = &audit.MutationDetail{Path: a.Path}
 	p, res := s.resolveForWrite(rec, a.Path)
@@ -727,7 +709,7 @@ func (s *Server) createDirectory(_ context.Context, req *mcp.CallToolRequest) (*
 	}
 	rec.Decision = decApplied
 	s.audit(rec)
-	return jsonResult(map[string]any{"opId": rec.RunID, "path": a.Path}), nil
+	return mcpserve.JSONResult(map[string]any{"opId": rec.RunID, "path": a.Path}), nil
 }
 
 func (s *Server) moveFile(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -736,12 +718,12 @@ func (s *Server) moveFile(_ context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 		To        string `json:"to"`
 		Overwrite bool   `json:"overwrite"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	rec, err := newToolRecord("move_file")
 	if err != nil {
-		return errResult("internal: mint op id: " + err.Error()), nil
+		return mcpserve.ErrResult("internal: mint op id: " + err.Error()), nil
 	}
 	rec.Detail = &audit.MutationDetail{From: a.From, To: a.To}
 
@@ -782,7 +764,7 @@ func (s *Server) moveFile(_ context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 	}
 	rec.Decision = decApplied
 	s.audit(rec)
-	return jsonResult(map[string]any{"opId": rec.RunID, "from": a.From, "to": a.To}), nil
+	return mcpserve.JSONResult(map[string]any{"opId": rec.RunID, "from": a.From, "to": a.To}), nil
 }
 
 func (s *Server) moveDirectory(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -790,12 +772,12 @@ func (s *Server) moveDirectory(_ context.Context, req *mcp.CallToolRequest) (*mc
 		From string `json:"from"`
 		To   string `json:"to"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	rec, err := newToolRecord("move_directory")
 	if err != nil {
-		return errResult("internal: mint op id: " + err.Error()), nil
+		return mcpserve.ErrResult("internal: mint op id: " + err.Error()), nil
 	}
 	rec.Detail = &audit.MutationDetail{From: a.From, To: a.To}
 	from, err := s.root.Resolve(a.From)
@@ -830,7 +812,7 @@ func (s *Server) moveDirectory(_ context.Context, req *mcp.CallToolRequest) (*mc
 	}
 	rec.Decision = decApplied
 	s.audit(rec)
-	return jsonResult(map[string]any{"opId": rec.RunID, "from": a.From, "to": a.To}), nil
+	return mcpserve.JSONResult(map[string]any{"opId": rec.RunID, "from": a.From, "to": a.To}), nil
 }
 
 func (s *Server) copyFile(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -839,12 +821,12 @@ func (s *Server) copyFile(_ context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 		To        string `json:"to"`
 		Overwrite bool   `json:"overwrite"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	rec, err := newToolRecord("copy_file")
 	if err != nil {
-		return errResult("internal: mint op id: " + err.Error()), nil
+		return mcpserve.ErrResult("internal: mint op id: " + err.Error()), nil
 	}
 	rec.Detail = &audit.MutationDetail{From: a.From, To: a.To}
 
@@ -892,19 +874,19 @@ func (s *Server) copyFile(_ context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 	}
 	rec.Decision = decApplied
 	s.audit(rec)
-	return jsonResult(map[string]any{"opId": rec.RunID, "from": a.From, "to": a.To, "bytes": len(data)}), nil
+	return mcpserve.JSONResult(map[string]any{"opId": rec.RunID, "from": a.From, "to": a.To, "bytes": len(data)}), nil
 }
 
 func (s *Server) deleteFile(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var a struct {
 		Path string `json:"path"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	rec, err := newToolRecord("delete_file")
 	if err != nil {
-		return errResult("internal: mint op id: " + err.Error()), nil
+		return mcpserve.ErrResult("internal: mint op id: " + err.Error()), nil
 	}
 	rec.Detail = &audit.MutationDetail{Path: a.Path}
 	p, res := s.resolveForWrite(rec, a.Path)
@@ -923,7 +905,7 @@ func (s *Server) deleteFile(_ context.Context, req *mcp.CallToolRequest) (*mcp.C
 	}
 	rec.Decision = decApplied
 	s.audit(rec)
-	return jsonResult(map[string]any{"opId": rec.RunID, "path": a.Path, "deleted": true}), nil
+	return mcpserve.JSONResult(map[string]any{"opId": rec.RunID, "path": a.Path, "deleted": true}), nil
 }
 
 func (s *Server) deleteDirectory(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -931,12 +913,12 @@ func (s *Server) deleteDirectory(_ context.Context, req *mcp.CallToolRequest) (*
 		Path      string `json:"path"`
 		Recursive bool   `json:"recursive"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	rec, err := newToolRecord("delete_directory")
 	if err != nil {
-		return errResult("internal: mint op id: " + err.Error()), nil
+		return mcpserve.ErrResult("internal: mint op id: " + err.Error()), nil
 	}
 	rec.Detail = &audit.MutationDetail{Path: a.Path}
 	// The recursive flag has no MutationDetail home; it is already reported in the
@@ -965,12 +947,12 @@ func (s *Server) deleteDirectory(_ context.Context, req *mcp.CallToolRequest) (*
 	}
 	rec.Decision = decApplied
 	s.audit(rec)
-	return jsonResult(map[string]any{"opId": rec.RunID, "path": a.Path, "deleted": true, "recursive": a.Recursive}), nil
+	return mcpserve.JSONResult(map[string]any{"opId": rec.RunID, "path": a.Path, "deleted": true, "recursive": a.Recursive}), nil
 }
 
 func (s *Server) listWorkspaceRoots(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	// Read-only; not audited.
-	return jsonResult(map[string]any{"roots": []string{s.root.Dir()}}), nil
+	return mcpserve.JSONResult(map[string]any{"roots": []string{s.root.Dir()}}), nil
 }
 
 // --- helpers ---
@@ -998,7 +980,7 @@ func (s *Server) rejected(rec audit.Record, decision audit.Decision, err error) 
 	rec.Decision = decision
 	rec.Status = err.Error()
 	s.audit(rec)
-	return errResult("rejected: " + err.Error())
+	return mcpserve.ErrResult("rejected: " + err.Error())
 }
 
 // rejectDiff rejects a diff the engine wouldn't apply (malformed, not-found,
@@ -1082,29 +1064,4 @@ func (s *Server) progressNotifier(ctx context.Context, req *mcp.CallToolRequest)
 			Progress:      n,
 		})
 	}
-}
-
-func decode(req *mcp.CallToolRequest, v any) error {
-	if len(req.Params.Arguments) == 0 {
-		return nil
-	}
-	return json.Unmarshal(req.Params.Arguments, v)
-}
-
-func textResult(text string) *mcp.CallToolResult {
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
-}
-
-func errResult(msg string) *mcp.CallToolResult {
-	r := textResult(msg)
-	r.IsError = true
-	return r
-}
-
-func jsonResult(v any) *mcp.CallToolResult {
-	b, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return errResult(fmt.Sprintf("internal: marshal result: %v", err))
-	}
-	return textResult(string(b))
 }

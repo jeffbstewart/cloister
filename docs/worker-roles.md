@@ -39,40 +39,39 @@ Each role owns two pieces, engine and surface, deliberately split:
   collaborators (nil fields degrade features rather than fail), a
   `Server` holding `cfg` + `*mcp.Server`, a `New(cfg)` that calls
   `mcp.NewServer(&mcp.Implementation{Name, Version}, nil)` and
-  `registerTools()`, and a `Handler()` returning a mux with `/mcp`
-  (`mcp.NewStreamableHTTPHandler`) and `/healthz` (200 "ok").
+  `registerTools()`, and a `Handler()` returning
+  `mcpserve.Handler(s.mcp)` — `/mcp` plus `/healthz` (200 "ok").
 
 Tool registration is one `s.mcp.AddTool(&mcp.Tool{Name, Description,
-InputSchema: &jsonschema.Schema{...}}, s.handler)` per tool, with
-small per-package schema helpers (`str(desc)`, `integer(desc)`).
-Handlers have the signature
+InputSchema: &jsonschema.Schema{...}}, s.handler)` per tool, with the
+schema shorthands from `internal/mcpserve` (`Str`, `Integer`,
+`Boolean`, `NoExtras`).  Handlers have the signature
 
     func (s *Server) name(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error)
 
 and decode their arguments into a locally declared anonymous struct
-with json tags via the package's `decode(req, &a)` helper.
+with json tags via `mcpserve.Decode(req, &a)`.
 
 **Tool errors are results, never Go errors.**  The `error` return is
 reserved for transport failures; a failed operation returns
-`errResult(msg), nil` (a text result with `IsError` set) so the caller
-sees a tool-level error, not a protocol error.  Result helpers
-(`textResult`, `jsonResult`, `errResult`) are duplicated per package
-by design — they are three lines each, and a shared helper package
-would couple every surface to one result dialect.  Message prefixes in
-use: `bad arguments:` (undecodable/invalid input), `denied:` (shield
-denial, audited), `rejected:` (policy refusal, audited), `internal:`
-(the server's own fault).
+`mcpserve.ErrResult(msg), nil` (a text result with `IsError` set) so
+the caller sees a tool-level error, not a protocol error.  The result
+constructors (`TextResult`, `JSONResult`, `ErrResult`) live in
+`internal/mcpserve` — one implementation, shared by every surface.
+Message prefixes in use: `bad arguments:` (undecodable/invalid input),
+`denied:` (shield denial, audited), `rejected:` (policy refusal,
+audited), `internal:` (the server's own fault).
 
-**Unknown argument keys should be rejected, not ignored.**  The
-archivist's `decode` uses `DisallowUnknownFields` and its schemas set
-`additionalProperties: false`: on a surface with destructive verbs, a
-misspelled optional key must be an error, never a silent fall-through
-to a different shape.  Note the raw `(*mcp.Server).AddTool` path does
-NOT validate arguments against the input schema — the handler's decode
-is the enforcement; the schema is client-side documentation.  The
-read-side workers still tolerate unknown keys; converging them on the
-strict rule is planned alongside extracting these helpers into a
-shared package.
+**Unknown argument keys are rejected, never ignored** — on every
+surface.  `mcpserve.Decode` uses `DisallowUnknownFields` and every
+input schema sets `AdditionalProperties: mcpserve.NoExtras()`: a
+misspelled optional key must be an error, because on a destructive
+surface it silently selects a different shape and on a read surface it
+silently drops a filter and answers the wrong question.  Note the raw
+`(*mcp.Server).AddTool` path does NOT validate arguments against the
+input schema — `Decode` is the enforcement; the schema is client-side
+documentation of the same rule.  (The builder's action params have a
+second guard: the manifest validator refuses undeclared params.)
 
 ## The bootstrap file
 
