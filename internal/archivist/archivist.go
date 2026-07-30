@@ -33,6 +33,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/jeffbstewart/cloister/internal/archive"
+	"github.com/jeffbstewart/cloister/internal/audit"
+	"github.com/jeffbstewart/cloister/internal/forge"
 	"github.com/jeffbstewart/cloister/internal/mcpserve"
 )
 
@@ -54,10 +56,24 @@ const (
 	MaxUntracked = 500
 )
 
-// Config wires the archivist to its engine.
+// Auditor records the archivist's remote operations.  *sink.Client
+// satisfies it.
+type Auditor interface {
+	Append(audit.Record) error
+}
+
+// Config wires the archivist to its engine and, for the remote verbs,
+// its forge and audit sink.
 type Config struct {
 	Version string
 	Archive *archive.Archive
+	// Forge enables the PR verbs (propose, check_progress,
+	// read_reviews, reply_to_review); nil registers the local verbs and
+	// publish only.
+	Forge forge.Client
+	// Audit records remote operations; nil disables (tests).  Local
+	// verbs are unaudited by design.
+	Audit Auditor
 }
 
 // Server owns the archivist's MCP tool surface.
@@ -71,11 +87,14 @@ type Server struct {
 	mu sync.Mutex
 }
 
-// New builds the archivist tool surface over an opened Archive.
+// New builds the archivist tool surface over an opened Archive.  The
+// forge-backed PR verbs register only when a forge client is wired, so
+// a local-only instance simply has no remote surface to misuse.
 func New(cfg Config) *Server {
 	s := &Server{cfg: cfg}
 	s.mcp = mcp.NewServer(&mcp.Implementation{Name: "archivist", Version: cfg.Version}, nil)
 	s.registerTools()
+	s.registerRemoteTools()
 	return s
 }
 
@@ -187,11 +206,12 @@ func (s *Server) registerTools() {
 	s.add(&mcp.Tool{
 		Name: "abandon_work",
 		Description: "Discard a line of work: delete the local branch (switching to the default branch first when the doomed branch is checked out).  " +
-			"Refuses the default branch and a dirty tree.  Local only — deleting a published counterpart arrives with the remote verbs.",
+			"Refuses the default branch and a dirty tree.  deleteRemote also removes the published counterpart; a branch never published has none, and that is not an error.",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"name": mcpserve.Str("the doomed branch"),
+				"name":         mcpserve.Str("the doomed branch"),
+				"deleteRemote": mcpserve.Boolean("also delete the published counterpart (an audited remote operation)"),
 			},
 			Required:             []string{"name"},
 			AdditionalProperties: mcpserve.NoExtras(),
@@ -419,7 +439,8 @@ func (s *Server) switchWork(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 
 func (s *Server) abandonWork(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var a struct {
-		Name string `json:"name"`
+		Name         string `json:"name"`
+		DeleteRemote bool   `json:"deleteRemote"`
 	}
 	if err := mcpserve.Decode(req, &a); err != nil {
 		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
@@ -427,6 +448,25 @@ func (s *Server) abandonWork(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	name, err := archive.ParseBranchName(a.Name)
 	if err != nil {
 		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
+	}
+	// The remote half runs first, while the local branch (and its
+	// upstream bookkeeping) still exists, and is audited ONLY when it
+	// actually touched the endpoint — a never-published branch, or a
+	// refusal before any endpoint touch, leaves no phantom remote record.
+	// It must not fire when the local abandon would then refuse (a dirty
+	// tree, the default branch), so the local guards are checked first;
+	// handlers are serialized, so nothing changes between check and act.
+	if a.DeleteRemote {
+		if err := s.cfg.Archive.CanAbandon(ctx, name); err != nil {
+			return mcpserve.ErrResult(err.Error()), nil
+		}
+		deleted, derr := s.cfg.Archive.DeleteRemoteBranch(ctx, name)
+		if deleted || derr != nil {
+			s.auditRemote("abandon_remote", audit.RemoteDetail{Branch: name.String()}, remoteDecision(derr))
+		}
+		if derr != nil {
+			return mcpserve.ErrResult(derr.Error()), nil
+		}
 	}
 	if err := s.cfg.Archive.AbandonWork(ctx, name); err != nil {
 		return mcpserve.ErrResult(err.Error()), nil

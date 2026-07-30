@@ -1,9 +1,10 @@
 # The archivist — source-control sidecar design
 
-Status: **in implementation — M1 steps 0–2 DONE** (PR #34: `.git/**`
+Status: **in implementation — M1 steps 0–3 DONE** (PR #34: `.git/**`
 confinement; PR #95: the hardened runner and the local verb set in
-`internal/archive`; then the worker mode and its MCP surface in
-`internal/archivist`).  Decisions from the 2026-07-07 design review,
+`internal/archive`; PR #96: the worker mode and its MCP surface in
+`internal/archivist`; then the jail: endpoint table, remote verbs,
+relays, topology, and the compose-lint invariants, in one PR).  Decisions from the 2026-07-07 design review,
 amended 2026-07-29 for the grange transformation
 ([grange.md](grange.md)): the archivist gains the grange lifecycle
 verbs, a one-instance-one-workspace binding, and per-endpoint egress.
@@ -189,10 +190,14 @@ The archivist drives the real git binary — but never with ambient trust:
   repository (branch names, history records — NUL-framed so a crafted
   commit subject cannot forge a record).
 - Remotes restricted to the endpoint allowlist (below), checked before
-  git ever runs; `http.followRedirects` off per invocation.  No
-  credential helpers — the endpoint's token is injected per call (via
-  askpass, never argv: argv is world-readable in /proc), never stored
-  in config inside the workspace.
+  git ever runs; `http.followRedirects` off on every invocation (a
+  redirect is a way off the relay).  No credential helpers — the
+  endpoint's token is injected per call through the environment
+  (`GIT_CONFIG_COUNT`/`KEY`/`VALUE` carrying `http.extraheader`), never
+  argv (world-readable in /proc) and never stored in config inside the
+  workspace.  The design once said "askpass"; the workers image is
+  FROM scratch with no shell to run one, and the env-config route has
+  the same secrecy property with no exec at all.
 
 The `.git` directory the archivist maintains lives in the grange
 volume, never a host mount.  Until grange M3 every cell-side toucher of
@@ -232,14 +237,27 @@ ssh, and bare paths, and therefore every host repository.  The
 archivist is never pointed at the operator's own tree.
 
 **Egress is always a named relay** (the kagi-relay pattern: a blind
-socat pipe per endpoint, `fork` re-resolving per connection):
+socat pipe, `fork` re-resolving per connection).  The archivist reaches
+the two forge hosts by two different routes, because git and the Go API
+client resolve names differently:
 
-- **https endpoints** (`github.com`, `api.github.com`) each get a relay
-  carrying a **network alias equal to the real hostname** on gitegress.
-  Git dials `https://github.com/`, Docker's embedded DNS resolves the
-  alias to the relay, and socat pipes ciphertext to the real host — TLS
-  end-to-end, certificate verification passing because the dialed name
-  is the certificate's name.
+- **git → `github.com`** goes through a **two-hop** relay pair.  Git
+  must dial the literal `github.com` (so its TLS handshake verifies
+  github.com's real certificate end-to-end through the transparent
+  pipe), which means gitegress must alias `github.com` to a relay.  But
+  a single relay that both *holds* that alias and *resolves* `github.com`
+  for its own socat target would resolve the name to itself — Docker's
+  embedded resolver answers the alias authoritatively — and loop.  So
+  the alias and the upstream resolution are split across two containers:
+  `github-relay` (front) holds the `github.com` alias git dials and
+  pipes to a distinctly-named `github-egress`; `github-egress` resolves
+  the real `github.com` (it is on no network that aliases the name).
+- **the PR verbs → `api.github.com`** need no alias at all: the Go
+  client is a guarded transport that dials the api relay by its service
+  name while presenting SNI `api.github.com`, so TLS still verifies the
+  real API certificate and the single `github-api-relay` resolves the
+  real host with no loop.  The relay's cell address is the endpoint
+  table's `apiRelay`.
 - **The gitea endpoint speaks plain http to the jailed instance**: its
   relay pipes to the LAN port that reaches only Gitea, never through
   the TLS front — the https alternative would expose every vhost the
@@ -286,10 +304,14 @@ github.com / api.github.com / gitea relays:
 compose-lint grows the matching invariants, landing in the same PR as
 the topology — no commit exists where the archivist is unjailed: the
 archivist's networks are exactly buildnet + statenet + gitegress;
-gitegress membership is the archivist and its relays alone; each
-relay's socat destination is a literal and each https relay's alias
-equals its name; only relays hold `egress`; the scholar's isolation is
-unchanged (it gains no route to the archivist or the workspace).
+gitegress membership is the archivist and the two relays it dials
+(github-relay, github-api-relay); gitforward carries only the git
+two-hop (github-relay, github-egress); every relay's socat destination
+is a literal (no `${}` a deploy could repoint); the git front carries
+the `github.com` alias git dials; only the egress-holding relays
+(kagi-relay, github-egress, github-api-relay) hold `egress`; the
+scholar's isolation is unchanged (it gains no route to the archivist or
+the workspace).
 
 The archivist is a **cell member**, instantiated with its cell — never
 a fleet standing outside the cells.  The agent finds it the way it
@@ -331,12 +353,15 @@ those are realization details of the git adapter.
    topology unjailed.  The checkpoint identity is pinned to a TODO
    placeholder until the endpoint table (step 3) supplies the real
    one; nothing deployed exercises it before then.
-3. **The jail, one PR** — the per-endpoint relays (aliases, literal
-   socat destinations), the internal gitegress network, the compose
-   service on a dedicated grange volume, the remote verbs behind the
-   endpoint table, the client-side refusals, the remote-op audit
-   detail, and the compose-lint invariants pinning all of it.  Topology
-   and lint move together.
+3. DONE: **The jail, one PR** — the per-endpoint relays
+   (`github-relay`/`github-api-relay`, each carrying its hostname as a
+   network alias, literal socat destinations), the internal gitegress
+   network, the compose service on the dedicated grange volume, the
+   endpoint table (internal/endpoint) with the remote verbs behind it
+   (publish + the forge PR verbs via internal/forge), the client-side
+   refusals, the remote-op audit detail (KindRemote), and the
+   compose-lint invariants pinning all of it.  Topology and lint moved
+   together.
 4. **Grange lifecycle** — `provision`/`dispose`, the provenance marker,
    the forgelint-backed provision gate, lifecycle audit records.
 5. **`await_review`** — the long-poll with progress notifications.

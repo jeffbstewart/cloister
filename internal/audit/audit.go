@@ -112,6 +112,7 @@ const (
 	KindSearch   Kind = "search"
 	KindExtract  Kind = "extract"
 	KindRead     Kind = "read"
+	KindRemote   Kind = "remote"
 )
 
 // Detail is one record's typed body.  Each worker's file declares its
@@ -138,6 +139,8 @@ func decodeDetail(k Kind) (Detail, error) {
 		return &ExtractDetail{}, nil
 	case KindRead:
 		return &ReadDetail{}, nil
+	case KindRemote:
+		return &RemoteDetail{}, nil
 	}
 	return nil, fmt.Errorf("audit: unknown detail kind %q", k)
 }
@@ -167,6 +170,7 @@ func (r Record) Research() *ResearchDetail { d, _ := r.Detail.(*ResearchDetail);
 func (r Record) Search() *SearchDetail     { d, _ := r.Detail.(*SearchDetail); return d }
 func (r Record) Extract() *ExtractDetail   { d, _ := r.Detail.(*ExtractDetail); return d }
 func (r Record) Read() *ReadDetail         { d, _ := r.Detail.(*ReadDetail); return d }
+func (r Record) Remote() *RemoteDetail     { d, _ := r.Detail.(*RemoteDetail); return d }
 
 // recordWire is the JSON shape: flat header + status + kind + detail.
 type recordWire struct {

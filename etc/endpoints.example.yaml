@@ -1,0 +1,35 @@
+# Copyright 2026 Jeffrey B. Stewart
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The archivist's endpoint table (docs/archivist.md, "Endpoints,
+# identity, and credential"): one entry per reachable git endpoint, all
+# of them ONE human principal's bots.  Mounted read-only into the
+# archivist; holds credential PATHS, never secrets.  The table is also
+# the remote allowlist — a remote URL matching no entry's canonical or
+# wire prefix is refused before git ever runs.
+#
+# Copy to endpoints.yaml, adjust, and mount beside one read-only token
+# file per endpoint.  Every field is required; unknown keys are errors.
+
+endpoints:
+  - name: github.com          # also the relay's name and network alias
+    canonical: https://github.com/
+    wire: https://github.com/ # resolved to the relay by network alias
+    forge: github
+    api: https://api.github.com/
+    apiRelay: github-api-relay:443   # the api relay's cell address (NOT aliased as api.github.com)
+    credentialFile: /run/secrets/github-token
+    bot:
+      name: example-agent     # the bot account, never the human
+      email: 000000+example-agent@users.noreply.github.com

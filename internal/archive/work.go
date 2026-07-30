@@ -93,33 +93,17 @@ func (a *Archive) SwitchWork(ctx context.Context, name BranchName) error {
 	return err
 }
 
-// AbandonWork discards a local line of work: switches to the default
+// AbandonWork discards a LOCAL line of work: switches to the default
 // branch when the doomed branch is checked out, then deletes it.  It
 // refuses the default branch and a dirty tree — losing uncommitted work
-// takes restore or dispose(force), never a side effect.  (The remote
-// counterpart's deletion is a remote verb, arriving with the jail.)
+// takes restore or dispose(force), never a side effect.  The published
+// counterpart is a separate, audited remote verb (DeleteRemoteBranch);
+// keeping the two apart is what lets the audit trail record only the
+// operations that actually touched the endpoint.
 func (a *Archive) AbandonWork(ctx context.Context, name BranchName) error {
-	if name.IsZero() {
-		return fmt.Errorf("archive: abandon_work: a branch name is required")
-	}
-	if name.String() == a.def.String() {
-		return fmt.Errorf("%w: abandon_work(%s)", ErrDefaultBranch, name)
-	}
-	if err := a.guardConfig(ctx); err != nil {
-		return err
-	}
-	st, err := a.currentState(ctx)
+	st, err := a.canAbandon(ctx, name)
 	if err != nil {
 		return err
-	}
-	if !st.Clean() {
-		// Untracked-only dirt gets its own advice: restore never deletes
-		// untracked files, so recommending it would send the caller in a
-		// circle.
-		if len(st.Dirty) == 0 {
-			return fmt.Errorf("%w: only untracked files — abandon_work would discard them with the branch; checkpoint or set_aside them first (restore never deletes untracked files)", ErrDirtyTree)
-		}
-		return fmt.Errorf("%w: abandon_work would discard them with the branch; checkpoint, set_aside, or restore first", ErrDirtyTree)
 	}
 	if st.Branch == name.String() {
 		if _, err := a.run.out(ctx, "switch", "--end-of-options", a.def.String()); err != nil {
@@ -128,6 +112,43 @@ func (a *Archive) AbandonWork(ctx context.Context, name BranchName) error {
 	}
 	_, err = a.run.out(ctx, "branch", "-D", name.String())
 	return err
+}
+
+// CanAbandon reports whether AbandonWork(name) would proceed — the same
+// refusals (a name, the default branch, a clean tree), without acting.
+// The remote-half orchestration checks it before deleting a published
+// counterpart, so a local refusal never follows a remote deletion.
+func (a *Archive) CanAbandon(ctx context.Context, name BranchName) error {
+	_, err := a.canAbandon(ctx, name)
+	return err
+}
+
+// canAbandon validates the preconditions and returns the state it read,
+// so AbandonWork does not read it twice.
+func (a *Archive) canAbandon(ctx context.Context, name BranchName) (State, error) {
+	if name.IsZero() {
+		return State{}, fmt.Errorf("archive: abandon_work: a branch name is required")
+	}
+	if name.String() == a.def.String() {
+		return State{}, fmt.Errorf("%w: abandon_work(%s)", ErrDefaultBranch, name)
+	}
+	if err := a.guardConfig(ctx); err != nil {
+		return State{}, err
+	}
+	st, err := a.currentState(ctx)
+	if err != nil {
+		return State{}, err
+	}
+	if !st.Clean() {
+		// Untracked-only dirt gets its own advice: restore never deletes
+		// untracked files, so recommending it would send the caller in a
+		// circle.
+		if len(st.Dirty) == 0 {
+			return State{}, fmt.Errorf("%w: only untracked files — abandon_work would discard them with the branch; checkpoint or set_aside them first (restore never deletes untracked files)", ErrDirtyTree)
+		}
+		return State{}, fmt.Errorf("%w: abandon_work would discard them with the branch; checkpoint, set_aside, or restore first", ErrDirtyTree)
+	}
+	return st, nil
 }
 
 // Checkpoint records the working tree — all of it, or just the named
@@ -358,6 +379,14 @@ func (a *Archive) SyncFromUpstream(ctx context.Context) (SyncResult, error) {
 		return SyncResult{}, fmt.Errorf("%w: sync_from_upstream replays history; checkpoint or set_aside first", ErrDirtyTree)
 	}
 
+	// Fetches are the verb's network touch: with an endpoint table they
+	// carry the allowlist check and the credential; without one (the
+	// local rigs) they run bare.
+	ro, err := a.fetchOverlay(ctx)
+	if err != nil {
+		return SyncResult{}, err
+	}
+
 	def := a.def.String()
 	if st.Branch == def {
 		// The refspec is explicit even here, where `fetch origin` would
@@ -365,7 +394,7 @@ func (a *Archive) SyncFromUpstream(ctx context.Context) (SyncResult, error) {
 		// configured refspec is something .git/config could have made
 		// force-update local refs.  (guardConfig refuses a '+' refspec
 		// too; naming the refspec means not depending on that.)
-		if _, err := a.run.out(ctx, "fetch", "--end-of-options", originRemote,
+		if _, err := a.run.outWith(ctx, ro, "fetch", "--end-of-options", originRemote,
 			"refs/heads/"+def+":refs/remotes/"+originRemote+"/"+def); err != nil {
 			return SyncResult{}, err
 		}
@@ -376,7 +405,7 @@ func (a *Archive) SyncFromUpstream(ctx context.Context) (SyncResult, error) {
 	// Updating the unchecked-out default: fetch refuses non-fast-forward
 	// on its own (no leading '+' on the refspec), which is exactly the
 	// append-only stance.
-	if _, err := a.run.out(ctx, "fetch", "--end-of-options", originRemote, def+":"+def); err != nil {
+	if _, err := a.run.outWith(ctx, ro, "fetch", "--end-of-options", originRemote, def+":"+def); err != nil {
 		return SyncResult{}, err
 	}
 

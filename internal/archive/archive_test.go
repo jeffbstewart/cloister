@@ -80,7 +80,7 @@ func newRig(t *testing.T) *rig {
 	}
 	r.origin, r.dir = archivetest.Seed(t, r.tmp)
 
-	a, err := New(r.dir, botIdent, WithClock(r.clock.Now))
+	a, err := New(r.dir, WithIdentity(botIdent), WithClock(r.clock.Now))
 	if err != nil {
 		t.Fatalf("New(%s): %v", r.dir, err)
 	}
@@ -181,7 +181,7 @@ func TestNewRefusesSubdirectory(t *testing.T) {
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(sub, botIdent); err == nil {
+	if _, err := New(sub, WithIdentity(botIdent)); err == nil {
 		t.Error("New on a subdirectory of the worktree should refuse; the archivist operates only on its mount root")
 	}
 }
@@ -200,17 +200,30 @@ func TestCurrentBranchRefusesHostileHead(t *testing.T) {
 
 func TestNewRefusesNonRepo(t *testing.T) {
 	requireGit(t)
-	if _, err := New(t.TempDir(), botIdent); err == nil {
+	if _, err := New(t.TempDir(), WithIdentity(botIdent)); err == nil {
 		t.Error("New on a plain directory should refuse")
 	}
 }
 
 func TestNewRequiresIdentity(t *testing.T) {
 	requireGit(t)
-	if _, err := New(t.TempDir(), Identity{Name: "x"}); err == nil {
+	if _, err := New(t.TempDir(), WithIdentity(Identity{Name: "x"})); err == nil {
 		t.Error("New without an email should refuse")
 	}
-	if _, err := New(t.TempDir(), Identity{Email: "x@y"}); err == nil {
+	if _, err := New(t.TempDir(), WithIdentity(Identity{Email: "x@y"})); err == nil {
 		t.Error("New without a name should refuse")
+	}
+}
+
+// TestNewIdentitySourceIsExclusive: identity comes from exactly one of
+// WithIdentity or WithEndpoints — neither, or both, is a construction
+// error.
+func TestNewIdentitySourceIsExclusive(t *testing.T) {
+	r := newRig(t)
+	if _, err := New(r.dir, WithClock(r.clock.Now)); err == nil {
+		t.Error("New with no identity source should refuse")
+	}
+	if _, err := New(r.dir, WithIdentity(botIdent), WithEndpoints(testTable(t)), WithClock(r.clock.Now)); err == nil {
+		t.Error("New with both identity sources should refuse")
 	}
 }

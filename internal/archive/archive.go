@@ -36,6 +36,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/jeffbstewart/cloister/internal/endpoint"
 )
 
 // Identity is the bot identity a checkpoint is recorded as.  It is pinned
@@ -56,6 +58,8 @@ type Archive struct {
 	run   *runner
 	def   BranchName // the default branch, e.g. "main"
 	ident Identity
+	table *endpoint.Table    // nil = local-only mode: remote verbs refuse
+	ep    *endpoint.Endpoint // the endpoint origin resolved to at open time
 }
 
 // originRemote is the only remote the archivist speaks to; a grange clone
@@ -64,13 +68,23 @@ const originRemote = "origin"
 
 // config collects the New options.
 type config struct {
-	gitPath string
-	def     string
-	now     func() time.Time
+	gitPath   string
+	def       string
+	now       func() time.Time
+	ident     Identity
+	identSet  bool
+	endpoints *endpoint.Table
 }
 
 // Option customizes New.
 type Option func(*config)
+
+// WithIdentity pins the checkpoint identity for a LOCAL-only Archive
+// (hand-built checkouts, tests).  Mutually exclusive with WithEndpoints,
+// under which identity comes from the endpoint table instead.
+func WithIdentity(ident Identity) Option {
+	return func(c *config) { c.ident, c.identSet = ident, true }
+}
 
 // WithClock injects the clock behind checkpoint timestamps; tests pin it.
 // nil is ignored (the real clock stays).
@@ -97,13 +111,27 @@ func WithDefaultBranch(name string) Option {
 // that is not itself the worktree root — an archivist must never operate
 // up-tree of its mount — and detects the default branch from the
 // clone's origin/HEAD unless WithDefaultBranch overrides it.
-func New(dir string, ident Identity, opts ...Option) (*Archive, error) {
-	if err := validIdentity(ident); err != nil {
-		return nil, err
-	}
+//
+// Identity comes from EXACTLY ONE of two mutually exclusive options, so
+// there is no identity parameter to get wrong: WithEndpoints binds the
+// instance to a table and derives identity from the endpoint the
+// workspace's origin resolves to (an origin outside the table refuses
+// to open); WithIdentity pins a fixed identity for a local-only
+// checkout.  Giving both, or neither, is an error.
+func New(dir string, opts ...Option) (*Archive, error) {
 	cfg := config{gitPath: "git", now: time.Now}
 	for _, o := range opts {
 		o(&cfg)
+	}
+	switch {
+	case cfg.identSet && cfg.endpoints != nil:
+		return nil, fmt.Errorf("archive: WithIdentity and WithEndpoints are mutually exclusive — endpoint mode derives identity from the table")
+	case !cfg.identSet && cfg.endpoints == nil:
+		return nil, fmt.Errorf("archive: New needs WithIdentity (local) or WithEndpoints (cell)")
+	case cfg.identSet:
+		if err := validIdentity(cfg.ident); err != nil {
+			return nil, err
+		}
 	}
 	abs, err := filepath.Abs(dir)
 	if err != nil {
@@ -129,7 +157,8 @@ func New(dir string, ident Identity, opts ...Option) (*Archive, error) {
 	}
 	a := &Archive{
 		run:   &runner{git: cfg.gitPath, dir: abs, gitDir: gitDir, hooks: hooks, now: cfg.now},
-		ident: ident,
+		ident: cfg.ident,
+		table: cfg.endpoints,
 	}
 	ctx := context.Background()
 	fail := func(format string, args ...any) (*Archive, error) {
@@ -164,8 +193,39 @@ func New(dir string, ident Identity, opts ...Option) (*Archive, error) {
 		return fail("archive: the default branch of %s is not a name the archivist will hand to git: %w", abs, err)
 	}
 	a.def = def
+	if a.table != nil {
+		ep, _, err := a.originEndpoint(ctx)
+		if err != nil {
+			return fail("archive: opening %s: %w", abs, err)
+		}
+		// The table validated its identities at load; this is belt.
+		a.ident = Identity{Name: ep.Bot.Name, Email: ep.Bot.Email}
+		a.ep = &ep
+	}
 	return a, nil
 }
+
+// originEndpoint resolves the workspace's origin URL against the
+// endpoint table — the allowlist lookup, run against the CURRENT origin
+// (the repo-local config is agent-writable post-M3, so every caller
+// re-resolves rather than trusting the open-time result).  It requires
+// a table; local-only callers never reach it.
+func (a *Archive) originEndpoint(ctx context.Context) (endpoint.Endpoint, string, error) {
+	url, err := a.run.out(ctx, "remote", "get-url", originRemote)
+	if err != nil {
+		return endpoint.Endpoint{}, "", err
+	}
+	ep, err := a.table.ForRemote(url)
+	if err != nil {
+		return endpoint.Endpoint{}, "", err
+	}
+	return ep, url, nil
+}
+
+// Endpoint reports the endpoint the workspace's origin resolved to at
+// open time, or nil in local-only mode.  Remote verbs re-resolve per
+// call; this is for wiring (the forge client's API base and token).
+func (a *Archive) Endpoint() *endpoint.Endpoint { return a.ep }
 
 // Close releases the empty hooks directory.  The Archive is unusable
 // afterward.
