@@ -80,7 +80,8 @@
 #   builder ── statenet ───> state (sink)    scribe  ── statenet ─────> state (audit + diffs)
 #   scholar ── scholarstate > state (audit)  scholar ── kagiegress ──> kagi-relay ── egress ─> kagi.com
 #   archivist ─ statenet ───> state (remote-op audit); grange volume, NEVER the host workspace
-#   archivist ─ gitegress ──> github(-api)-relay ── egress ─> github.com / api.github.com (aliases)
+#   archivist ─ gitegress ──> github-relay ─ gitforward ─> github-egress ── egress ─> github.com (git, two-hop)
+#   archivist ─ gitegress ──> github-api-relay ── egress ─> api.github.com (PR verbs, dialed by service name)
 #   state   ── statepub ───> status relay    status  ── frontend ────> host publish
 # So: all inference rides through the agency (raw `infer` sits behind it on the
 # infra stack's private modelnet); infer never shares a net with builder/scribe;
@@ -108,6 +109,22 @@ x-workspace-user: &wsuser "${WORKSPACE_UID:?set WORKSPACE_UID to the uid owning 
 # timestamps (and the status pages) read in the operator's local zone.
 # Defaults to UTC.  tzdata is embedded in the Go binary, so any IANA zone works.
 x-tz: &tz "TZ=${TZ:-UTC}"
+
+# Shared hardening for every socat relay (kagi + the git relays): the same
+# unprivileged, read-only, capability-stripped shell.  Only `command`,
+# `networks`, and `container_name` differ per relay — the load-bearing lines
+# stay explicit at each site.
+x-relay: &relay
+  image: alpine/socat:1.8.0.3
+  user: "65534:65534"                    # nobody
+  restart: unless-stopped
+  environment:
+    - *tz
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  pids_limit: 64
+  mem_limit: 64m
 
 services:
   agent:
@@ -420,67 +437,52 @@ services:
       - gitegress                        # to the git relays ONLY (internal)
 
   kagi-relay:
-    image: alpine/socat:1.8.0.3          # same image as the status relay
+    <<: *relay
     container_name: ${PROJECT}-kagi-relay
-    user: "65534:65534"                  # nobody
-    restart: unless-stopped
     # Hard-wired to Kagi: the scholar dials kagi-relay:8443, socat forwards raw
     # TCP to kagi.com:443. TLS stays end-to-end (the relay pipes ciphertext);
     # `fork` re-resolves per connection so Kagi CDN rotation is handled.
     command: ["TCP-LISTEN:8443,fork,reuseaddr", "TCP:kagi.com:443"]
-    environment:
-      - *tz
-    read_only: true
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    pids_limit: 64
-    mem_limit: 64m
     networks:
       - kagiegress                       # reachable by the scholar
-      - egress                           # with the git relays, the only containers touching the internet
+      - egress                           # with the git egress hop, the only containers touching the internet
 
+  # The git jail's egress is a TWO-HOP path, so no container both HOLDS the
+  # `github.com` alias and RESOLVES it: the front carries the alias the
+  # archivist's git dials (needed for end-to-end TLS — git verifies the real
+  # cert against the dialed name), and pipes to a separately-named egress hop
+  # that resolves the real github.com (it is on no network that aliases the
+  # name, so there is no self-referential loop).  Unprivileged :443 binds
+  # under Docker's default ip_unprivileged_port_start=0.
   github-relay:
-    image: alpine/socat:1.8.0.3
+    <<: *relay
     container_name: ${PROJECT}-github-relay
-    user: "65534:65534"                  # nobody
-    restart: unless-stopped
-    # The alias IS the hostname (the kagi-relay pattern, one hop up the
-    # stack): the archivist dials https://github.com/, Docker DNS
-    # resolves the alias to this relay, and socat pipes ciphertext to
-    # the real host — TLS end-to-end, certificate verification passing
-    # because the dialed name is the certificate's name.  Unprivileged
-    # :443 binds under Docker's default ip_unprivileged_port_start=0.
-    command: ["TCP-LISTEN:443,fork,reuseaddr", "TCP:github.com:443"]
-    environment:
-      - *tz
-    read_only: true
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    pids_limit: 64
-    mem_limit: 64m
+    command: ["TCP-LISTEN:443,fork,reuseaddr", "TCP:github-egress:443"]
+    dns: 127.0.0.1                       # internal-only front; resolves github-egress via the embedded resolver, nothing external
     networks:
       gitegress:
-        aliases: [github.com]            # the archivist's `github.com`
-      egress: {}
+        aliases: [github.com]            # the archivist dials this; TLS verifies github.com
+      gitforward: {}                     # to the egress hop (no internet here)
 
-  github-api-relay:
-    image: alpine/socat:1.8.0.3
-    container_name: ${PROJECT}-github-api-relay
-    user: "65534:65534"                  # nobody
-    restart: unless-stopped
-    # The PR verbs' door: same alias pattern, pinned to the API host.
-    command: ["TCP-LISTEN:443,fork,reuseaddr", "TCP:api.github.com:443"]
-    environment:
-      - *tz
-    read_only: true
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    pids_limit: 64
-    mem_limit: 64m
+  github-egress:
+    <<: *relay
+    container_name: ${PROJECT}-github-egress
+    command: ["TCP-LISTEN:443,fork,reuseaddr", "TCP:github.com:443"]
     networks:
-      gitegress:
-        aliases: [api.github.com]        # the archivist's `api.github.com`
-      egress: {}
+      gitforward: {}                     # reachable by github-relay
+      egress: {}                         # resolves + reaches the real github.com
+
+  # The PR verbs' door.  The archivist's Go client dials this by SERVICE
+  # NAME (github-api-relay) while presenting SNI api.github.com, so — unlike
+  # git — the API host needs no alias, and this single relay resolves the
+  # real api.github.com with no loop.
+  github-api-relay:
+    <<: *relay
+    container_name: ${PROJECT}-github-api-relay
+    command: ["TCP-LISTEN:443,fork,reuseaddr", "TCP:api.github.com:443"]
+    networks:
+      - gitegress                        # reachable by the archivist (by service name)
+      - egress                           # resolves + reaches the real api.github.com
 
 networks:
   infernet:
@@ -500,7 +502,9 @@ networks:
     internal: true                       # scholar <-> kagi-relay (no internet)
   gitegress:
     internal: true                       # archivist <-> git relays (no internet)
-  egress: {}                             # relays -> internet (ONLY the relays hold this)
+  gitforward:
+    internal: true                       # github-relay <-> github-egress (no internet)
+  egress: {}                             # relays -> internet (ONLY egress-holding relays)
   frontend: {}                           # relay's host-publish path
 
 volumes:

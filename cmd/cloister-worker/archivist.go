@@ -73,21 +73,26 @@ func runArchivist(o archivistOptions) {
 		log.Fatalf("archivist: STATE_URL and STATE_TOKEN are required: remote operations are audited")
 	}
 
+	// Endpoint mode: identity, credentials, and the allowlist all derive
+	// from the table (docs/archivist.md) — there is no identity to pass.
 	opts := []archive.Option{archive.WithEndpoints(table)}
 	if o.DefaultBranch != "" {
 		opts = append(opts, archive.WithDefaultBranch(o.DefaultBranch))
 	}
-	// Identity is resolved from the table by the engine; the argument
-	// here is deliberately zero.
-	a, err := archive.New(o.Workspace, archive.Identity{}, opts...)
+	a, err := archive.New(o.Workspace, opts...)
 	if err != nil {
+		log.Fatalf("archivist: %v", err)
+	}
+	forgeClient, err := buildForge(a.Endpoint())
+	if err != nil {
+		a.Close()
 		log.Fatalf("archivist: %v", err)
 	}
 
 	srv := archivist.New(archivist.Config{
 		Version: version,
 		Archive: a,
-		Forge:   buildForge(a.Endpoint()),
+		Forge:   forgeClient,
 		Audit:   sink.NewClient(o.StateURL, token),
 	})
 	// Close before any fatal exit, not deferred past one: log.Fatalf
@@ -102,39 +107,34 @@ func runArchivist(o archivistOptions) {
 	}
 }
 
+// forgeTimeout bounds a single forge API call — long enough for a slow
+// PR fetch, short enough that a stuck relay does not wedge the verb.
+const forgeTimeout = 60 * time.Second
+
 // buildForge wires the PR-verb client for the workspace's endpoint.
-// The transport is a guarded client that can dial ONLY the forge's API
-// host — in the cell that name is a network alias on the api relay, so
-// the bytes ride the jail while TLS verifies end-to-end — and a stray
+// The transport is a guarded client that dials ONLY the api relay (by
+// its cell address) while TLS verifies the real API host's certificate:
+// the bytes ride the jail, the relay never sees plaintext, and a stray
 // HTTP(S)_PROXY cannot tunnel around it.
-func buildForge(ep *endpoint.Endpoint) forge.Client {
+func buildForge(ep *endpoint.Endpoint) (forge.Client, error) {
 	u, err := url.Parse(ep.API)
-	if err != nil || u.Host == "" {
-		log.Fatalf("archivist: endpoint %s api %q is not a URL", ep.Name, ep.API)
+	if err != nil || u.Hostname() == "" {
+		return nil, fmt.Errorf("endpoint %s api %q is not a URL", ep.Name, ep.API)
 	}
-	host := u.Host
-	if u.Port() == "" {
-		port := "443"
-		if u.Scheme == "http" {
-			port = "80"
-		}
-		host = u.Host + ":" + port
-	}
-	client, err := wire.NewGuardedClient(map[string]string{u.Hostname(): host}, 60*time.Second)
+	// The guarded client keys on the request host (the real API name, so
+	// SNI and cert verification are unchanged) and redirects the dial to
+	// the relay address.
+	client, err := wire.NewGuardedClient(map[string]string{u.Hostname(): ep.APIRelay}, forgeTimeout)
 	if err != nil {
-		log.Fatalf("archivist: building the forge transport: %v", err)
+		return nil, fmt.Errorf("building the forge transport: %w", err)
 	}
 	switch ep.Forge {
 	case endpoint.ForgeGitHub:
-		g, err := forge.NewGitHub(ep.API, ep.Token, client)
-		if err != nil {
-			log.Fatalf("archivist: %v", err)
-		}
-		return g
+		return forge.NewGitHub(ep.API, ep.Token, client)
 	default:
 		// The Gitea adapter follows the pilot (docs/archivist.md); until
 		// then a gitea endpoint serves the git verbs but has no PR verbs.
 		log.Printf("archivist: endpoint %s forge %q has no PR-verb adapter yet; propose/check_progress/read_reviews/reply_to_review are not served", ep.Name, ep.Forge)
-		return nil
+		return nil, nil
 	}
 }

@@ -57,8 +57,8 @@ func TestPublishWithoutEndpointsIsAnAuditedRefusal(t *testing.T) {
 	if len(recs) != 1 || recs[0].Tool != "publish" || recs[0].Decision != audit.DecisionRemoteRefused {
 		t.Errorf("audit = %+v, want one publish remote_refused record", recs)
 	}
-	if d := recs[0].Remote(); d == nil || d.Op != "publish" {
-		t.Errorf("detail = %+v, want a RemoteDetail with op publish", recs[0].Detail)
+	if d := recs[0].Remote(); d == nil {
+		t.Errorf("detail = %+v, want a RemoteDetail", recs[0].Detail)
 	}
 }
 
@@ -84,24 +84,23 @@ func TestForgeToolsAbsentWithoutClient(t *testing.T) {
 	}
 }
 
-// TestAbandonRemoteHalfIsAudited: deleteRemote is an endpoint touch and
-// leaves a record even when the branch was never published (the verb
-// still asserted remote intent).
-func TestAbandonRemoteHalfIsAudited(t *testing.T) {
+// TestAbandonRemoteHalfNoPhantomAudit: deleteRemote on a branch that
+// was never published touches no endpoint, so it leaves NO remote
+// record — and the local half is unaudited either way.  The audit trail
+// records only operations that actually reached the endpoint.
+func TestAbandonRemoteHalfNoPhantomAudit(t *testing.T) {
 	aud := &fakeAuditor{}
 	f := newFixtureWith(t, Config{Version: "test", Audit: aud})
+
 	f.ok(t, "start_work", map[string]any{"name": "agent/doomed"})
 	f.ok(t, "abandon_work", map[string]any{"name": "agent/doomed", "deleteRemote": true})
-
-	recs := aud.records()
-	if len(recs) != 1 || recs[0].Tool != "abandon_remote" || recs[0].Decision != audit.DecisionRemoteOK {
-		t.Errorf("audit = %+v, want one abandon_remote remote_ok record", recs)
+	if n := len(aud.records()); n != 0 {
+		t.Errorf("never-published deleteRemote wrote %d records; nothing touched the endpoint", n)
 	}
 
-	// The local half alone leaves no record.
 	f.ok(t, "start_work", map[string]any{"name": "agent/local-doomed"})
 	f.ok(t, "abandon_work", map[string]any{"name": "agent/local-doomed"})
-	if n := len(aud.records()); n != 1 {
-		t.Errorf("local abandon added a record (%d total); local verbs are unaudited", n)
+	if n := len(aud.records()); n != 0 {
+		t.Errorf("local abandon wrote %d records; local verbs are unaudited", n)
 	}
 }

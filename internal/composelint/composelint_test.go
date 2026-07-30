@@ -52,6 +52,7 @@ networks:
   scholarstate: { internal: true }
   kagiegress: { internal: true }
   gitegress: { internal: true }
+  gitforward: { internal: true }
   statenet: { internal: true }
   buildnet: { internal: true }
   egress: {}
@@ -73,14 +74,20 @@ services:
     networks: [buildnet, statenet, gitegress]
     volumes: ["grange:/workspace"]
   github-relay:
-    command: ["TCP-LISTEN:443,fork,reuseaddr", "TCP:github.com:443"]
+    command: ["TCP-LISTEN:443,fork,reuseaddr", "TCP:github-egress:443"]
+    dns: "127.0.0.1"
     networks:
       gitegress: { aliases: [github.com] }
+      gitforward: {}
+  github-egress:
+    command: ["TCP-LISTEN:443,fork,reuseaddr", "TCP:github.com:443"]
+    networks:
+      gitforward: {}
       egress: {}
   github-api-relay:
     command: ["TCP-LISTEN:443,fork,reuseaddr", "TCP:api.github.com:443"]
     networks:
-      gitegress: { aliases: [api.github.com] }
+      gitegress: {}
       egress: {}
   agent:
     dns: "127.0.0.1"

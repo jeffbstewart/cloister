@@ -156,7 +156,7 @@ func TestAbandonWork(t *testing.T) {
 	name := r.startWork("agent/doomed")
 	r.write("a.txt", "content\n")
 	r.checkpoint("work")
-	if err := r.a.AbandonWork(context.Background(), name, false); err != nil {
+	if err := r.a.AbandonWork(context.Background(), name); err != nil {
 		t.Fatal(err)
 	}
 	st, err := r.a.CurrentState(context.Background())
@@ -175,7 +175,7 @@ func TestAbandonWorkRefusesDirtyTree(t *testing.T) {
 	r := newRig(t)
 	name := r.startWork("agent/dirty")
 	r.write("a.txt", "uncommitted\n")
-	if err := r.a.AbandonWork(context.Background(), name, false); !errors.Is(err, ErrDirtyTree) {
+	if err := r.a.AbandonWork(context.Background(), name); !errors.Is(err, ErrDirtyTree) {
 		t.Errorf("abandon with a dirty tree = %v, want ErrDirtyTree", err)
 	}
 }
@@ -186,7 +186,7 @@ func TestAbandonWorkRefusesDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.a.AbandonWork(context.Background(), name, false); !errors.Is(err, ErrDefaultBranch) {
+	if err := r.a.AbandonWork(context.Background(), name); !errors.Is(err, ErrDefaultBranch) {
 		t.Errorf("abandon_work(main) = %v, want ErrDefaultBranch", err)
 	}
 }

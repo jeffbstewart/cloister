@@ -30,21 +30,38 @@ import (
 	"time"
 )
 
+// Canonical, forge-agnostic vocabulary the verbs report.  GitHub emits
+// these strings natively; a future adapter (Gitea) maps its own into
+// them, so an agent sees one vocabulary regardless of backend.
+const (
+	StateOpen   = "open"
+	StateClosed = "closed"
+	StateMerged = "merged"
+
+	CheckQueued     = "queued"
+	CheckInProgress = "in_progress"
+	CheckCompleted  = "completed"
+
+	ReviewApproved         = "APPROVED"
+	ReviewChangesRequested = "CHANGES_REQUESTED"
+	ReviewCommented        = "COMMENTED"
+)
+
 // PR is one pull request as the verbs report it.
 type PR struct {
 	Number int
 	Title  string
-	State  string // "open", "closed", "merged"
+	State  string // StateOpen | StateClosed | StateMerged
 	URL    string // the human-facing page
 	Head   string // branch name
 	Base   string
-	Sha    string // head commit
+	SHA    string // head commit
 }
 
 // Check is one CI check run on a PR's head.
 type Check struct {
 	Name       string
-	Status     string // "queued", "in_progress", "completed"
+	Status     string // CheckQueued | CheckInProgress | CheckCompleted
 	Conclusion string // "success", "failure", ... ("" until completed)
 }
 
@@ -102,8 +119,24 @@ func RepoFromRemote(canonical, remoteURL string) (string, error) {
 	}
 	rest = strings.TrimSuffix(strings.TrimSuffix(rest, "/"), ".git")
 	owner, name, ok := strings.Cut(rest, "/")
-	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+	if !ok || !repoSegmentOK(owner) || !repoSegmentOK(name) {
 		return "", fmt.Errorf("forge: remote %q does not name an owner/name repository", remoteURL)
 	}
 	return owner + "/" + name, nil
+}
+
+// repoSegmentOK vets one path segment of a derived repository: the
+// GitHub/Gitea alphabet, and never "."/".." — so a crafted origin
+// (github.com/../x) cannot smuggle path traversal into an API path.
+func repoSegmentOK(s string) bool {
+	if s == "" || s == "." || s == ".." {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' ||
+			r == '.' || r == '_' || r == '-') {
+			return false
+		}
+	}
+	return true
 }

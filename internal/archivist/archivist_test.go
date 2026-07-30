@@ -65,7 +65,7 @@ func newFixtureWith(t *testing.T, cfg Config) *fixture {
 		return at
 	}
 
-	a, err := archive.New(dir, archive.Identity{Name: "cloister-bot", Email: "bot@cloister.test"},
+	a, err := archive.New(dir, archive.WithIdentity(archive.Identity{Name: "cloister-bot", Email: "bot@cloister.test"}),
 		archive.WithClock(clock))
 	if err != nil {
 		t.Fatalf("archive.New(%s): %v", dir, err)

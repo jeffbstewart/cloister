@@ -21,8 +21,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // maxBodyBytes caps any response body read; the consumer is a model
@@ -30,8 +32,14 @@ import (
 const maxBodyBytes = 4 << 20
 
 // maxPages bounds pagination sweeps; a PR with more than a thousand
-// review comments has outgrown this surface anyway.
+// review comments has outgrown this surface anyway.  Exceeding it is an
+// error, not a silent short read — a truncated check list that hid a
+// failure would be worse than a refusal.
 const maxPages = 10
+
+// errTooManyPages reports a listing that did not terminate within
+// maxPages; the caller surfaces it rather than returning partial data.
+var errTooManyPages = fmt.Errorf("forge: listing exceeds %d pages; refusing a partial result", maxPages)
 
 // GitHub speaks the GitHub REST API.  The token is read per call (the
 // mounted credential file is the rotation point) and travels only in
@@ -130,15 +138,21 @@ func (g *GitHub) paged(ctx context.Context, path string, collect func(json.RawMe
 			return nil
 		}
 	}
-	return nil
+	return errTooManyPages
 }
 
 func clip(b []byte, n int) string {
 	s := strings.TrimSpace(string(b))
-	if len(s) > n {
-		return s[:n] + "…"
+	if len(s) <= n {
+		return s
 	}
-	return s
+	// Trim to a rune boundary so a multibyte character is never split
+	// into invalid UTF-8 in error text bound for a model context.
+	cut := s[:n]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut + "…"
 }
 
 // ghPR is the wire shape the PR methods read.
@@ -163,7 +177,7 @@ func (p ghPR) pr() PR {
 		state = "merged"
 	}
 	return PR{Number: p.Number, Title: p.Title, State: state, URL: p.HTMLURL,
-		Head: p.Head.Ref, Base: p.Base.Ref, Sha: p.Head.Sha}
+		Head: p.Head.Ref, Base: p.Base.Ref, SHA: p.Head.Sha}
 }
 
 func (g *GitHub) CreatePR(ctx context.Context, repo, head, base, title, body string) (PR, error) {
@@ -180,8 +194,8 @@ func (g *GitHub) CreatePR(ctx context.Context, repo, head, base, title, body str
 func (g *GitHub) FindPR(ctx context.Context, repo, head string) (PR, bool, error) {
 	owner, _, _ := strings.Cut(repo, "/")
 	var out []ghPR
-	err := g.do(ctx, http.MethodGet,
-		"repos/"+repo+"/pulls?state=open&head="+owner+":"+head, "", nil, &out)
+	q := url.Values{"state": {"open"}, "head": {owner + ":" + head}}
+	err := g.do(ctx, http.MethodGet, "repos/"+repo+"/pulls?"+q.Encode(), "", nil, &out)
 	if err != nil {
 		return PR{}, false, err
 	}
@@ -234,7 +248,9 @@ func (g *GitHub) Reviews(ctx context.Context, repo string, number int) ([]Review
 	var reviews []Review
 	err := g.paged(ctx, fmt.Sprintf("repos/%s/pulls/%d/reviews", repo, number), func(raw json.RawMessage) (int, error) {
 		var page []struct {
-			User        struct{ Login string }
+			User struct {
+				Login string `json:"login"`
+			} `json:"user"`
 			State       string    `json:"state"`
 			Body        string    `json:"body"`
 			SubmittedAt time.Time `json:"submitted_at"`
@@ -268,7 +284,9 @@ func (g *GitHub) ReviewComments(ctx context.Context, repo string, number int) ([
 type ghReviewComment struct {
 	ID        int64 `json:"id"`
 	InReplyTo int64 `json:"in_reply_to_id"`
-	User      struct{ Login string }
+	User      struct {
+		Login string `json:"login"`
+	} `json:"user"`
 	Path      string    `json:"path"`
 	Line      int       `json:"line"`
 	Body      string    `json:"body"`

@@ -289,14 +289,14 @@ func Check(data []byte) ([]string, error) {
 		}
 	}
 	sort.Strings(egressHolders)
-	if !slices.Equal(egressHolders, []string{"github-api-relay", "github-relay", "kagi-relay"}) {
-		v = append(v, fmt.Sprintf("only the relays may hold `egress` (kagi-relay, github-relay, github-api-relay); holders = %v", egressHolders))
+	if !slices.Equal(egressHolders, []string{"github-api-relay", "github-egress", "kagi-relay"}) {
+		v = append(v, fmt.Sprintf("only the egress-holding relays may hold `egress` (kagi-relay, github-egress, github-api-relay); holders = %v", egressHolders))
 	}
 
 	relay, ok := c.Services["kagi-relay"]
 	if !ok {
 		v = append(v, "no `kagi-relay` service defined")
-	} else if !targetsKagi(relay.Command) {
+	} else if !targetsHost(relay.Command, "kagi.com:443") {
 		v = append(v, fmt.Sprintf("kagi-relay is not pinned to kagi.com:443; command = %v", relay.Command))
 	}
 
@@ -360,37 +360,43 @@ func Check(data []byte) ([]string, error) {
 			v = append(v, fmt.Sprintf("archivist must mount exactly one workspace (the grange volume); found %d", wsMounts))
 		}
 	}
-	if def, defined := c.Networks["gitegress"]; !defined || !def.Internal {
-		v = append(v, "gitegress must be defined `internal: true` — it is a hop to the relays, never the internet")
-	}
-	var gitHolders []string
-	for name, s := range c.Services {
-		if s.hasNet("gitegress") {
-			gitHolders = append(gitHolders, name)
+	for _, n := range []string{"gitegress", "gitforward"} {
+		if def, defined := c.Networks[n]; !defined || !def.Internal {
+			v = append(v, fmt.Sprintf("%s must be defined `internal: true` — it is a hop between the archivist and the relays, never the internet", n))
 		}
 	}
-	sort.Strings(gitHolders)
-	if !slices.Equal(gitHolders, []string{"archivist", "github-api-relay", "github-relay"}) {
-		v = append(v, fmt.Sprintf("gitegress membership must be exactly the archivist and its relays; got %v", gitHolders))
+	// gitegress: the archivist and the two relays it dials directly (the
+	// git front and the api relay).  gitforward: the git two-hop only.
+	if h := holdersOf(c, "gitegress"); !slices.Equal(h, []string{"archivist", "github-api-relay", "github-relay"}) {
+		v = append(v, fmt.Sprintf("gitegress membership must be exactly the archivist and the relays it dials; got %v", h))
 	}
-	// The git relays: a literal socat destination (no ${} indirection a
-	// deploy could repoint) and a network alias equal to the real
-	// hostname — the alias IS how the archivist's dial lands on the
-	// relay while TLS verifies the real name.
-	for _, r := range []struct{ service, host string }{
-		{"github-relay", "github.com"},
-		{"github-api-relay", "api.github.com"},
+	if h := holdersOf(c, "gitforward"); !slices.Equal(h, []string{"github-egress", "github-relay"}) {
+		v = append(v, fmt.Sprintf("gitforward membership must be exactly github-relay and github-egress (the git two-hop); got %v", h))
+	}
+	// The git relays: literal socat destinations (no ${} indirection a
+	// deploy could repoint), and the alias/target DECOUPLED so no
+	// container both holds the github.com alias and resolves it.  The
+	// front carries the alias git dials (TLS verifies github.com against
+	// the real cert) and pipes to the separately-named egress hop; the
+	// egress hop resolves the real github.com.  The api relay needs NO
+	// alias — the archivist's Go client dials it by service name.
+	for _, r := range []struct {
+		service, target, alias string
+	}{
+		{"github-relay", "github-egress:443", "github.com"},
+		{"github-egress", "github.com:443", ""},
+		{"github-api-relay", "api.github.com:443", ""},
 	} {
 		relay, ok := c.Services[r.service]
 		if !ok {
-			v = append(v, fmt.Sprintf("no `%s` service defined — the archivist has no route to %s without it", r.service, r.host))
+			v = append(v, fmt.Sprintf("no `%s` service defined — the archivist's git jail is incomplete without it", r.service))
 			continue
 		}
-		if !targetsHost(relay.Command, r.host+":443") {
-			v = append(v, fmt.Sprintf("%s must pipe to the literal TCP:%s:443; command = %v", r.service, r.host, relay.Command))
+		if !targetsHost(relay.Command, r.target) {
+			v = append(v, fmt.Sprintf("%s must pipe to the literal TCP:%s; command = %v", r.service, r.target, relay.Command))
 		}
-		if !slices.Contains(relay.Networks.aliasesOn("gitegress"), r.host) {
-			v = append(v, fmt.Sprintf("%s must carry the network alias %q on gitegress", r.service, r.host))
+		if r.alias != "" && !slices.Contains(relay.Networks.aliasesOn("gitegress"), r.alias) {
+			v = append(v, fmt.Sprintf("%s must carry the network alias %q on gitegress (git dials it for end-to-end TLS)", r.service, r.alias))
 		}
 	}
 
@@ -494,11 +500,14 @@ func Check(data []byte) ([]string, error) {
 	return v, nil
 }
 
-func targetsKagi(command []string) bool {
-	for _, arg := range command {
-		if strings.Contains(arg, "kagi.com:443") {
-			return true
+// holdersOf returns the sorted names of the services attached to net.
+func holdersOf(c compose, net string) []string {
+	var held []string
+	for name, s := range c.Services {
+		if s.hasNet(net) {
+			held = append(held, name)
 		}
 	}
-	return false
+	sort.Strings(held)
+	return held
 }

@@ -29,7 +29,9 @@ package endpoint
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 
@@ -52,6 +54,33 @@ type Identity struct {
 	Email string `yaml:"email"`
 }
 
+// Validate vets a bot identity: it lands in `-c user.name=` and a
+// commit's ident line, where a newline or an angle bracket would
+// corrupt the object git writes.  This is the one authority for the
+// rule; archive delegates to it.
+func (i Identity) Validate() error {
+	for _, f := range []struct{ what, val string }{{"name", i.Name}, {"email", i.Email}} {
+		if f.val == "" {
+			return fmt.Errorf("identity %s is required", f.what)
+		}
+		if len(f.val) > 200 {
+			return fmt.Errorf("identity %s is over 200 bytes", f.what)
+		}
+		for j := 0; j < len(f.val); j++ {
+			if c := f.val[j]; c < 0x20 || c > 0x7e {
+				return fmt.Errorf("identity %s byte %d (%#x) is not printable ASCII", f.what, j, c)
+			}
+		}
+		if strings.ContainsAny(f.val, "<>") {
+			return fmt.Errorf("identity %s may not contain '<' or '>'", f.what)
+		}
+	}
+	if !strings.Contains(i.Email, "@") {
+		return fmt.Errorf("identity email %q is not an address", i.Email)
+	}
+	return nil
+}
+
 // Endpoint is one reachable git endpoint.
 type Endpoint struct {
 	// Name is also the relay's name in the topology: "github.com",
@@ -68,9 +97,15 @@ type Endpoint struct {
 	Wire string `yaml:"wire"`
 	// Forge selects the PR-verb backend: github | gitea.
 	Forge Forge `yaml:"forge"`
-	// API is the forge API root ("https://api.github.com/"), dialed
-	// through its own relay alias.
+	// API is the forge API root ("https://api.github.com/").  It is the
+	// name TLS verifies against; the bytes are dialed to APIRelay.
 	API string `yaml:"api"`
+	// APIRelay is the "host:port" the forge API client actually dials —
+	// the api relay's service name on the cell network.  The API
+	// hostname is NOT aliased (so the relay resolves the real forge
+	// without a self-referential loop); the guarded client redirects the
+	// connection here while TLS still verifies API's certificate.
+	APIRelay string `yaml:"apiRelay"`
 	// CredentialFile is the read-only mounted token file.  The agent
 	// never sees it; the table never holds its content.
 	CredentialFile string `yaml:"credentialFile"`
@@ -146,60 +181,41 @@ func (e *Endpoint) validate() error {
 	if !urlPrefixOK(e.API) {
 		return fmt.Errorf("api is required as an http(s) URL prefix ending in \"/\"")
 	}
+	if _, _, err := net.SplitHostPort(e.APIRelay); err != nil {
+		return fmt.Errorf("apiRelay is required as host:port (the api relay's cell address): %w", err)
+	}
 	if e.CredentialFile == "" {
 		return fmt.Errorf("credentialFile is required (a read-only mounted token file path)")
 	}
-	// The identity lands in `-c user.name=` and a commit ident line;
-	// the same rule the archive engine enforces, applied at load so a
-	// bad table fails at boot, not at the first checkpoint.
-	for _, f := range []struct{ what, val string }{{"bot.name", e.Bot.Name}, {"bot.email", e.Bot.Email}} {
-		if f.val == "" {
-			return fmt.Errorf("%s is required", f.what)
-		}
-		if len(f.val) > 200 {
-			return fmt.Errorf("%s is over 200 bytes", f.what)
-		}
-		for i := 0; i < len(f.val); i++ {
-			if c := f.val[i]; c < 0x20 || c > 0x7e {
-				return fmt.Errorf("%s byte %d (%#x) is not printable ASCII", f.what, i, c)
-			}
-		}
-		if strings.ContainsAny(f.val, "<>") {
-			return fmt.Errorf("%s may not contain '<' or '>'", f.what)
-		}
-	}
-	if !strings.Contains(e.Bot.Email, "@") {
-		return fmt.Errorf("bot.email %q is not an address", e.Bot.Email)
+	// Vet the identity at load, so a bad table fails at boot, not at the
+	// first checkpoint.
+	if err := e.Bot.Validate(); err != nil {
+		return fmt.Errorf("bot %w", err)
 	}
 	return nil
 }
 
+// ErrNotAllowed reports a remote URL that matches no endpoint — the
+// allowlist refusal, as a sentinel callers can test with errors.Is.
+var ErrNotAllowed = errors.New("endpoint: remote matches no endpoint; the table is the allowlist and this workspace's remote is outside it")
+
 // ForRemote resolves the endpoint a remote URL belongs to by canonical
 // (or wire) prefix.  An unmatched URL is refused — this lookup IS the
-// allowlist, and it runs before git does.
-func (t *Table) ForRemote(remoteURL string) (*Endpoint, error) {
-	for i := range t.endpoints {
-		e := &t.endpoints[i]
+// allowlist, and it runs before git does.  The endpoint is returned by
+// value: the table's validated entries stay unmutable behind its
+// unexported field.
+func (t *Table) ForRemote(remoteURL string) (Endpoint, error) {
+	for _, e := range t.endpoints {
 		if strings.HasPrefix(remoteURL, e.Canonical) || strings.HasPrefix(remoteURL, e.Wire) {
 			return e, nil
 		}
 	}
-	return nil, fmt.Errorf("endpoint: remote %q matches no endpoint; the table is the allowlist and this workspace's remote is outside it", remoteURL)
-}
-
-// ByName resolves an endpoint by its (relay) name.
-func (t *Table) ByName(name string) (*Endpoint, bool) {
-	for i := range t.endpoints {
-		if t.endpoints[i].Name == name {
-			return &t.endpoints[i], true
-		}
-	}
-	return nil, false
+	return Endpoint{}, fmt.Errorf("%w: %q", ErrNotAllowed, remoteURL)
 }
 
 // Token reads the endpoint's credential file.  Read per call, never
 // cached: the mounted file is the rotation point.
-func (e *Endpoint) Token() (string, error) {
+func (e Endpoint) Token() (string, error) {
 	raw, err := os.ReadFile(e.CredentialFile)
 	if err != nil {
 		return "", fmt.Errorf("endpoint %s: read credential: %w", e.Name, err)

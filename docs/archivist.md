@@ -237,14 +237,27 @@ ssh, and bare paths, and therefore every host repository.  The
 archivist is never pointed at the operator's own tree.
 
 **Egress is always a named relay** (the kagi-relay pattern: a blind
-socat pipe per endpoint, `fork` re-resolving per connection):
+socat pipe, `fork` re-resolving per connection).  The archivist reaches
+the two forge hosts by two different routes, because git and the Go API
+client resolve names differently:
 
-- **https endpoints** (`github.com`, `api.github.com`) each get a relay
-  carrying a **network alias equal to the real hostname** on gitegress.
-  Git dials `https://github.com/`, Docker's embedded DNS resolves the
-  alias to the relay, and socat pipes ciphertext to the real host — TLS
-  end-to-end, certificate verification passing because the dialed name
-  is the certificate's name.
+- **git → `github.com`** goes through a **two-hop** relay pair.  Git
+  must dial the literal `github.com` (so its TLS handshake verifies
+  github.com's real certificate end-to-end through the transparent
+  pipe), which means gitegress must alias `github.com` to a relay.  But
+  a single relay that both *holds* that alias and *resolves* `github.com`
+  for its own socat target would resolve the name to itself — Docker's
+  embedded resolver answers the alias authoritatively — and loop.  So
+  the alias and the upstream resolution are split across two containers:
+  `github-relay` (front) holds the `github.com` alias git dials and
+  pipes to a distinctly-named `github-egress`; `github-egress` resolves
+  the real `github.com` (it is on no network that aliases the name).
+- **the PR verbs → `api.github.com`** need no alias at all: the Go
+  client is a guarded transport that dials the api relay by its service
+  name while presenting SNI `api.github.com`, so TLS still verifies the
+  real API certificate and the single `github-api-relay` resolves the
+  real host with no loop.  The relay's cell address is the endpoint
+  table's `apiRelay`.
 - **The gitea endpoint speaks plain http to the jailed instance**: its
   relay pipes to the LAN port that reaches only Gitea, never through
   the TLS front — the https alternative would expose every vhost the
@@ -291,10 +304,14 @@ github.com / api.github.com / gitea relays:
 compose-lint grows the matching invariants, landing in the same PR as
 the topology — no commit exists where the archivist is unjailed: the
 archivist's networks are exactly buildnet + statenet + gitegress;
-gitegress membership is the archivist and its relays alone; each
-relay's socat destination is a literal and each https relay's alias
-equals its name; only relays hold `egress`; the scholar's isolation is
-unchanged (it gains no route to the archivist or the workspace).
+gitegress membership is the archivist and the two relays it dials
+(github-relay, github-api-relay); gitforward carries only the git
+two-hop (github-relay, github-egress); every relay's socat destination
+is a literal (no `${}` a deploy could repoint); the git front carries
+the `github.com` alias git dials; only the egress-holding relays
+(kagi-relay, github-egress, github-api-relay) hold `egress`; the
+scholar's isolation is unchanged (it gains no route to the archivist or
+the workspace).
 
 The archivist is a **cell member**, instantiated with its cell — never
 a fleet standing outside the cells.  The agent finds it the way it

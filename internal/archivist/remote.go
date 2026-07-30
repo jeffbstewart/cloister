@@ -27,6 +27,7 @@ import (
 
 	"github.com/jeffbstewart/cloister/internal/archive"
 	"github.com/jeffbstewart/cloister/internal/audit"
+	"github.com/jeffbstewart/cloister/internal/endpoint"
 	"github.com/jeffbstewart/cloister/internal/forge"
 	"github.com/jeffbstewart/cloister/internal/mcpserve"
 	"github.com/jeffbstewart/cloister/internal/runid"
@@ -84,8 +85,8 @@ func (s *Server) registerRemoteTools() {
 
 	s.add(&mcp.Tool{
 		Name: "read_reviews",
-		Description: "A pull request's reviews, review-thread comments, and diff — the current branch's PR by default, or an " +
-			"explicit number.  The diff is included for a caller that was not the PR's author.  Audited.",
+		Description: "A pull request's reviews, review-thread comments, and full diff — the current branch's PR by default, or an " +
+			"explicit number (the corrector reviews PRs it did not author).  The diff is always included; diff_truncated marks a capped one.  Audited.",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
@@ -96,16 +97,17 @@ func (s *Server) registerRemoteTools() {
 	}, s.readReviews)
 
 	s.add(&mcp.Tool{
-		Name:        "reply_to_review",
-		Description: "Respond on a review thread (thread = the id of any comment in it, from read_reviews).  Audited.",
+		Name: "reply_to_review",
+		Description: "Respond on a review thread — thread is the id of ANY comment in it (from read_reviews); the reply is " +
+			"attached to the thread's root automatically.  pr defaults to the current branch's open PR.  Audited.",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"pr":     mcpserve.Integer("the PR number the thread belongs to"),
-				"thread": mcpserve.Integer("the review-comment id to reply to"),
+				"pr":     mcpserve.Integer("PR number; omit for the current branch's open PR"),
+				"thread": mcpserve.Integer("a review-comment id from read_reviews (any comment in the thread)"),
 				"body":   mcpserve.Str("the reply (markdown)"),
 			},
-			Required:             []string{"pr", "thread", "body"},
+			Required:             []string{"thread", "body"},
 			AdditionalProperties: mcpserve.NoExtras(),
 		},
 	}, s.replyToReview)
@@ -123,7 +125,6 @@ func (s *Server) auditRemote(op string, d audit.RemoteDetail, decision audit.Dec
 		return
 	}
 	rec := audit.New(id, op, decision, 0)
-	d.Op = op
 	rec.Detail = &d
 	if err := s.cfg.Audit.Append(rec); err != nil {
 		log.Printf("archivist: audit append failed: %v", err)
@@ -170,10 +171,19 @@ func (s *Server) propose(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Ca
 	}
 	st, err := s.cfg.Archive.CurrentState(ctx)
 	if err != nil {
+		s.auditRemote("propose", audit.RemoteDetail{Endpoint: ep.Name}, remoteDecision(err))
 		return mcpserve.ErrResult(err.Error()), nil
 	}
 	if st.Branch == "" || st.Branch == st.Default {
-		err := fmt.Errorf("archive: propose: work is proposed from a line of work, not %q — start_work and publish first", st.Branch)
+		err := fmt.Errorf("archivist: propose: work is proposed from a line of work, not %q — start_work first", st.Branch)
+		s.auditRemote("propose", audit.RemoteDetail{Endpoint: ep.Name, Branch: st.Branch}, audit.DecisionRemoteRefused)
+		return mcpserve.ErrResult(err.Error()), nil
+	}
+	if !st.Published {
+		// The PR's head must exist on the remote — publishing is what puts
+		// it there.  Catching it here turns the forge's opaque 422 into an
+		// actionable refusal that names the next step.
+		err := fmt.Errorf("archivist: propose: %s is not published — publish first, then propose", st.Branch)
 		s.auditRemote("propose", audit.RemoteDetail{Endpoint: ep.Name, Branch: st.Branch}, audit.DecisionRemoteRefused)
 		return mcpserve.ErrResult(err.Error()), nil
 	}
@@ -220,24 +230,36 @@ func (s *Server) resolvePR(ctx context.Context, repo string, number int) (forge.
 	return pr, nil
 }
 
-func (s *Server) checkProgress(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+// prTarget decodes the optional {pr} argument and resolves the PR a
+// read verb acts on, auditing its own failures under op.  On success it
+// returns the endpoint, repo, PR, and a nil result; on failure the
+// result is the caller's early return.
+func (s *Server) prTarget(ctx context.Context, op string, req *mcp.CallToolRequest) (endpoint.Endpoint, string, forge.PR, *mcp.CallToolResult) {
 	var a struct {
 		PR int `json:"pr"`
 	}
 	if err := mcpserve.Decode(req, &a); err != nil {
-		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
+		return endpoint.Endpoint{}, "", forge.PR{}, mcpserve.ErrResult("bad arguments: " + err.Error())
 	}
 	ep, repo, err := s.cfg.Archive.RemoteInfo(ctx)
 	if err != nil {
-		s.auditRemote("check_progress", audit.RemoteDetail{PR: a.PR}, remoteDecision(err))
-		return mcpserve.ErrResult(err.Error()), nil
+		s.auditRemote(op, audit.RemoteDetail{PR: a.PR}, remoteDecision(err))
+		return endpoint.Endpoint{}, "", forge.PR{}, mcpserve.ErrResult(err.Error())
 	}
 	pr, err := s.resolvePR(ctx, repo, a.PR)
 	if err != nil {
-		s.auditRemote("check_progress", audit.RemoteDetail{Endpoint: ep.Name, PR: a.PR}, remoteDecision(err))
-		return mcpserve.ErrResult(err.Error()), nil
+		s.auditRemote(op, audit.RemoteDetail{Endpoint: ep.Name, PR: a.PR}, remoteDecision(err))
+		return endpoint.Endpoint{}, "", forge.PR{}, mcpserve.ErrResult(err.Error())
 	}
-	checks, err := s.cfg.Forge.Checks(ctx, repo, pr.Sha)
+	return ep, repo, pr, nil
+}
+
+func (s *Server) checkProgress(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ep, repo, pr, errRes := s.prTarget(ctx, "check_progress", req)
+	if errRes != nil {
+		return errRes, nil
+	}
+	checks, err := s.cfg.Forge.Checks(ctx, repo, pr.SHA)
 	s.auditRemote("check_progress", audit.RemoteDetail{Endpoint: ep.Name, Branch: pr.Head, PR: pr.Number}, remoteDecision(err))
 	if err != nil {
 		return mcpserve.ErrResult(err.Error()), nil
@@ -253,21 +275,9 @@ func (s *Server) checkProgress(ctx context.Context, req *mcp.CallToolRequest) (*
 }
 
 func (s *Server) readReviews(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	var a struct {
-		PR int `json:"pr"`
-	}
-	if err := mcpserve.Decode(req, &a); err != nil {
-		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
-	}
-	ep, repo, err := s.cfg.Archive.RemoteInfo(ctx)
-	if err != nil {
-		s.auditRemote("read_reviews", audit.RemoteDetail{PR: a.PR}, remoteDecision(err))
-		return mcpserve.ErrResult(err.Error()), nil
-	}
-	pr, err := s.resolvePR(ctx, repo, a.PR)
-	if err != nil {
-		s.auditRemote("read_reviews", audit.RemoteDetail{Endpoint: ep.Name, PR: a.PR}, remoteDecision(err))
-		return mcpserve.ErrResult(err.Error()), nil
+	ep, repo, pr, errRes := s.prTarget(ctx, "read_reviews", req)
+	if errRes != nil {
+		return errRes, nil
 	}
 	reviews, err := s.cfg.Forge.Reviews(ctx, repo, pr.Number)
 	var comments []forge.ReviewComment
@@ -325,8 +335,8 @@ func (s *Server) replyToReview(ctx context.Context, req *mcp.CallToolRequest) (*
 	if err := mcpserve.Decode(req, &a); err != nil {
 		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
-	if a.PR <= 0 || a.Thread <= 0 {
-		return mcpserve.ErrResult("bad arguments: pr and thread must be positive ids"), nil
+	if a.Thread <= 0 {
+		return mcpserve.ErrResult("bad arguments: thread must be a review-comment id from read_reviews"), nil
 	}
 	if a.Body == "" || len(a.Body) > maxReplyBytes {
 		return mcpserve.ErrResult("bad arguments: a reply body is required, at most " + strconv.Itoa(maxReplyBytes) + " bytes"), nil
@@ -336,12 +346,48 @@ func (s *Server) replyToReview(ctx context.Context, req *mcp.CallToolRequest) (*
 		s.auditRemote("reply_to_review", audit.RemoteDetail{PR: a.PR}, remoteDecision(err))
 		return mcpserve.ErrResult(err.Error()), nil
 	}
-	c, err := s.cfg.Forge.Reply(ctx, repo, a.PR, a.Thread, a.Body)
+	pr, err := s.resolvePR(ctx, repo, a.PR)
+	if err != nil {
+		s.auditRemote("reply_to_review", audit.RemoteDetail{Endpoint: ep.Name, PR: a.PR}, remoteDecision(err))
+		return mcpserve.ErrResult(err.Error()), nil
+	}
+	// The forge accepts a reply only against a thread's ROOT comment;
+	// read_reviews surfaces every comment (replies included), so an agent
+	// naturally holds a reply's id.  Resolve it to the root so the verb's
+	// description ("any comment in the thread") is true.
+	root, err := s.threadRoot(ctx, repo, pr.Number, a.Thread)
+	if err != nil {
+		s.auditRemote("reply_to_review", audit.RemoteDetail{Endpoint: ep.Name, PR: pr.Number}, remoteDecision(err))
+		return mcpserve.ErrResult(err.Error()), nil
+	}
+	c, err := s.cfg.Forge.Reply(ctx, repo, pr.Number, root, a.Body)
 	s.auditRemote("reply_to_review",
-		audit.RemoteDetail{Endpoint: ep.Name, PR: a.PR, Target: strconv.FormatInt(a.Thread, 10)},
+		audit.RemoteDetail{Endpoint: ep.Name, PR: pr.Number, Target: strconv.FormatInt(root, 10)},
 		remoteDecision(err))
 	if err != nil {
 		return mcpserve.ErrResult(err.Error()), nil
 	}
 	return mcpserve.JSONResult(map[string]any{"id": c.ID, "in_reply_to": c.InReplyTo}), nil
+}
+
+// threadRoot walks a comment id up its in-reply-to chain to the thread's
+// root — the only id the forge's reply endpoint accepts.  An id that is
+// already a root (or is not found, e.g. a stale id) is returned as-is,
+// so the forge gives the authoritative error rather than this guessing.
+func (s *Server) threadRoot(ctx context.Context, repo string, number int, id int64) (int64, error) {
+	comments, err := s.cfg.Forge.ReviewComments(ctx, repo, number)
+	if err != nil {
+		return 0, err
+	}
+	parent := make(map[int64]int64, len(comments))
+	for _, c := range comments {
+		parent[c.ID] = c.InReplyTo
+	}
+	for {
+		up, ok := parent[id]
+		if !ok || up == 0 {
+			return id, nil
+		}
+		id = up
+	}
 }

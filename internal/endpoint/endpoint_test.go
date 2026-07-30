@@ -27,6 +27,7 @@ const validTable = `endpoints:
     wire: https://github.com/
     forge: github
     api: https://api.github.com/
+    apiRelay: github-api-relay:443
     credentialFile: /run/secrets/github-token
     bot:
       name: example-agent
@@ -36,6 +37,7 @@ const validTable = `endpoints:
     wire: http://gitea-relay:3000/
     forge: gitea
     api: https://gitea.example.test:8443/api/v1/
+    apiRelay: gitea-relay:3000
     credentialFile: /run/secrets/gitea-token
     bot:
       name: example-gitea-agent
@@ -56,9 +58,9 @@ func TestLoadValidTable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e, ok := tab.ByName("github.com")
-	if !ok || e.Bot.Name != "example-agent" || e.Forge != ForgeGitHub {
-		t.Errorf("ByName(github.com) = %+v, %v", e, ok)
+	e, err := tab.ForRemote("https://github.com/example/repo.git")
+	if err != nil || e.Name != "github.com" || e.Bot.Name != "example-agent" || e.Forge != ForgeGitHub {
+		t.Errorf("ForRemote(github) = %+v, %v", e, err)
 	}
 }
 
@@ -117,7 +119,7 @@ func TestToken(t *testing.T) {
 	if err := os.WriteFile(cred, []byte("  s3cret-token\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	e := &Endpoint{Name: "github.com", CredentialFile: cred}
+	e := Endpoint{Name: "github.com", CredentialFile: cred}
 	tok, err := e.Token()
 	if err != nil || tok != "s3cret-token" {
 		t.Errorf("Token() = %q, %v; want the trimmed secret", tok, err)

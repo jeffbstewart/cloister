@@ -28,6 +28,7 @@ endpoints:
     wire: https://github.com/ # resolved to the relay by network alias
     forge: github
     api: https://api.github.com/
+    apiRelay: github-api-relay:443   # the api relay's cell address (NOT aliased as api.github.com)
     credentialFile: /run/secrets/github-token
     bot:
       name: example-agent     # the bot account, never the human

@@ -93,58 +93,62 @@ func (a *Archive) SwitchWork(ctx context.Context, name BranchName) error {
 	return err
 }
 
-// AbandonWork discards a local line of work: switches to the default
+// AbandonWork discards a LOCAL line of work: switches to the default
 // branch when the doomed branch is checked out, then deletes it.  It
 // refuses the default branch and a dirty tree — losing uncommitted work
-// takes restore or dispose(force), never a side effect.  deleteRemote
-// also removes the published counterpart (an audited remote op); a
-// branch that was never published has none, and that is not an error.
-func (a *Archive) AbandonWork(ctx context.Context, name BranchName, deleteRemote bool) error {
-	if name.IsZero() {
-		return fmt.Errorf("archive: abandon_work: a branch name is required")
-	}
-	if name.String() == a.def.String() {
-		return fmt.Errorf("%w: abandon_work(%s)", ErrDefaultBranch, name)
-	}
-	if err := a.guardConfig(ctx); err != nil {
-		return err
-	}
-	st, err := a.currentState(ctx)
+// takes restore or dispose(force), never a side effect.  The published
+// counterpart is a separate, audited remote verb (DeleteRemoteBranch);
+// keeping the two apart is what lets the audit trail record only the
+// operations that actually touched the endpoint.
+func (a *Archive) AbandonWork(ctx context.Context, name BranchName) error {
+	st, err := a.canAbandon(ctx, name)
 	if err != nil {
 		return err
-	}
-	if !st.Clean() {
-		// Untracked-only dirt gets its own advice: restore never deletes
-		// untracked files, so recommending it would send the caller in a
-		// circle.
-		if len(st.Dirty) == 0 {
-			return fmt.Errorf("%w: only untracked files — abandon_work would discard them with the branch; checkpoint or set_aside them first (restore never deletes untracked files)", ErrDirtyTree)
-		}
-		return fmt.Errorf("%w: abandon_work would discard them with the branch; checkpoint, set_aside, or restore first", ErrDirtyTree)
-	}
-	// Resolve publication before the local branch (and its upstream
-	// bookkeeping) disappear.
-	published := ""
-	if deleteRemote {
-		published, err = a.upstreamOf(ctx, name.String())
-		if err != nil {
-			return err
-		}
 	}
 	if st.Branch == name.String() {
 		if _, err := a.run.out(ctx, "switch", "--end-of-options", a.def.String()); err != nil {
 			return err
 		}
 	}
-	if _, err := a.run.out(ctx, "branch", "-D", name.String()); err != nil {
-		return err
+	_, err = a.run.out(ctx, "branch", "-D", name.String())
+	return err
+}
+
+// CanAbandon reports whether AbandonWork(name) would proceed — the same
+// refusals (a name, the default branch, a clean tree), without acting.
+// The remote-half orchestration checks it before deleting a published
+// counterpart, so a local refusal never follows a remote deletion.
+func (a *Archive) CanAbandon(ctx context.Context, name BranchName) error {
+	_, err := a.canAbandon(ctx, name)
+	return err
+}
+
+// canAbandon validates the preconditions and returns the state it read,
+// so AbandonWork does not read it twice.
+func (a *Archive) canAbandon(ctx context.Context, name BranchName) (State, error) {
+	if name.IsZero() {
+		return State{}, fmt.Errorf("archive: abandon_work: a branch name is required")
 	}
-	if deleteRemote && published != "" {
-		if err := a.deleteRemoteBranch(ctx, name); err != nil {
-			return fmt.Errorf("archive: abandon_work: the local branch is gone but its published counterpart remains: %w", err)
+	if name.String() == a.def.String() {
+		return State{}, fmt.Errorf("%w: abandon_work(%s)", ErrDefaultBranch, name)
+	}
+	if err := a.guardConfig(ctx); err != nil {
+		return State{}, err
+	}
+	st, err := a.currentState(ctx)
+	if err != nil {
+		return State{}, err
+	}
+	if !st.Clean() {
+		// Untracked-only dirt gets its own advice: restore never deletes
+		// untracked files, so recommending it would send the caller in a
+		// circle.
+		if len(st.Dirty) == 0 {
+			return State{}, fmt.Errorf("%w: only untracked files — abandon_work would discard them with the branch; checkpoint or set_aside them first (restore never deletes untracked files)", ErrDirtyTree)
 		}
+		return State{}, fmt.Errorf("%w: abandon_work would discard them with the branch; checkpoint, set_aside, or restore first", ErrDirtyTree)
 	}
-	return nil
+	return st, nil
 }
 
 // Checkpoint records the working tree — all of it, or just the named

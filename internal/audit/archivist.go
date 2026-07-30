@@ -34,12 +34,10 @@ const (
 	DecisionRemoteRefused Decision = "remote_refused"
 )
 
-// RemoteDetail is one remote operation: which verb, against which
-// endpoint, touching which branch or PR.
+// RemoteDetail is one remote operation: against which endpoint,
+// touching which branch or PR.  The verb itself is the record's Tool
+// (Header), not repeated here.
 type RemoteDetail struct {
-	// Op is the contract verb: "publish", "propose", "check_progress",
-	// "read_reviews", "reply_to_review", "abandon_remote".
-	Op string `json:"op"`
 	// Endpoint is the endpoint-table name ("github.com"); "" when the
 	// operation was refused before the endpoint resolved.
 	Endpoint string `json:"endpoint,omitempty"`

@@ -40,6 +40,7 @@ func testTable(t *testing.T) *endpoint.Table {
     wire: https://github.com/
     forge: github
     api: https://api.github.com/
+    apiRelay: github-api-relay:443
     credentialFile: ` + filepath.ToSlash(cred) + `
     bot:
       name: cloister-bot
@@ -76,33 +77,34 @@ func TestPublishRefusesDefaultBranch(t *testing.T) {
 // filesystem path (or any URL outside the table) refuses to open.
 func TestOpenRefusesRemoteOutsideTable(t *testing.T) {
 	r := newRig(t)
-	_, err := New(r.dir, Identity{}, WithClock(r.clock.Now), WithEndpoints(testTable(t)))
-	if err == nil || !strings.Contains(err.Error(), "matches no endpoint") {
+	_, err := New(r.dir, WithClock(r.clock.Now), WithEndpoints(testTable(t)))
+	if err == nil || !errors.Is(err, endpoint.ErrNotAllowed) {
 		t.Errorf("New with a path remote and a table = %v, want the allowlist refusal", err)
 	}
 }
 
-func TestAbandonRemoteHalfNeedsTheTable(t *testing.T) {
+// TestDeleteRemoteBranchNeedsTheTable: with no endpoint table there is
+// no remote route, so even a published branch's counterpart cannot be
+// deleted — the refusal comes before any endpoint touch (deleted=false).
+func TestDeleteRemoteBranchNeedsTheTable(t *testing.T) {
 	r := newRig(t)
 	name := r.startWork("agent/published-doomed")
 	r.write("a.txt", "content\n")
 	r.checkpoint("work")
 	r.publish("agent/published-doomed")
 
-	err := r.a.AbandonWork(context.Background(), name, true)
-	if err == nil || !strings.Contains(err.Error(), "published counterpart remains") {
-		t.Errorf("deleteRemote without a table = %v; the local half is done but the remote failure must be loud", err)
-	}
-	if out := r.git(r.dir, "branch", "--list", "agent/published-doomed"); out != "" {
-		t.Errorf("local branch survived: %q", out)
+	deleted, err := r.a.DeleteRemoteBranch(context.Background(), name)
+	if deleted || !errors.Is(err, ErrNoEndpoints) {
+		t.Errorf("DeleteRemoteBranch without a table = (%v, %v), want (false, ErrNoEndpoints)", deleted, err)
 	}
 }
 
-func TestAbandonDeleteRemoteUnpublishedIsLocalOnly(t *testing.T) {
+func TestDeleteRemoteBranchUnpublishedIsNoTouch(t *testing.T) {
 	r := newRig(t)
 	name := r.startWork("agent/never-published")
-	if err := r.a.AbandonWork(context.Background(), name, true); err != nil {
-		t.Errorf("deleteRemote on a never-published branch = %v; nothing to delete is not an error", err)
+	deleted, err := r.a.DeleteRemoteBranch(context.Background(), name)
+	if deleted || err != nil {
+		t.Errorf("DeleteRemoteBranch on a never-published branch = (%v, %v); nothing at the endpoint is not a touch and not an error", deleted, err)
 	}
 }
 

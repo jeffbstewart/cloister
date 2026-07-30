@@ -23,6 +23,9 @@ import (
 	"testing"
 )
 
+// GitHub must satisfy the forge-agnostic Client seam.
+var _ Client = (*GitHub)(nil)
+
 // fake spins an httptest GitHub and a client aimed at it.
 func fake(t *testing.T, handler http.HandlerFunc) *GitHub {
 	t.Helper()
@@ -60,7 +63,7 @@ func TestCreatePRAccepts201(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pr.Number != 7 || pr.State != "open" || pr.Head != "agent/x" || pr.Sha != "abc123" {
+	if pr.Number != 7 || pr.State != "open" || pr.Head != "agent/x" || pr.SHA != "abc123" {
 		t.Errorf("pr = %+v", pr)
 	}
 }
@@ -108,6 +111,22 @@ func TestChecksPaginates(t *testing.T) {
 	}
 	if calls != 2 || len(checks) != 101 {
 		t.Errorf("calls = %d, checks = %d; want a full page to fetch the next", calls, len(checks))
+	}
+}
+
+// TestChecksRefusesRunawayPagination: a listing that never returns a
+// short page is an error, not a silent truncation that could hide a
+// failing check.
+func TestChecksRefusesRunawayPagination(t *testing.T) {
+	g := fake(t, func(w http.ResponseWriter, r *http.Request) {
+		runs := make([]map[string]string, 100)
+		for i := range runs {
+			runs[i] = map[string]string{"name": "verify", "status": "completed", "conclusion": "success"}
+		}
+		json.NewEncoder(w).Encode(map[string]any{"check_runs": runs})
+	})
+	if _, err := g.Checks(context.Background(), "o/r", "abc"); err == nil {
+		t.Error("an unterminated listing must surface an error, not a partial result")
 	}
 }
 

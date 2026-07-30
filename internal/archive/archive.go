@@ -71,11 +71,20 @@ type config struct {
 	gitPath   string
 	def       string
 	now       func() time.Time
+	ident     Identity
+	identSet  bool
 	endpoints *endpoint.Table
 }
 
 // Option customizes New.
 type Option func(*config)
+
+// WithIdentity pins the checkpoint identity for a LOCAL-only Archive
+// (hand-built checkouts, tests).  Mutually exclusive with WithEndpoints,
+// under which identity comes from the endpoint table instead.
+func WithIdentity(ident Identity) Option {
+	return func(c *config) { c.ident, c.identSet = ident, true }
+}
 
 // WithClock injects the clock behind checkpoint timestamps; tests pin it.
 // nil is ignored (the real clock stays).
@@ -103,17 +112,24 @@ func WithDefaultBranch(name string) Option {
 // up-tree of its mount — and detects the default branch from the
 // clone's origin/HEAD unless WithDefaultBranch overrides it.
 //
-// With WithEndpoints, the caller's ident is IGNORED: identity rides
-// with the endpoint the workspace's origin resolves to (there is no
-// identity parameter to get wrong), and an origin outside the table
-// refuses to open at all.
-func New(dir string, ident Identity, opts ...Option) (*Archive, error) {
+// Identity comes from EXACTLY ONE of two mutually exclusive options, so
+// there is no identity parameter to get wrong: WithEndpoints binds the
+// instance to a table and derives identity from the endpoint the
+// workspace's origin resolves to (an origin outside the table refuses
+// to open); WithIdentity pins a fixed identity for a local-only
+// checkout.  Giving both, or neither, is an error.
+func New(dir string, opts ...Option) (*Archive, error) {
 	cfg := config{gitPath: "git", now: time.Now}
 	for _, o := range opts {
 		o(&cfg)
 	}
-	if cfg.endpoints == nil {
-		if err := validIdentity(ident); err != nil {
+	switch {
+	case cfg.identSet && cfg.endpoints != nil:
+		return nil, fmt.Errorf("archive: WithIdentity and WithEndpoints are mutually exclusive — endpoint mode derives identity from the table")
+	case !cfg.identSet && cfg.endpoints == nil:
+		return nil, fmt.Errorf("archive: New needs WithIdentity (local) or WithEndpoints (cell)")
+	case cfg.identSet:
+		if err := validIdentity(cfg.ident); err != nil {
 			return nil, err
 		}
 	}
@@ -141,7 +157,7 @@ func New(dir string, ident Identity, opts ...Option) (*Archive, error) {
 	}
 	a := &Archive{
 		run:   &runner{git: cfg.gitPath, dir: abs, gitDir: gitDir, hooks: hooks, now: cfg.now},
-		ident: ident,
+		ident: cfg.ident,
 		table: cfg.endpoints,
 	}
 	ctx := context.Background()
@@ -178,22 +194,32 @@ func New(dir string, ident Identity, opts ...Option) (*Archive, error) {
 	}
 	a.def = def
 	if a.table != nil {
-		url, err := a.run.out(ctx, "remote", "get-url", originRemote)
-		if err != nil {
-			return fail("archive: reading %s's origin: %w", abs, err)
-		}
-		ep, err := a.table.ForRemote(url)
+		ep, _, err := a.originEndpoint(ctx)
 		if err != nil {
 			return fail("archive: opening %s: %w", abs, err)
 		}
-		bot := Identity{Name: ep.Bot.Name, Email: ep.Bot.Email}
-		if err := validIdentity(bot); err != nil {
-			return fail("archive: endpoint %s bot identity: %w", ep.Name, err)
-		}
-		a.ident = bot
-		a.ep = ep
+		// The table validated its identities at load; this is belt.
+		a.ident = Identity{Name: ep.Bot.Name, Email: ep.Bot.Email}
+		a.ep = &ep
 	}
 	return a, nil
+}
+
+// originEndpoint resolves the workspace's origin URL against the
+// endpoint table — the allowlist lookup, run against the CURRENT origin
+// (the repo-local config is agent-writable post-M3, so every caller
+// re-resolves rather than trusting the open-time result).  It requires
+// a table; local-only callers never reach it.
+func (a *Archive) originEndpoint(ctx context.Context) (endpoint.Endpoint, string, error) {
+	url, err := a.run.out(ctx, "remote", "get-url", originRemote)
+	if err != nil {
+		return endpoint.Endpoint{}, "", err
+	}
+	ep, err := a.table.ForRemote(url)
+	if err != nil {
+		return endpoint.Endpoint{}, "", err
+	}
+	return ep, url, nil
 }
 
 // Endpoint reports the endpoint the workspace's origin resolved to at

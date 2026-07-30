@@ -449,13 +449,26 @@ func (s *Server) abandonWork(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	if err != nil {
 		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
-	err = s.cfg.Archive.AbandonWork(ctx, name, a.DeleteRemote)
+	// The remote half runs first, while the local branch (and its
+	// upstream bookkeeping) still exists, and is audited ONLY when it
+	// actually touched the endpoint — a never-published branch, or a
+	// refusal before any endpoint touch, leaves no phantom remote record.
+	// It must not fire when the local abandon would then refuse (a dirty
+	// tree, the default branch), so the local guards are checked first;
+	// handlers are serialized, so nothing changes between check and act.
 	if a.DeleteRemote {
-		// The remote half is an endpoint touch; the local half stays
-		// unaudited like every working-tree verb.
-		s.auditRemote("abandon_remote", audit.RemoteDetail{Branch: name.String()}, remoteDecision(err))
+		if err := s.cfg.Archive.CanAbandon(ctx, name); err != nil {
+			return mcpserve.ErrResult(err.Error()), nil
+		}
+		deleted, derr := s.cfg.Archive.DeleteRemoteBranch(ctx, name)
+		if deleted || derr != nil {
+			s.auditRemote("abandon_remote", audit.RemoteDetail{Branch: name.String()}, remoteDecision(derr))
+		}
+		if derr != nil {
+			return mcpserve.ErrResult(derr.Error()), nil
+		}
 	}
-	if err != nil {
+	if err := s.cfg.Archive.AbandonWork(ctx, name); err != nil {
 		return mcpserve.ErrResult(err.Error()), nil
 	}
 	// Report the branch actually checked out: the engine only switches

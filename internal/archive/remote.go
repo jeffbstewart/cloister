@@ -37,26 +37,22 @@ func WithEndpoints(t *endpoint.Table) Option {
 	return func(c *config) { c.endpoints = t }
 }
 
-// remoteContext resolves the workspace's origin URL against the
-// endpoint table and builds the per-invocation overlay.  It runs per
-// verb, against the CURRENT origin URL — the repo-local config is
-// agent-writable post-M3, so the allowlist must hold even if the
+// remoteContext resolves the workspace's origin against the endpoint
+// table and builds the per-invocation overlay (allowlist + credential +
+// wire mapping).  Like originEndpoint, it re-resolves per verb against
+// the current origin, so the allowlist holds even if the repo-local
 // remote was rewritten between calls.
-func (a *Archive) remoteContext(ctx context.Context) (*endpoint.Endpoint, overlay, error) {
+func (a *Archive) remoteContext(ctx context.Context) (endpoint.Endpoint, overlay, error) {
 	if a.table == nil {
-		return nil, overlay{}, ErrNoEndpoints
+		return endpoint.Endpoint{}, overlay{}, ErrNoEndpoints
 	}
-	url, err := a.run.out(ctx, "remote", "get-url", originRemote)
+	ep, _, err := a.originEndpoint(ctx)
 	if err != nil {
-		return nil, overlay{}, err
-	}
-	ep, err := a.table.ForRemote(url)
-	if err != nil {
-		return nil, overlay{}, err
+		return endpoint.Endpoint{}, overlay{}, err
 	}
 	tok, err := ep.Token()
 	if err != nil {
-		return nil, overlay{}, err
+		return endpoint.Endpoint{}, overlay{}, err
 	}
 	o := overlay{env: authEnv(tok)}
 	if ep.Wire != ep.Canonical {
@@ -94,27 +90,24 @@ func (a *Archive) fetchOverlay(ctx context.Context) (overlay, error) {
 }
 
 // RemoteInfo resolves the workspace's endpoint and its "owner/name"
-// repository from the CURRENT origin URL — the wiring the forge verbs
-// need, re-resolved per call for the same reason remoteContext is.
-func (a *Archive) RemoteInfo(ctx context.Context) (*endpoint.Endpoint, string, error) {
+// repository from the current origin — the wiring the forge verbs need.
+func (a *Archive) RemoteInfo(ctx context.Context) (endpoint.Endpoint, string, error) {
 	if a.table == nil {
-		return nil, "", ErrNoEndpoints
+		return endpoint.Endpoint{}, "", ErrNoEndpoints
 	}
-	url, err := a.run.out(ctx, "remote", "get-url", originRemote)
+	ep, url, err := a.originEndpoint(ctx)
 	if err != nil {
-		return nil, "", err
+		return endpoint.Endpoint{}, "", err
 	}
-	ep, err := a.table.ForRemote(url)
-	if err != nil {
-		return nil, "", err
-	}
-	repo, err := forge.RepoFromRemote(ep.Canonical, url)
-	if err != nil {
-		// A provisioned clone may carry the wire form instead.
-		repo, err = forge.RepoFromRemote(ep.Wire, url)
-	}
-	if err != nil {
-		return nil, "", err
+	repo, cerr := forge.RepoFromRemote(ep.Canonical, url)
+	if cerr != nil {
+		// A provisioned clone may carry the wire form instead; report the
+		// canonical failure if that also fails.
+		if r, werr := forge.RepoFromRemote(ep.Wire, url); werr == nil {
+			repo = r
+		} else {
+			return endpoint.Endpoint{}, "", cerr
+		}
 	}
 	return ep, repo, nil
 }
@@ -153,22 +146,42 @@ func (a *Archive) Publish(ctx context.Context) (PublishInfo, error) {
 		return PublishInfo{}, err
 	}
 	if _, err := a.run.outWith(ctx, o, "push", "-u", originRemote, branch); err != nil {
-		return PublishInfo{}, err
+		// The branch is known even on failure — the caller audits it.
+		return PublishInfo{Branch: branch, Endpoint: ep.Name}, err
 	}
 	return PublishInfo{Branch: branch, Endpoint: ep.Name}, nil
 }
 
-// deleteRemoteBranch removes name's published counterpart — the remote
-// half of abandon_work.  A branch that was never published has nothing
-// to delete, and saying so is not an error.
-func (a *Archive) deleteRemoteBranch(ctx context.Context, name BranchName) error {
+// DeleteRemoteBranch removes name's published counterpart — the remote,
+// audited half of abandoning a line of work.  It reports whether an
+// endpoint was actually touched (deleted): a branch that was never
+// published has no counterpart, which is deleted=false and not an
+// error, so the caller records a remote op only when one happened.
+// Resolve-and-delete happens while the local branch still exists, so
+// call this BEFORE the local AbandonWork.
+func (a *Archive) DeleteRemoteBranch(ctx context.Context, name BranchName) (deleted bool, err error) {
+	if name.IsZero() {
+		return false, fmt.Errorf("archive: delete remote: a branch name is required")
+	}
 	if name.String() == a.def.String() {
-		return fmt.Errorf("%w: delete the remote default branch", ErrDefaultBranch)
+		return false, fmt.Errorf("%w: delete the remote default branch", ErrDefaultBranch)
 	}
-	_, o, err := a.remoteContext(ctx)
+	if err := a.guardConfig(ctx); err != nil {
+		return false, err
+	}
+	up, err := a.upstreamOf(ctx, name.String())
 	if err != nil {
-		return err
+		return false, err
 	}
-	_, err = a.run.outWith(ctx, o, "push", originRemote, "--delete", name.String())
-	return err
+	if up == "" {
+		return false, nil // never published — nothing at the endpoint
+	}
+	ep, o, err := a.remoteContext(ctx)
+	if err != nil {
+		return false, err
+	}
+	if _, err := a.run.outWith(ctx, o, "push", originRemote, "--delete", name.String()); err != nil {
+		return true, fmt.Errorf("archive: deleting the published %s at %s: %w", name, ep.Name, err)
+	}
+	return true, nil
 }
