@@ -66,8 +66,14 @@ func runArchivist(o archivistOptions) {
 	if err != nil {
 		log.Fatalf("archivist: %v", err)
 	}
-	defer a.Close()
 	srv := archivist.New(archivist.Config{Version: version, Archive: a})
-	serveHTTP(&http.Server{Addr: o.Addr, Handler: srv.Handler()},
+	// Close before any fatal exit, not deferred past one: log.Fatalf
+	// skips defers, and a crash-looping container would leak one hooks
+	// dir per restart.
+	serveErr := serveHTTP(&http.Server{Addr: o.Addr, Handler: srv.Handler()},
 		fmt.Sprintf("archivist (workspace %s, default branch %s)", o.Workspace, a.DefaultBranch()))
+	a.Close()
+	if serveErr != nil {
+		log.Fatalf("serve: %v", serveErr)
+	}
 }

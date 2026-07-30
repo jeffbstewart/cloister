@@ -18,7 +18,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -28,69 +27,25 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/jeffbstewart/cloister/internal/archive"
+	"github.com/jeffbstewart/cloister/internal/archive/archivetest"
 )
 
 // The tests drive the MCP surface over in-memory transports against a
-// real Archive on throwaway repositories (a bare origin plus the
-// workspace clone) — the same rig shape as internal/archive's tests,
-// one layer up.
-
-func requireGit(t *testing.T) {
-	t.Helper()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git is not on PATH")
-	}
-}
+// real Archive on archivetest's seeded repositories.  The engine's
+// behavior is proven by internal/archive's own suite; what this layer
+// asserts is the surface — wiring, answer shapes, and refusals arriving
+// as tool-level errors.
 
 type fixture struct {
+	tmp     string // the rig root; origin.git lives here
 	dir     string // the workspace clone
 	session *mcp.ClientSession
 }
 
-// gitRun runs raw git for rig setup — never the code under test.
-func gitRun(t *testing.T, dir string, args ...string) string {
-	t.Helper()
-	base := []string{
-		"-c", "user.name=Seeder",
-		"-c", "user.email=seeder@cloister.test",
-		"-c", "protocol.file.allow=always",
-		"-c", "commit.gpgsign=false",
-	}
-	if dir != "" {
-		base = append([]string{"-C", dir}, base...)
-	}
-	cmd := exec.Command("git", append(base, args...)...)
-	cmd.Env = append(os.Environ(),
-		"GIT_CONFIG_GLOBAL="+os.DevNull,
-		"GIT_CONFIG_SYSTEM="+os.DevNull,
-		"GIT_CONFIG_NOSYSTEM=1",
-		"GIT_TERMINAL_PROMPT=0",
-	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("rig: git %v: %v\n%s", args, err, out)
-	}
-	return strings.TrimRight(string(out), "\n")
-}
-
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	requireGit(t)
 	tmp := t.TempDir()
-
-	origin := filepath.Join(tmp, "origin.git")
-	seed := filepath.Join(tmp, "seed")
-	gitRun(t, "", "init", "--bare", "-b", "main", origin)
-	gitRun(t, "", "init", "-b", "main", seed)
-	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("hello\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitRun(t, seed, "add", "-A")
-	gitRun(t, seed, "commit", "-m", "seed")
-	gitRun(t, seed, "push", origin, "main:main")
-
-	dir := filepath.Join(tmp, "ws")
-	gitRun(t, "", "clone", origin, dir)
+	_, dir := archivetest.Seed(t, tmp)
 
 	// The injected clock: fixed start, one step per read, so recorded
 	// times are deterministic.
@@ -122,7 +77,7 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { session.Close() })
-	return &fixture{dir: dir, session: session}
+	return &fixture{tmp: tmp, dir: dir, session: session}
 }
 
 // call invokes a tool, returning the first text content and IsError.
@@ -162,6 +117,17 @@ func asJSON(t *testing.T, text string) map[string]any {
 	return v
 }
 
+// field returns a typed field of a tool's JSON answer, failing with the
+// key name rather than panicking when the shape drifts.
+func field[T any](t *testing.T, m map[string]any, key string) T {
+	t.Helper()
+	v, ok := m[key].(T)
+	if !ok {
+		t.Fatalf("answer field %q = %v (%T), want %T", key, m[key], m[key], v)
+	}
+	return v
+}
+
 func (f *fixture) write(t *testing.T, rel, content string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(f.dir, filepath.FromSlash(rel)), []byte(content), 0o644); err != nil {
@@ -175,8 +141,12 @@ func TestCurrentStateOnFreshClone(t *testing.T) {
 	if st["branch"] != "main" || st["default"] != "main" {
 		t.Errorf("state = %v, want branch and default main", st)
 	}
-	if n := st["set_aside"].(float64); n != 0 {
+	if n := field[float64](t, st, "set_aside"); n != 0 {
 		t.Errorf("set_aside = %v on a fresh clone", n)
+	}
+	// A clean tree answers empty arrays, never null.
+	if u, ok := st["untracked"].([]any); !ok || len(u) != 0 {
+		t.Errorf("untracked = %v (%T), want an empty array", st["untracked"], st["untracked"])
 	}
 }
 
@@ -192,24 +162,27 @@ func TestCheckpointFlow(t *testing.T) {
 	}
 
 	cp := asJSON(t, f.ok(t, "checkpoint", map[string]any{"message": "add a"}))
-	id, _ := cp["checkpoint"].(string)
+	id := field[string](t, cp, "checkpoint")
 	if len(id) < 4 {
 		t.Fatalf("checkpoint id = %q", id)
 	}
 
 	hist := asJSON(t, f.ok(t, "history", map[string]any{"limit": 1}))
-	changes := hist["changes"].([]any)
+	changes := field[[]any](t, hist, "changes")
 	if len(changes) != 1 {
 		t.Fatalf("history = %v, want one change", hist)
 	}
-	top := changes[0].(map[string]any)
+	top, ok := changes[0].(map[string]any)
+	if !ok {
+		t.Fatalf("change entry = %v (%T), want an object", changes[0], changes[0])
+	}
 	if top["subject"] != "add a" || top["author"] != "cloister-bot" {
 		t.Errorf("top change = %v, want the bot's 'add a'", top)
 	}
 
 	shown := asJSON(t, f.ok(t, "show_change", map[string]any{"id": id}))
-	if diff, _ := shown["diff"].(string); !strings.Contains(diff, "+new content") {
-		t.Errorf("show_change diff missing the added line:\n%v", shown["diff"])
+	if diff := field[string](t, shown, "diff"); !strings.Contains(diff, "+new content") {
+		t.Errorf("show_change diff missing the added line:\n%s", diff)
 	}
 
 	if got := f.ok(t, "file_at", map[string]any{"ref": "HEAD", "path": "a.txt"}); got != "new content\n" {
@@ -217,29 +190,99 @@ func TestCheckpointFlow(t *testing.T) {
 	}
 }
 
-func TestRestoreAndParcels(t *testing.T) {
+// TestRestoreShapes: every restore answer names the action taken, and
+// the destructive whole-tree discard exists only behind an explicit
+// all: true.
+func TestRestoreShapes(t *testing.T) {
 	f := newFixture(t)
 	f.ok(t, "start_work", map[string]any{"name": "agent/undo"})
 
 	f.write(t, "README.md", "ruined\n")
 	res := asJSON(t, f.ok(t, "restore", map[string]any{"path": "README.md"}))
-	if res["rewound"] != false {
-		t.Errorf("path restore reported %v, want rewound false", res)
-	}
-	b, err := os.ReadFile(filepath.Join(f.dir, "README.md"))
-	if err != nil || string(b) != "hello\n" {
-		t.Errorf("README.md = %q, %v; want the checkpointed content back", b, err)
+	if got := field[string](t, res, "action"); got != "file_restored" {
+		t.Errorf("path restore action = %q, want file_restored", got)
 	}
 
+	f.write(t, "README.md", "ruined again\n")
+	res = asJSON(t, f.ok(t, "restore", map[string]any{"all": true}))
+	if got := field[string](t, res, "action"); got != "discarded_local_edits" {
+		t.Errorf("all restore action = %q, want discarded_local_edits", got)
+	}
+
+	f.write(t, "a.txt", "one\n")
+	cp := asJSON(t, f.ok(t, "checkpoint", map[string]any{"message": "v1"}))
+	first := field[string](t, cp, "checkpoint")
+	f.write(t, "a.txt", "two\n")
+	f.ok(t, "checkpoint", map[string]any{"message": "v2"})
+	res = asJSON(t, f.ok(t, "restore", map[string]any{"checkpoint": first}))
+	if got := field[string](t, res, "action"); got != "tree_rewound" {
+		t.Errorf("unpublished whole-tree restore action = %q, want tree_rewound", got)
+	}
+}
+
+// TestRestoreRefusesAmbiguousShapes: no target is an error (never a
+// silent whole-tree discard), and all: true tolerates no other
+// argument.
+func TestRestoreRefusesAmbiguousShapes(t *testing.T) {
+	f := newFixture(t)
+	f.ok(t, "start_work", map[string]any{"name": "agent/guarded"})
+	f.write(t, "README.md", "precious edit\n")
+
+	for name, args := range map[string]map[string]any{
+		"bare":              {},
+		"all plus path":     {"all": true, "path": "README.md"},
+		"misspelled target": {"checkpont": "abcd"},
+		"wrong key":         {"id": "abcd"},
+	} {
+		text, isErr := f.call(t, "restore", args)
+		if !isErr {
+			t.Fatalf("restore %s (%v) succeeded: %s", name, args, text)
+		}
+		if !strings.Contains(text, "bad arguments") {
+			t.Errorf("restore %s error %q is not a bad-arguments refusal", name, text)
+		}
+	}
+	// The refusals must have destroyed nothing.
+	b, err := os.ReadFile(filepath.Join(f.dir, "README.md"))
+	if err != nil || string(b) != "precious edit\n" {
+		t.Fatalf("README.md = %q, %v; a refused restore modified the tree", b, err)
+	}
+}
+
+func TestSwitchWork(t *testing.T) {
+	f := newFixture(t)
+	f.ok(t, "start_work", map[string]any{"name": "agent/first"})
+	f.write(t, "a.txt", "one\n")
+	f.ok(t, "checkpoint", map[string]any{"message": "on first"})
+	f.ok(t, "start_work", map[string]any{"name": "agent/second"})
+
+	text := f.ok(t, "switch_work", map[string]any{"name": "agent/first"})
+	if !strings.Contains(text, "agent/first") {
+		t.Errorf("switch answer %q does not name the branch", text)
+	}
+	st := asJSON(t, f.ok(t, "current_state", nil))
+	if st["branch"] != "agent/first" {
+		t.Errorf("branch = %v after switch_work, want agent/first", st["branch"])
+	}
+
+	if text, isErr := f.call(t, "switch_work", map[string]any{"name": "agent/never"}); !isErr {
+		t.Errorf("switch_work to a missing branch succeeded: %s", text)
+	}
+}
+
+func TestSetAsideAndResume(t *testing.T) {
+	f := newFixture(t)
+	f.ok(t, "start_work", map[string]any{"name": "agent/parcel"})
 	f.write(t, "draft.txt", "parked\n")
 	f.ok(t, "set_aside", nil)
 	st := asJSON(t, f.ok(t, "current_state", nil))
-	if n := st["set_aside"].(float64); n != 1 {
+	if n := field[float64](t, st, "set_aside"); n != 1 {
 		t.Fatalf("set_aside count = %v after parking", n)
 	}
 	f.ok(t, "resume", nil)
-	if b, err := os.ReadFile(filepath.Join(f.dir, "draft.txt")); err != nil || string(b) != "parked\n" {
-		t.Errorf("draft.txt = %q, %v after resume; want the parcel back", b, err)
+	st = asJSON(t, f.ok(t, "current_state", nil))
+	if n := field[float64](t, st, "set_aside"); n != 0 {
+		t.Errorf("set_aside count = %v after resume", n)
 	}
 }
 
@@ -251,21 +294,82 @@ func TestSyncFromUpstreamOnDefault(t *testing.T) {
 	}
 }
 
-func TestAbandonWork(t *testing.T) {
+// TestSyncConflictIsStructured: a conflicted replay answers with data —
+// the files, and the fact the tree was restored — not prose alone.
+func TestSyncConflictIsStructured(t *testing.T) {
+	f := newFixture(t)
+	f.ok(t, "start_work", map[string]any{"name": "agent/conflicted"})
+	f.write(t, "README.md", "my line\n")
+	f.ok(t, "checkpoint", map[string]any{"message": "my README"})
+
+	// Upstream motion from a second clone: the same file, a different
+	// line.
+	other := filepath.Join(f.tmp, "other")
+	origin := filepath.Join(f.tmp, "origin.git")
+	archivetest.GitRun(t, "", "clone", origin, other)
+	if err := os.WriteFile(filepath.Join(other, "README.md"), []byte("their line\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	archivetest.GitRun(t, other, "add", "-A")
+	archivetest.GitRun(t, other, "commit", "-m", "their README")
+	archivetest.GitRun(t, other, "push", "origin", "main")
+
+	text, isErr := f.call(t, "sync_from_upstream", nil)
+	if !isErr {
+		t.Fatalf("conflicted sync succeeded: %s", text)
+	}
+	res := asJSON(t, text)
+	if res["conflict"] != true || res["tree_restored"] != true {
+		t.Fatalf("conflict answer = %v, want conflict and tree_restored true", res)
+	}
+	files := field[[]any](t, res, "files")
+	if len(files) != 1 || files[0] != "README.md" {
+		t.Errorf("conflict files = %v, want [README.md]", files)
+	}
+}
+
+// TestAbandonWorkReportsActualBranch: abandoning a branch that is not
+// checked out must not claim a switch to the default branch.
+func TestAbandonWorkReportsActualBranch(t *testing.T) {
 	f := newFixture(t)
 	f.ok(t, "start_work", map[string]any{"name": "agent/doomed"})
+	f.ok(t, "start_work", map[string]any{"name": "agent/current"})
+
 	text := f.ok(t, "abandon_work", map[string]any{"name": "agent/doomed"})
-	if !strings.Contains(text, "main") {
-		t.Errorf("abandon answer %q does not name the default branch", text)
+	if !strings.Contains(text, "on agent/current") {
+		t.Errorf("abandon answer %q does not report the branch actually checked out", text)
 	}
-	if out := gitRun(t, f.dir, "branch", "--list", "agent/doomed"); out != "" {
-		t.Errorf("branch still exists: %q", out)
+
+	text = f.ok(t, "abandon_work", map[string]any{"name": "agent/current"})
+	if !strings.Contains(text, "on main") {
+		t.Errorf("abandoning the current branch should land on the default: %q", text)
+	}
+}
+
+// TestFileAtRefusesBinary: non-UTF-8 content is refused, never handed
+// back corrupted under a success status.
+func TestFileAtRefusesBinary(t *testing.T) {
+	f := newFixture(t)
+	f.ok(t, "start_work", map[string]any{"name": "agent/binary"})
+	if err := os.WriteFile(filepath.Join(f.dir, "blob.bin"), []byte{0xff, 0xfe, 0x00, 0x01}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.ok(t, "checkpoint", map[string]any{"message": "add blob"})
+
+	text, isErr := f.call(t, "file_at", map[string]any{"ref": "HEAD", "path": "blob.bin"})
+	if !isErr {
+		t.Fatalf("file_at on binary content succeeded: %q", text)
+	}
+	if !strings.Contains(text, "not UTF-8") {
+		t.Errorf("binary refusal %q does not say why", text)
 	}
 }
 
 // TestToolErrorsAreResults: failures come back as tool-level errors
-// (IsError), never transport errors — and injection-shaped input dies
-// at the parser with a "bad arguments" answer.
+// (IsError), never transport errors — and injection-shaped or unknown
+// input dies at the parser with a "bad arguments" answer.  Engine-side
+// refusals are covered by internal/archive's suite; one representative
+// (checkpoint on the default branch) proves they surface correctly.
 func TestToolErrorsAreResults(t *testing.T) {
 	f := newFixture(t)
 	cases := []struct {
@@ -275,11 +379,10 @@ func TestToolErrorsAreResults(t *testing.T) {
 		want string
 	}{
 		{"dashy branch name", "start_work", map[string]any{"name": "-x"}, "bad arguments"},
-		{"checkpoint on default", "checkpoint", map[string]any{"message": "on main"}, "default branch"},
-		{"uppercase checkpoint id", "restore", map[string]any{"checkpoint": "ABCD"}, "bad arguments"},
+		{"uppercase checkpoint id", "show_change", map[string]any{"id": "ABCD"}, "bad arguments"},
 		{"range ref refused", "history", map[string]any{"ref": "main..evil"}, "bad arguments"},
-		{"traversal path", "file_at", map[string]any{"ref": "HEAD", "path": "../outside"}, "invalid path"},
-		{"resume with nothing parked", "resume", nil, "nothing"},
+		{"unknown argument key", "checkpoint", map[string]any{"message": "ok", "sign": true}, "bad arguments"},
+		{"checkpoint on default", "checkpoint", map[string]any{"message": "on main"}, "default branch"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

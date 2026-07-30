@@ -138,9 +138,11 @@ func runLibrarian(o librarianOptions) {
 		log.Printf("librarian:   %7d KiB  %s", e.Size>>10, e.Path)
 	}
 
-	serveHTTP(&http.Server{Addr: o.Addr, Handler: srv.Handler()},
+	if err := serveHTTP(&http.Server{Addr: o.Addr, Handler: srv.Handler()},
 		fmt.Sprintf("librarian (workspace %s, %d/%d MiB resident → state %s)",
-			o.Workspace, report.Bytes>>20, report.Budget>>20, o.StateURL))
+			o.Workspace, report.Bytes>>20, report.Budget>>20, o.StateURL)); err != nil {
+		log.Fatalf("serve: %v", err)
+	}
 }
 
 // buildInferencer wires the comprehension inference client from env, fail-soft:

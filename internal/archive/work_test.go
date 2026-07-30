@@ -101,6 +101,56 @@ func TestCheckpointNothingToRecord(t *testing.T) {
 	}
 }
 
+func TestSwitchWork(t *testing.T) {
+	r := newRig(t)
+	r.startWork("agent/first")
+	r.write("a.txt", "one\n")
+	r.checkpoint("on first")
+	r.startWork("agent/second")
+
+	name, err := ParseBranchName("agent/first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.a.SwitchWork(context.Background(), name); err != nil {
+		t.Fatal(err)
+	}
+	st, err := r.a.CurrentState(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Branch != "agent/first" {
+		t.Errorf("Branch = %q, want agent/first", st.Branch)
+	}
+	if got := r.read("a.txt"); got != "one\n" {
+		t.Errorf("a.txt = %q, want the first line of work's content", got)
+	}
+
+	missing, err := ParseBranchName("agent/never-existed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.a.SwitchWork(context.Background(), missing); err == nil {
+		t.Error("switch_work to a branch that does not exist should refuse")
+	}
+}
+
+func TestRestoreDiscardIsNotARewind(t *testing.T) {
+	r := newRig(t)
+	r.startWork("agent/discard")
+	r.write("README.md", "scratch\n")
+	res, err := r.a.Restore(context.Background(), CheckpointID{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Rewound {
+		t.Error("discarding local edits reported Rewound; the branch tip never moved")
+	}
+	if got := r.read("README.md"); got != "hello\n" {
+		t.Errorf("README.md = %q, want the checkpointed content", got)
+	}
+}
+
 func TestAbandonWork(t *testing.T) {
 	r := newRig(t)
 	name := r.startWork("agent/doomed")

@@ -68,9 +68,10 @@ crossings):
 | `file_at(ref, path)` | file contents at a revision, without touching the working tree (show ref:path) — how the corrector reads base/head context for a PR that isn't checked out |
 | `pending_changes(path?)` | the uncommitted delta vs the last checkpoint, whole-tree or one file (diff) |
 | `start_work(name)` | new line of work off the default branch (branch + switch) |
+| `switch_work(name)` | return to an existing local line of work, or the default branch (switch); uncommitted changes ride along when git can carry them cleanly |
 | `abandon_work(name, deleteRemote?)` | discard a line of work: switch to the default branch, delete the local branch (branch -D).  Refuses on the default branch or a dirty tree.  `deleteRemote` also removes the published counterpart — that half is a remote op, audited |
 | `checkpoint(message, paths?)` | record the working tree — all of it, or just the named paths (commit, or commit -- paths) |
-| `restore(checkpoint?, path?)` | roll back: one file's local edits (restore path), one file from a checkpoint (checkout ref -- path), or the whole tree (reset --hard while unpublished; a content restore once published — see "Published history is append-only") |
+| `restore(checkpoint?, path?, all?)` | roll back: one file's local edits (restore path), one file from a checkpoint (checkout ref -- path), the whole tree to a checkpoint on the current line of work (reset --hard while unpublished; a content restore once published — see "Published history is append-only"), or every local edit (`all` — explicit, so an empty call can never be the destructive one) |
 | `set_aside()` / `resume()` | park and recover uncommitted work (stash push/pop) |
 | `sync_from_upstream()` | update the local default branch and replay work on it (fetch; the replay is a rebase only while unpublished — see "Published history is append-only") |
 

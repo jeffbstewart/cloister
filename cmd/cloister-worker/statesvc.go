@@ -59,6 +59,8 @@ func runStateService(o stateOptions) {
 		log.Fatalf("state service: %v", err)
 	}
 	defer srv.Close()
-	serveHTTP(&http.Server{Addr: o.Addr, Handler: srv.Handler()},
-		fmt.Sprintf("state service (state %s)", o.StateDir))
+	if err := serveHTTP(&http.Server{Addr: o.Addr, Handler: srv.Handler()},
+		fmt.Sprintf("state service (state %s)", o.StateDir)); err != nil {
+		log.Fatalf("serve: %v", err)
+	}
 }

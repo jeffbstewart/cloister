@@ -17,12 +17,12 @@ package archive
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jeffbstewart/cloister/internal/archive/archivetest"
 )
 
 // The tests run real git against throwaway repositories: a bare origin,
@@ -55,9 +55,7 @@ var clockEpoch = time.Unix(1_753_000_000, 0).UTC()
 // requireGit skips the test when no git binary is available.
 func requireGit(t *testing.T) {
 	t.Helper()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git is not on PATH")
-	}
+	archivetest.RequireGit(t)
 }
 
 // rig is one origin + workspace pair with an open Archive.
@@ -75,24 +73,12 @@ type rig struct {
 // commit on main) and clones the workspace.
 func newRig(t *testing.T) *rig {
 	t.Helper()
-	requireGit(t)
 	r := &rig{
 		t:     t,
 		tmp:   t.TempDir(),
 		clock: &stepClock{t: clockEpoch, step: time.Second},
 	}
-	r.origin = filepath.Join(r.tmp, "origin.git")
-	seed := filepath.Join(r.tmp, "seed")
-	r.git("", "init", "--bare", "-b", "main", r.origin)
-	r.git("", "init", "-b", "main", seed)
-	writeFile(t, filepath.Join(seed, "README.md"), "hello\n")
-	writeFile(t, filepath.Join(seed, "keep.txt"), "constant\n")
-	r.git(seed, "add", "-A")
-	r.git(seed, "commit", "-m", "seed")
-	r.git(seed, "push", r.origin, "main:main")
-
-	r.dir = filepath.Join(r.tmp, "ws")
-	r.git("", "clone", r.origin, r.dir)
+	r.origin, r.dir = archivetest.Seed(t, r.tmp)
 
 	a, err := New(r.dir, botIdent, WithClock(r.clock.Now))
 	if err != nil {
@@ -107,27 +93,7 @@ func newRig(t *testing.T) *rig {
 // hardened runner, so the tests never assume the code under test.
 func (r *rig) git(dir string, args ...string) string {
 	r.t.Helper()
-	base := []string{
-		"-c", "user.name=Seeder",
-		"-c", "user.email=seeder@cloister.test",
-		"-c", "protocol.file.allow=always",
-		"-c", "commit.gpgsign=false",
-	}
-	if dir != "" {
-		base = append([]string{"-C", dir}, base...)
-	}
-	cmd := exec.Command("git", append(base, args...)...)
-	cmd.Env = append(os.Environ(),
-		"GIT_CONFIG_GLOBAL="+os.DevNull,
-		"GIT_CONFIG_SYSTEM="+os.DevNull,
-		"GIT_CONFIG_NOSYSTEM=1",
-		"GIT_TERMINAL_PROMPT=0",
-	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		r.t.Fatalf("rig: git %v: %v\n%s", args, err, out)
-	}
-	return strings.TrimRight(string(out), "\n")
+	return archivetest.GitRun(r.t, dir, args...)
 }
 
 // write puts content at a workspace-relative path.

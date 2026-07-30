@@ -77,6 +77,22 @@ func (a *Archive) StartWork(ctx context.Context, name BranchName) error {
 	return err
 }
 
+// SwitchWork returns to an existing local line of work (or the default
+// branch): the counterpart to StartWork for a branch that already
+// exists.  Uncommitted changes ride along when git can carry them
+// cleanly; git refuses the switch itself otherwise, exactly as in
+// StartWork.
+func (a *Archive) SwitchWork(ctx context.Context, name BranchName) error {
+	if name.IsZero() {
+		return fmt.Errorf("archive: switch_work: a branch name is required")
+	}
+	if err := a.guardConfig(ctx); err != nil {
+		return err
+	}
+	_, err := a.run.out(ctx, "switch", "--end-of-options", name.String())
+	return err
+}
+
 // AbandonWork discards a local line of work: switches to the default
 // branch when the doomed branch is checked out, then deletes it.  It
 // refuses the default branch and a dirty tree — losing uncommitted work
@@ -97,6 +113,12 @@ func (a *Archive) AbandonWork(ctx context.Context, name BranchName) error {
 		return err
 	}
 	if !st.Clean() {
+		// Untracked-only dirt gets its own advice: restore never deletes
+		// untracked files, so recommending it would send the caller in a
+		// circle.
+		if len(st.Dirty) == 0 {
+			return fmt.Errorf("%w: only untracked files — abandon_work would discard them with the branch; checkpoint or set_aside them first (restore never deletes untracked files)", ErrDirtyTree)
+		}
 		return fmt.Errorf("%w: abandon_work would discard them with the branch; checkpoint, set_aside, or restore first", ErrDirtyTree)
 	}
 	if st.Branch == name.String() {
@@ -178,9 +200,11 @@ func (a *Archive) Checkpoint(ctx context.Context, message string, paths []string
 // rule the same request realizes differently before and after
 // publication, and the agent deserves to know which happened.
 type RestoreResult struct {
-	// Rewound is true when history moved (reset --hard); false when
-	// content was brought forward into the working tree, to be recorded
-	// by the next checkpoint.
+	// Rewound is true when history moved (a whole-tree reset to an
+	// earlier checkpoint); false when the tree changed without moving
+	// history — a single-file restore, a discard of local edits, or a
+	// checkpoint's content brought forward to be recorded by the next
+	// checkpoint.
 	Rewound bool
 }
 
@@ -217,10 +241,12 @@ func (a *Archive) Restore(ctx context.Context, checkpoint CheckpointID, path str
 		return RestoreResult{}, err
 	}
 	if checkpoint.IsZero() {
+		// Discarding local edits is not a rewind: the branch tip does not
+		// move, only the tree returns to it.
 		if _, err := a.run.out(ctx, "reset", "--hard", "HEAD"); err != nil {
 			return RestoreResult{}, err
 		}
-		return RestoreResult{Rewound: true}, nil
+		return RestoreResult{}, nil
 	}
 
 	branch, err := a.currentBranch(ctx)

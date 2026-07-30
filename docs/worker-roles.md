@@ -63,6 +63,17 @@ use: `bad arguments:` (undecodable/invalid input), `denied:` (shield
 denial, audited), `rejected:` (policy refusal, audited), `internal:`
 (the server's own fault).
 
+**Unknown argument keys should be rejected, not ignored.**  The
+archivist's `decode` uses `DisallowUnknownFields` and its schemas set
+`additionalProperties: false`: on a surface with destructive verbs, a
+misspelled optional key must be an error, never a silent fall-through
+to a different shape.  Note the raw `(*mcp.Server).AddTool` path does
+NOT validate arguments against the input schema — the handler's decode
+is the enforcement; the schema is client-side documentation.  The
+read-side workers still tolerate unknown keys; converging them on the
+strict rule is planned alongside extracting these helpers into a
+shared package.
+
 ## The bootstrap file
 
 `cmd/cloister-worker/<role>.go` holds the role's flag set and boot:
