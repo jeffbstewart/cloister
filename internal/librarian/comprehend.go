@@ -38,6 +38,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/jeffbstewart/cloister/internal/infer"
+	"github.com/jeffbstewart/cloister/internal/mcpserve"
 	"github.com/jeffbstewart/cloister/internal/openai"
 	"github.com/jeffbstewart/cloister/internal/shield"
 )
@@ -102,14 +103,14 @@ func (s *Server) registerComprehensionTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "ask_about_file",
 		Description: "Answer a question about one workspace file, grounded only in the file's content.  Optionally restrict to a line range (start, end) — the answer stays distilled either way, so this is how you comprehend part of a file too large for the whole-file cap.  effort 'quick' (default) or 'thorough' buys engine-side depth at the cost of latency; the answer returns with a provenance footer.",
-		InputSchema: &jsonschema.Schema{
+		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"path":     str("workspace-relative file path"),
-				"question": str("the question to answer from the file"),
+				"path":     mcpserve.Str("workspace-relative file path"),
+				"question": mcpserve.Str("the question to answer from the file"),
 				"effort":   effortSchema(),
-				"start":    integer("optional first line, 1-based, to restrict the question to a range"),
-				"end":      integer("optional last line, inclusive; with start, comprehend only that line range"),
+				"start":    mcpserve.Integer("optional first line, 1-based, to restrict the question to a range"),
+				"end":      mcpserve.Integer("optional last line, inclusive; with start, comprehend only that line range"),
 			},
 			Required: []string{"path", "question"},
 		},
@@ -118,13 +119,13 @@ func (s *Server) registerComprehensionTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "summarize_file",
 		Description: "Summarize one workspace file, grounded only in its content.  Optionally restrict to a line range (start, end) — this is how you summarize part of a file too large for the whole-file cap.  effort 'quick' (default) or 'thorough' buys engine-side depth at the cost of latency; the summary returns with a provenance footer.",
-		InputSchema: &jsonschema.Schema{
+		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"path":   str("workspace-relative file path"),
+				"path":   mcpserve.Str("workspace-relative file path"),
 				"effort": effortSchema(),
-				"start":  integer("optional first line, 1-based, to restrict the summary to a range"),
-				"end":    integer("optional last line, inclusive; with start, summarize only that line range"),
+				"start":  mcpserve.Integer("optional first line, 1-based, to restrict the summary to a range"),
+				"end":    mcpserve.Integer("optional last line, inclusive; with start, summarize only that line range"),
 			},
 			Required: []string{"path"},
 		},
@@ -133,10 +134,10 @@ func (s *Server) registerComprehensionTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "summarize_directory",
 		Description: "Summarize a directory by digesting each resident file (map) then synthesizing one overview (reduce), grounded only in that content.  A context-saving alternative to reading a whole tree.  Over a file-count / total-size guard it refuses and asks for a narrower subdirectory rather than launching thousands of engine calls.  effort 'quick' (default) or 'thorough' deepens the synthesis; the overview returns with an aggregate provenance footer.",
-		InputSchema: &jsonschema.Schema{
+		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"path":   str("workspace-relative directory path; empty or '.' for the workspace root"),
+				"path":   mcpserve.Str("workspace-relative directory path; empty or '.' for the workspace root"),
 				"effort": effortSchema(),
 			},
 			Required: []string{"path"},
@@ -146,12 +147,12 @@ func (s *Server) registerComprehensionTools() {
 	s.mcp.AddTool(&mcp.Tool{
 		Name:        "find_relevant_files",
 		Description: "Locate the workspace files most relevant to a natural-language question (\"where is retry handled?\").  Runs an internal keyword-expand -> grep -> rerank loop over resident files and returns a ranked list of paths, each with a one-line reason — never the intermediate candidate lists.  Optional path (directory prefix) and glob narrow the search; effort 'quick' (default) or 'thorough' deepens the final ranking (keyword expansion is always quick).  Embedding-based semantic recall is a later phase.",
-		InputSchema: &jsonschema.Schema{
+		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"question": str("the question to locate relevant files for"),
-				"path":     str("optional workspace-relative directory prefix to restrict the search; empty or '.' for the whole tree"),
-				"glob":     str("optional anchored glob to restrict candidate files (e.g. '**/*.go')"),
+				"question": mcpserve.Str("the question to locate relevant files for"),
+				"path":     mcpserve.Str("optional workspace-relative directory prefix to restrict the search; empty or '.' for the whole tree"),
+				"glob":     mcpserve.Str("optional anchored glob to restrict candidate files (e.g. '**/*.go')"),
 				"effort":   effortSchema(),
 			},
 			Required: []string{"question"},
@@ -189,15 +190,15 @@ func (s *Server) askAboutFile(ctx context.Context, req *mcp.CallToolRequest) (*m
 		Start    int    `json:"start"`
 		End      int    `json:"end"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	if a.Question == "" {
-		return errResult("question is required"), nil
+		return mcpserve.ErrResult("question is required"), nil
 	}
 	effort, err := parseEffort(a.Effort)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return mcpserve.ErrResult(err.Error()), nil
 	}
 	ar, err := s.cfg.Repo.Read(a.Path)
 	if err != nil {
@@ -205,7 +206,7 @@ func (s *Server) askAboutFile(ctx context.Context, req *mcp.CallToolRequest) (*m
 	}
 	snippet, loc, err := scopeContent(ar, a.Start, a.End)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return mcpserve.ErrResult(err.Error()), nil
 	}
 	msgs := []openai.Message{
 		{Role: "system", Content: askSystemPrompt},
@@ -213,7 +214,7 @@ func (s *Server) askAboutFile(ctx context.Context, req *mcp.CallToolRequest) (*m
 	}
 	res, err := s.cfg.Infer.Ask(ctx, effort, msgs)
 	if err != nil {
-		return errResult("inference failed: " + err.Error()), nil
+		return mcpserve.ErrResult("inference failed: " + err.Error()), nil
 	}
 	return comprehendResult(res, effort), nil
 }
@@ -225,12 +226,12 @@ func (s *Server) summarizeFile(ctx context.Context, req *mcp.CallToolRequest) (*
 		Start  int    `json:"start"`
 		End    int    `json:"end"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	effort, err := parseEffort(a.Effort)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return mcpserve.ErrResult(err.Error()), nil
 	}
 	ar, err := s.cfg.Repo.Read(a.Path)
 	if err != nil {
@@ -238,7 +239,7 @@ func (s *Server) summarizeFile(ctx context.Context, req *mcp.CallToolRequest) (*
 	}
 	snippet, loc, err := scopeContent(ar, a.Start, a.End)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return mcpserve.ErrResult(err.Error()), nil
 	}
 	msgs := []openai.Message{
 		{Role: "system", Content: summarizeSystemPrompt},
@@ -246,7 +247,7 @@ func (s *Server) summarizeFile(ctx context.Context, req *mcp.CallToolRequest) (*
 	}
 	res, err := s.cfg.Infer.Ask(ctx, effort, msgs)
 	if err != nil {
-		return errResult("inference failed: " + err.Error()), nil
+		return mcpserve.ErrResult("inference failed: " + err.Error()), nil
 	}
 	return comprehendResult(res, effort), nil
 }
@@ -296,7 +297,7 @@ func scopeContent(ar shield.AIReadable, start, end int) (snippet, loc string, er
 // also carries the same fields as MCP structured content for programmatic use.
 // The text footer is the source of truth (docs/librarian.md).
 func comprehendResult(res infer.Result, effort infer.Effort) *mcp.CallToolResult {
-	r := textResult(res.Answer + footer(res, effort))
+	r := mcpserve.TextResult(res.Answer + footer(res, effort))
 	r.StructuredContent = map[string]any{
 		"answer":    res.Answer,
 		"servedBy":  res.ServedBy,
@@ -364,12 +365,12 @@ func (s *Server) summarizeDirectory(ctx context.Context, req *mcp.CallToolReques
 		Path   string `json:"path"`
 		Effort string `json:"effort"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	effort, err := parseEffort(a.Effort)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return mcpserve.ErrResult(err.Error()), nil
 	}
 
 	// Validate the directory.  Root ("" or ".") needs no Stat; any other path
@@ -386,7 +387,7 @@ func (s *Server) summarizeDirectory(ctx context.Context, req *mcp.CallToolReques
 			return s.refuse("summarize_directory", err, dir), nil
 		}
 		if !entry.IsDir {
-			return errResult(fmt.Sprintf("%s is not a directory", dir)), nil
+			return mcpserve.ErrResult(fmt.Sprintf("%s is not a directory", dir)), nil
 		}
 	}
 
@@ -435,12 +436,12 @@ func (s *Server) summarizeDirectory(ctx context.Context, req *mcp.CallToolReques
 	})
 	if walkErr != nil {
 		if errors.Is(walkErr, errDirBudget) {
-			return errResult(budgetErr.Error()), nil
+			return mcpserve.ErrResult(budgetErr.Error()), nil
 		}
-		return errResult(walkErr.Error()), nil
+		return mcpserve.ErrResult(walkErr.Error()), nil
 	}
 	if len(files) == 0 {
-		return errResult("no readable files under " + label), nil
+		return mcpserve.ErrResult("no readable files under " + label), nil
 	}
 
 	// Map: one cheap infer.Quick digest per file.  Sequential is fine here — the
@@ -467,7 +468,7 @@ func (s *Server) summarizeDirectory(ctx context.Context, req *mcp.CallToolReques
 		}
 		res, err := s.cfg.Infer.Ask(ctx, infer.Quick, msgs)
 		if err != nil {
-			return errResult("inference failed: " + err.Error()), nil
+			return mcpserve.ErrResult("inference failed: " + err.Error()), nil
 		}
 		prov.add(res)
 		summaries = append(summaries, fileSummary{Path: fc.path, Summary: res.Answer})
@@ -485,14 +486,14 @@ func (s *Server) summarizeDirectory(ctx context.Context, req *mcp.CallToolReques
 		{Role: "user", Content: b.String()},
 	})
 	if err != nil {
-		return errResult("inference failed: " + err.Error()), nil
+		return mcpserve.ErrResult("inference failed: " + err.Error()), nil
 	}
 	prov.add(res)
 
 	// Aggregate provenance across all N+1 calls; provenance names every engine
 	// that served so a mixed-engine fallback is never silent.
 	servedBy := prov.servedBy()
-	r := textResult(res.Answer + footerParts(effort, servedBy, prov.elapsed, prov.tokens))
+	r := mcpserve.TextResult(res.Answer + footerParts(effort, servedBy, prov.elapsed, prov.tokens))
 	r.StructuredContent = map[string]any{
 		"overview":        res.Answer,
 		"files":           summaries,
@@ -537,15 +538,15 @@ func (s *Server) findRelevantFiles(ctx context.Context, req *mcp.CallToolRequest
 		Glob     string `json:"glob"`
 		Effort   string `json:"effort"`
 	}
-	if err := decode(req, &a); err != nil {
-		return errResult("bad arguments: " + err.Error()), nil
+	if err := mcpserve.Decode(req, &a); err != nil {
+		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
 	if a.Question == "" {
-		return errResult("question is required"), nil
+		return mcpserve.ErrResult("question is required"), nil
 	}
 	effort, err := parseEffort(a.Effort)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return mcpserve.ErrResult(err.Error()), nil
 	}
 
 	var prov provenance
@@ -558,7 +559,7 @@ func (s *Server) findRelevantFiles(ctx context.Context, req *mcp.CallToolRequest
 		{Role: "user", Content: a.Question},
 	})
 	if err != nil {
-		return errResult("inference failed: " + err.Error()), nil
+		return mcpserve.ErrResult("inference failed: " + err.Error()), nil
 	}
 	prov.add(kwRes)
 	keywords := parseKeywords(kwRes.Answer)
@@ -587,7 +588,7 @@ func (s *Server) findRelevantFiles(ctx context.Context, req *mcp.CallToolRequest
 			c.count++
 		})
 		if grepErr != nil {
-			return errResult("find_relevant_files: " + grepErr.Error()), nil
+			return mcpserve.ErrResult("find_relevant_files: " + grepErr.Error()), nil
 		}
 	}
 
@@ -627,7 +628,7 @@ func (s *Server) findRelevantFiles(ctx context.Context, req *mcp.CallToolRequest
 		{Role: "user", Content: b.String()},
 	})
 	if err != nil {
-		return errResult("inference failed: " + err.Error()), nil
+		return mcpserve.ErrResult("inference failed: " + err.Error()), nil
 	}
 	prov.add(rankRes)
 
@@ -660,7 +661,7 @@ func relevantResult(question string, files []rankedFile, considered int, truncat
 		}
 		body = strings.TrimRight(b.String(), "\n")
 	}
-	r := textResult(body + footerParts(effort, servedBy, prov.elapsed, prov.tokens))
+	r := mcpserve.TextResult(body + footerParts(effort, servedBy, prov.elapsed, prov.tokens))
 	r.StructuredContent = map[string]any{
 		"question":             question,
 		"files":                files,

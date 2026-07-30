@@ -23,7 +23,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -40,6 +39,7 @@ import (
 	"github.com/jeffbstewart/cloister/internal/audit"
 	"github.com/jeffbstewart/cloister/internal/digest"
 	"github.com/jeffbstewart/cloister/internal/manifest"
+	"github.com/jeffbstewart/cloister/internal/mcpserve"
 	"github.com/jeffbstewart/cloister/internal/runid"
 	"github.com/jeffbstewart/cloister/internal/runner"
 )
@@ -112,14 +112,7 @@ func New(cfg Config) *Server {
 
 // Handler serves MCP at /mcp and a liveness probe at /healthz.
 func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(
-		func(*http.Request) *mcp.Server { return s.mcp }, nil))
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		io.WriteString(w, "ok")
-	})
-	return mux
+	return mcpserve.Handler(s.mcp)
 }
 
 func (s *Server) loadManifest() (*manifest.Manifest, error) {
@@ -149,7 +142,7 @@ func (s *Server) addAction(name string, a *manifest.Action) {
 		&mcp.Tool{
 			Name:        name,
 			Description: desc,
-			InputSchema: &jsonschema.Schema{Type: "object", Properties: props},
+			InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(), Type: "object", Properties: props},
 		},
 		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			return s.runAction(ctx, name, req)
@@ -162,12 +155,12 @@ func (s *Server) runAction(ctx context.Context, name string, req *mcp.CallToolRe
 	// substitutes its own RunID).  Every audit line stays addressable.
 	opID, err := runid.New()
 	if err != nil {
-		return errResult("internal: mint op id: " + err.Error()), nil
+		return mcpserve.ErrResult("internal: mint op id: " + err.Error()), nil
 	}
 	params, err := stringParams(req.Params.Arguments)
 	if err != nil {
 		s.audit(audit.New(opID, name, audit.DecisionRejectedParam, 0))
-		return errResult(fmt.Sprintf("bad arguments: %v", err)), nil
+		return mcpserve.ErrResult(fmt.Sprintf("bad arguments: %v", err)), nil
 	}
 	cmd := &audit.CommandDetail{Params: params}
 	emit := func(id runid.ID, d audit.Decision, dur time.Duration) {
@@ -182,7 +175,7 @@ func (s *Server) runAction(ctx context.Context, name string, req *mcp.CallToolRe
 	if s.cfg.WarmCheck != nil {
 		if err := s.cfg.WarmCheck(); err != nil {
 			emit(opID, audit.DecisionRejectedUnwarmed, 0)
-			return errResult(err.Error()), nil
+			return mcpserve.ErrResult(err.Error()), nil
 		}
 	}
 
@@ -191,18 +184,18 @@ func (s *Server) runAction(ctx context.Context, name string, req *mcp.CallToolRe
 	m, err := s.loadManifest()
 	if err != nil {
 		emit(opID, audit.DecisionRejectedNoManifest, 0)
-		return errResult(err.Error()), nil
+		return mcpserve.ErrResult(err.Error()), nil
 	}
 	a, ok := m.Actions[name]
 	if !ok {
 		emit(opID, audit.DecisionRejectedNoManifest, 0)
-		return errResult(fmt.Sprintf("action %q is no longer in the manifest", name)), nil
+		return mcpserve.ErrResult(fmt.Sprintf("action %q is no longer in the manifest", name)), nil
 	}
 
 	extra, err := a.Args(params)
 	if err != nil {
 		emit(opID, audit.DecisionRejectedParam, 0)
-		return errResult(fmt.Sprintf("rejected: %v", err)), nil
+		return mcpserve.ErrResult(fmt.Sprintf("rejected: %v", err)), nil
 	}
 	argv := append(slices.Clone(a.Run), extra...)
 	// Record what actually runs: busy and run records both carry it,
@@ -219,14 +212,14 @@ func (s *Server) runAction(ctx context.Context, name string, req *mcp.CallToolRe
 	var busy *runner.ErrBusy
 	if errors.As(err, &busy) {
 		emit(opID, audit.DecisionRejectedBusy, 0)
-		return jsonResult(map[string]any{
+		return mcpserve.JSONResult(map[string]any{
 			"status":      "busy",
 			"activeRunId": busy.ActiveRunID,
 			"hint":        "one action runs at a time; watch it via get_log(activeRunId) or retry when it finishes",
 		}), nil
 	}
 	if err != nil {
-		return errResult(fmt.Sprintf("internal: %v", err)), nil
+		return mcpserve.ErrResult(fmt.Sprintf("internal: %v", err)), nil
 	}
 
 	cmd.ExitCode = &res.ExitCode
@@ -237,7 +230,7 @@ func (s *Server) runAction(ctx context.Context, name string, req *mcp.CallToolRe
 	rec.Detail = cmd
 	s.audit(rec)
 
-	return jsonResult(s.buildDigest(a, res)), nil
+	return mcpserve.JSONResult(s.buildDigest(a, res)), nil
 }
 
 func (s *Server) buildDigest(a *manifest.Action, res *runner.Result) digest.Digest {
@@ -288,7 +281,7 @@ func (s *Server) addGetLog() {
 		&mcp.Tool{
 			Name:        "get_log",
 			Description: "Page through the full persisted log of a prior run",
-			InputSchema: &jsonschema.Schema{
+			InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
 				Type: "object",
 				Properties: map[string]*jsonschema.Schema{
 					"runId":    {Type: "string", Description: "runId returned by a prior action call"},
@@ -308,16 +301,14 @@ func (s *Server) getLog(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 		FromLine int    `json:"fromLine"`
 		MaxLines int    `json:"maxLines"`
 	}
-	if len(req.Params.Arguments) > 0 {
-		if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
-			return errResult(fmt.Sprintf("bad arguments: %v", err)), nil
-		}
+	if err := mcpserve.Decode(req, &args); err != nil {
+		return mcpserve.ErrResult(fmt.Sprintf("bad arguments: %v", err)), nil
 	}
 	// runid.Parse is the trust boundary for this agent-supplied value: its
 	// strict alphabet is what makes the path join below traversal-proof.
 	id, err := runid.Parse(args.RunID)
 	if err != nil {
-		return errResult(err.Error()), nil
+		return mcpserve.ErrResult(err.Error()), nil
 	}
 	// Fast path: the local spool.  Fallback: durable storage, for runs the
 	// spool has already pruned.
@@ -326,7 +317,7 @@ func (s *Server) getLog(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 		data, err = s.cfg.LogFetcher.FetchLog(id)
 	}
 	if err != nil {
-		return errResult(fmt.Sprintf("no log for run %q", id)), nil
+		return mcpserve.ErrResult(fmt.Sprintf("no log for run %q", id)), nil
 	}
 
 	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
@@ -346,14 +337,14 @@ func (s *Server) getLog(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 		max = maxLogPageLines
 	}
 	if from > total {
-		return textResult(fmt.Sprintf("%s: %d lines total; fromLine %d is past the end", args.RunID, total, from)), nil
+		return mcpserve.TextResult(fmt.Sprintf("%s: %d lines total; fromLine %d is past the end", args.RunID, total, from)), nil
 	}
 	end := from - 1 + max
 	if end > total {
 		end = total
 	}
 	header := fmt.Sprintf("%s: lines %d-%d of %d\n", args.RunID, from, end, total)
-	return textResult(header + strings.Join(lines[from-1:end], "\n")), nil
+	return mcpserve.TextResult(header + strings.Join(lines[from-1:end], "\n")), nil
 }
 
 func (s *Server) addHarnessInfo() {
@@ -361,7 +352,7 @@ func (s *Server) addHarnessInfo() {
 		&mcp.Tool{
 			Name:        "harness_info",
 			Description: "Report manifest status, toolchain id, available actions, queue state, and recent runs",
-			InputSchema: &jsonschema.Schema{Type: "object"},
+			InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(), Type: "object"},
 		},
 		s.harnessInfo,
 	)
@@ -389,7 +380,7 @@ func (s *Server) harnessInfo(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		if s.degraded == "" {
 			info["note"] = "the manifest was valid at startup but is broken now; action calls will be rejected until it is fixed"
 		}
-		return jsonResult(info), nil
+		return mcpserve.JSONResult(info), nil
 	}
 
 	info["manifest"] = "ok"
@@ -419,7 +410,7 @@ func (s *Server) harnessInfo(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	if s.degraded != "" {
 		info["note"] = "manifest is valid now but the tool menu was fixed at startup in degraded mode; restart the builder container to expose these actions"
 	}
-	return jsonResult(info), nil
+	return mcpserve.JSONResult(info), nil
 }
 
 func (s *Server) audit(r audit.Record) {
@@ -453,24 +444,6 @@ func stringParams(raw json.RawMessage) (map[string]string, error) {
 		out[k] = sv
 	}
 	return out, nil
-}
-
-func textResult(text string) *mcp.CallToolResult {
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
-}
-
-func errResult(msg string) *mcp.CallToolResult {
-	r := textResult(msg)
-	r.IsError = true
-	return r
-}
-
-func jsonResult(v any) *mcp.CallToolResult {
-	b, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return errResult(fmt.Sprintf("internal: marshal result: %v", err))
-	}
-	return textResult(string(b))
 }
 
 func sortedKeys[V any](m map[string]V) []string {
