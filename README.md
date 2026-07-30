@@ -61,8 +61,9 @@ they bundle.
 
 - `cmd/cloister-worker` — the one multi-call binary; the program name (a
   role link: builder | state-service | scribe | scholar | librarian |
-  agency) picks the role and its flag set.  `cmd/compose-lint` — topology
-  drift guard, run by CI against the committed compose files.
+  archivist | agency) picks the role and its flag set (the wiring
+  pattern: docs/worker-roles.md).  `cmd/compose-lint` — topology drift
+  guard, run by CI against the committed compose files.
 - `internal/*` — the packages.  `docker/` — Dockerfiles + compose files.
   `etc/` — config templates.  `docs/` — design + onboarding docs.
   `bin/` — operator tools (the dependency airlock).  `scripts/` — repo

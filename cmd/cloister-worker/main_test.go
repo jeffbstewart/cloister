@@ -62,7 +62,7 @@ func TestResolveRole(t *testing.T) {
 // TestEveryRoleHasAParser: the table drives both argv[0] dispatch and
 // -worker-mode, so a role missing from it is unreachable.
 func TestEveryRoleHasAParser(t *testing.T) {
-	for _, name := range []string{"builder", "state-service", "scribe", "scholar", "librarian", "agency"} {
+	for _, name := range []string{"builder", "state-service", "scribe", "scholar", "librarian", "archivist", "agency"} {
 		if roles[name] == nil {
 			t.Errorf("role %q has no parser", name)
 		}
@@ -84,6 +84,7 @@ func TestWrongRoleFlagIsAnError(t *testing.T) {
 		{"scholar", []string{"-scribe-approvals"}},            // scribe flag
 		{"librarian", []string{"-state-dir", "/state"}},       // state-service flag
 		{"state-service", []string{"-rescan-interval", "1m"}}, // librarian flag
+		{"archivist", []string{"-repo-budget-mb", "64"}},      // librarian flag
 		{"agency", []string{"-workspace", "/w"}},              // the door holds no workspace
 	}
 	for _, tc := range cases {
@@ -109,8 +110,10 @@ func TestRoleParsersAcceptTheirOwnFlags(t *testing.T) {
 		{"scribe", []string{"-scribe-approvals"}},
 		{"scholar", nil},
 		{"librarian", nil},
+		{"archivist", []string{"-workspace", "/workspace", "-default-branch", "main"}},
 		{"agency", []string{"-status-dir", "/status"}},
 		{"scribe", []string{"-healthcheck"}},
+		{"archivist", []string{"-healthcheck"}},
 		{"agency", []string{"-healthcheck"}},
 	}
 	for _, tc := range cases {

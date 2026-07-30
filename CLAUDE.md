@@ -7,8 +7,10 @@ mode of one Go binary, wired into per-project "cells" (docker/ai-workers.yaml).
 
 ## Layout
 - `cmd/cloister-worker` — the one multi-call binary; the program name (a role
-  link: builder | scribe | scholar | librarian | state-service | agency) picks
-  the role and its flag set, with a `-worker-mode` fallback under the generic name.
+  link: builder | scribe | scholar | librarian | archivist | state-service |
+  agency) picks the role and its flag set, with a `-worker-mode` fallback under
+  the generic name.  Adding or changing a role: follow docs/worker-roles.md
+  (dispatch, flags, MCP surface, healthcheck, tests, image links).
 - `internal/*` — the packages. `cmd/compose-lint` — topology drift guard.
 - `docker/` — Dockerfiles + compose. `etc/` — config templates. `docs/` — design.
   `bin/` — operator tools. `scripts/` — repo plumbing.

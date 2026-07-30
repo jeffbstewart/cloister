@@ -79,6 +79,8 @@ func runScribe(o scribeOptions) {
 	}
 	srv := scribe.New(cfg)
 	srv.Recover() // resume any approvals staged before a restart (no-op when approvals are off)
-	serveHTTP(&http.Server{Addr: o.Addr, Handler: srv.Handler()},
-		fmt.Sprintf("scribe (workspace %s → state %s)", o.Workspace, o.StateURL))
+	if err := serveHTTP(&http.Server{Addr: o.Addr, Handler: srv.Handler()},
+		fmt.Sprintf("scribe (workspace %s → state %s)", o.Workspace, o.StateURL)); err != nil {
+		log.Fatalf("serve: %v", err)
+	}
 }

@@ -114,5 +114,7 @@ func runAgency(o agencyOptions) {
 	if o.StatusDir != "" {
 		go srv.WriteStatusSnapshots(context.Background(), o.StatusDir)
 	}
-	serveHTTP(&http.Server{Addr: o.Addr, Handler: srv.Handler()}, label)
+	if err := serveHTTP(&http.Server{Addr: o.Addr, Handler: srv.Handler()}, label); err != nil {
+		log.Fatalf("serve: %v", err)
+	}
 }

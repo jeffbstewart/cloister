@@ -133,8 +133,10 @@ func runBuilder(o builderOptions) {
 		LogFetcher: stateSink.Client, // ...and mcpserver.LogFetcher
 		WarmCheck:  warmingConfig(toolchainID).Check,
 	})
-	serveHTTP(&http.Server{Addr: o.Addr, Handler: srv.Handler()},
-		fmt.Sprintf("mcp (toolchain %s → state %s)", toolchainID, o.StateURL))
+	if err := serveHTTP(&http.Server{Addr: o.Addr, Handler: srv.Handler()},
+		fmt.Sprintf("mcp (toolchain %s → state %s)", toolchainID, o.StateURL)); err != nil {
+		log.Fatalf("serve: %v", err)
+	}
 }
 
 // sinkAdapter adapts *sink.Client to runner.Sink: the embedded client

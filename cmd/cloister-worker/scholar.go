@@ -137,6 +137,8 @@ func runScholar(o scholarOptions) {
 		AnswerGate:  o.AnswerGate,
 		Caps:        scholar.DefaultCaps(),
 	})
-	serveHTTP(&http.Server{Addr: o.Addr, Handler: srv.Handler()},
-		fmt.Sprintf("scholar (research → class %s @ %s, engine %s)", agency.ClassResearch, baseURL, sub.Engine()))
+	if err := serveHTTP(&http.Server{Addr: o.Addr, Handler: srv.Handler()},
+		fmt.Sprintf("scholar (research → class %s @ %s, engine %s)", agency.ClassResearch, baseURL, sub.Engine())); err != nil {
+		log.Fatalf("serve: %v", err)
+	}
 }

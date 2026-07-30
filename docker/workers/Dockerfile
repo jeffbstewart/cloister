@@ -38,7 +38,7 @@ RUN apk add --no-cache ca-certificates
 COPY cloister-worker /out/usr/local/bin/cloister-worker
 RUN set -eux; \
     cd /out/usr/local/bin; \
-    for role in builder scribe scholar librarian state-service agency agent-builder; do \
+    for role in builder scribe scholar librarian archivist state-service agency agent-builder; do \
       ln -s cloister-worker "$role"; \
     done; \
     mkdir -p /out/etc/ssl/certs /out/tmp /out/spool /out/state /out/scribe-state /out/burn /out/workspace /out/home/worker /out/status /out/agency-status; \

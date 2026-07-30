@@ -56,8 +56,12 @@ func (c commonFlags) runOrProbe(run func()) func() {
 	return run
 }
 
-// serveHTTP runs the server until SIGTERM/SIGINT, then drains connections.
-func serveHTTP(httpSrv *http.Server, what string) {
+// serveHTTP runs the server until SIGTERM/SIGINT, then drains
+// connections and returns nil; a serve failure returns the error so the
+// caller can release its resources before exiting — log.Fatalf here
+// would skip the caller's defers (a crash-looping container would leak
+// whatever the role holds on disk, e.g. the archivist's hooks dir).
+func serveHTTP(httpSrv *http.Server, what string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -67,12 +71,13 @@ func serveHTTP(httpSrv *http.Server, what string) {
 
 	select {
 	case err := <-errCh:
-		log.Fatalf("serve: %v", err)
+		return err
 	case <-ctx.Done():
 		log.Print("signal received; shutting down")
 		shCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = httpSrv.Shutdown(shCtx)
+		return nil
 	}
 }
 
