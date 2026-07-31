@@ -45,6 +45,13 @@ const (
 	ForgeGitea  Forge = "gitea"
 )
 
+// HardeningRunbook names the doc section a caller points at when a check
+// fails: the steps to bring a repository up to R1-R8.  Both the operator
+// lint (cmd/forge-lint) and the provision gate's refusal cite it, so the
+// pointer has one source of truth and cannot drift as the section is
+// renamed (docs/grange.md).
+const HardeningRunbook = `docs/grange.md, "Locking down a project for grange service"`
+
 // Config is the per-repository lint configuration (etc/forge-lint.yaml).
 // Every field is REQUIRED — fail-closed like every other config in this
 // repo.  It holds identities and expectations only, never a credential:
@@ -126,9 +133,13 @@ func (c *Config) validate() error {
 }
 
 // Snapshot is the forge-agnostic view of the repository's protection that
-// the assertion set runs against.  Backends normalize their APIs into it.
-// The *Known flags mark sections the credential could not read: those
-// requirements report UNVERIFIED rather than silently passing (or failing).
+// the assertion set runs against.  A backend fills it two ways: a full
+// operator read (GitHub.Snapshot) or a partial bot-credential read for the
+// provision gate (GitHub.ProvisionSnapshot), which deliberately leaves the
+// admin-only sections unread.  The *Known flags mark sections the
+// credential could not read — whether because it lacks the scope or because
+// that reader does not fetch them: those requirements report UNVERIFIED
+// rather than silently passing (or failing).
 type Snapshot struct {
 	DefaultBranch string // as the forge reports it
 

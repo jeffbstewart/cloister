@@ -104,15 +104,21 @@ type ghRuleset struct {
 			Exclude []string `json:"exclude"`
 		} `json:"ref_name"`
 	} `json:"conditions"`
-	Rules []struct {
-		Type       string          `json:"type"`
-		Parameters json.RawMessage `json:"parameters"`
-	} `json:"rules"`
+	Rules        []ghRule `json:"rules"`
 	BypassActors []struct {
 		ActorID    int64  `json:"actor_id"`
 		ActorType  string `json:"actor_type"`
 		BypassMode string `json:"bypass_mode"`
 	} `json:"bypass_actors"`
+}
+
+// ghRule is one rule as either the rulesets API (nested in a ghRuleset) or
+// the effective-rules API (a flat array) reports it — the element shape is
+// identical, so one decoder (applyBranchRules) serves the operator lint and
+// the bot-credential provision gate alike.
+type ghRule struct {
+	Type       string          `json:"type"`
+	Parameters json.RawMessage `json:"parameters"`
 }
 
 // ghAdminRoleID is the RepositoryRole actor id GitHub assigns the
@@ -164,7 +170,7 @@ func (g *GitHub) Snapshot(ctx context.Context) (*Snapshot, error) {
 		s.NamespaceConfined = false
 	}
 
-	g.applyCodeOwners(ctx, s)
+	g.applyCodeOwners(ctx, s, true)
 
 	var perm struct {
 		Permission string `json:"permission"`
@@ -192,9 +198,13 @@ func (g *GitHub) Snapshot(ctx context.Context) (*Snapshot, error) {
 	return s, nil
 }
 
-// applyMainRuleset folds the default branch's ruleset into the snapshot.
-func (g *GitHub) applyMainRuleset(s *Snapshot, rs *ghRuleset) {
-	for _, rule := range rs.Rules {
+// applyBranchRules folds a branch's effective rules — the pull-request,
+// status-check, force-push, and deletion protections — into the snapshot.
+// It is deliberately bypass-agnostic: the rulesets API carries the bypass
+// roster (applyMainRuleset adds it) while the effective-rules API does not
+// (the provision gate leaves BypassKnown false).
+func applyBranchRules(s *Snapshot, rules []ghRule) {
+	for _, rule := range rules {
 		switch rule.Type {
 		case "pull_request":
 			var p struct {
@@ -227,6 +237,11 @@ func (g *GitHub) applyMainRuleset(s *Snapshot, rs *ghRuleset) {
 			s.DeletionBlocked = true
 		}
 	}
+}
+
+// applyMainRuleset folds the default branch's ruleset into the snapshot.
+func (g *GitHub) applyMainRuleset(s *Snapshot, rs *ghRuleset) {
+	applyBranchRules(s, rs.Rules)
 	s.BypassKnown = true
 	s.BypassAdminOnly = true
 	var actors []string
@@ -276,18 +291,25 @@ func (g *GitHub) applyNamespaceRuleset(s *Snapshot, rs *ghRuleset, exclude []str
 // the owner-review rule only bites if the catch-all pattern names exactly
 // the operator, and workflow files need an owner so their changes cannot
 // merge without the operator.
-func (g *GitHub) applyCodeOwners(ctx context.Context, s *Snapshot) {
+//
+// allowWorkingTree governs where CODEOWNERS is read.  The CI lint runs
+// INSIDE the checkout being merged and must assert the post-merge file, so
+// it prefers the working tree (true).  The provision gate reads a repo it
+// has NOT checked out into its CWD, where a stray CODEOWNERS on disk would
+// be the wrong repo's — it reads the default branch via the API only
+// (false).
+func (g *GitHub) applyCodeOwners(ctx context.Context, s *Snapshot, allowWorkingTree bool) {
 	var raw []byte
 	found := ""
-	// Prefer the working tree: in CI the lint runs inside the checkout
-	// being merged, and the CODEOWNERS that will govern after the merge is
-	// the one to assert.  The API fallback serves operator runs outside a
-	// checkout (it reads the default branch's copy).
 	locations := []string{".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"}
-	for _, path := range locations {
-		if b, err := os.ReadFile(path); err == nil {
-			raw, found = b, path+" (working tree)"
-			break
+	if allowWorkingTree {
+		// In CI the CODEOWNERS that will govern after the merge is the one to
+		// assert, so the checkout under CWD wins over the default branch.
+		for _, path := range locations {
+			if b, err := os.ReadFile(path); err == nil {
+				raw, found = b, path+" (working tree)"
+				break
+			}
 		}
 	}
 	if found == "" {
