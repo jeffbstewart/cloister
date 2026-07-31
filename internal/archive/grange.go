@@ -275,6 +275,14 @@ func AdoptArchive(a *Archive) *Grange {
 	return &Grange{arc: a}
 }
 
+// AdoptForge wires a PR-verb client into an adopted grange — the seam
+// higher layers' tests use to drive the forge verbs against a fake.
+// Production granges get their client from OpenForge when the workspace
+// opens.
+func (g *Grange) AdoptForge(fc forge.Client) {
+	g.forge = fc
+}
+
 // open opens the Archive at the promoted tree and, when wired, its forge
 // client.  The tree must be a real checkout (post-clone or a restart).
 func (g *Grange) open() error {

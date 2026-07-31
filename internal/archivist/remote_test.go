@@ -77,7 +77,7 @@ func TestForgeToolsRegisterAndRefuseWithoutAdapter(t *testing.T) {
 	for _, tool := range res.Tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"publish", "propose", "check_progress", "read_reviews", "reply_to_review", "provision", "dispose"} {
+	for _, want := range []string{"publish", "propose", "check_progress", "read_reviews", "reply_to_review", "await_review", "provision", "dispose"} {
 		if !names[want] {
 			t.Errorf("%s is not registered; the full surface is advertised up front", want)
 		}
@@ -85,6 +85,10 @@ func TestForgeToolsRegisterAndRefuseWithoutAdapter(t *testing.T) {
 	text, isErr := f.call(t, "propose", map[string]any{"title": "x", "body": "y"})
 	if !isErr || !strings.Contains(text, "no PR-verb adapter") {
 		t.Errorf("propose without an adapter = %q (err=%v), want a clean no-adapter refusal", text, isErr)
+	}
+	text, isErr = f.call(t, "await_review", nil)
+	if !isErr || !strings.Contains(text, "no PR-verb adapter") {
+		t.Errorf("await_review without an adapter = %q (err=%v), want a clean no-adapter refusal", text, isErr)
 	}
 }
 

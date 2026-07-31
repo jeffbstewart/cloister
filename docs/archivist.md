@@ -385,7 +385,18 @@ those are realization details of the git adapter.
    ROOT (`/grange`) holding `tree/` and `staging/`, not the checkout
    itself; compose + compose-lint moved with it.  Verbs serialize behind
    the one server lock, provision and dispose included.
-5. **`await_review`** — the long-poll with progress notifications.
+5. DONE: **`await_review`** — the long-poll with progress notifications.
+   Activity is measured from the moment of the call (a baseline of the
+   PR's reviews and comments, so feedback already readable never
+   retriggers; merge/close are absolute and always terminal), polled at
+   a bounded interval under a bounded `maxWait` whose expiry is a
+   successful "timeout" answer, not an error.  A few consecutive failed
+   polls end the wait loudly rather than spinning to the deadline.  The
+   one verb that does not hold the serialization lock for its whole run:
+   it resolves its target under the lock, then waits on the captured
+   forge client with the lock released, so a minutes-long wait never
+   wedges the rest of the surface.  One audit record per call, at the
+   wait's end.
 6. **Record cutover** — this doc's status, ARCHITECTURE.md's PLANNED
    sections, grange.md's M1 milestone.  (The CLAUDE.md invariant
    rewrite stays at grange M5.)

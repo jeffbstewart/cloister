@@ -36,6 +36,7 @@ package mcpserve
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -99,6 +100,28 @@ func ErrResult(msg string) *mcp.CallToolResult {
 	r := TextResult(msg)
 	r.IsError = true
 	return r
+}
+
+// ProgressNotifier returns a function that sends an MCP progress
+// notification to the caller mid-call, or nil if the client supplied no
+// progress token (so there is nothing to key progress to).  It is how a
+// verb that blocks — the scribe's approval hold, the archivist's
+// await_review — tells whoever is driving the session what it is
+// waiting on, without unblocking the call.
+func ProgressNotifier(ctx context.Context, req *mcp.CallToolRequest) func(string) {
+	token := req.Params.GetProgressToken()
+	if token == nil {
+		return nil
+	}
+	var n float64
+	return func(msg string) {
+		n++
+		_ = req.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{
+			ProgressToken: token,
+			Message:       msg,
+			Progress:      n,
+		})
+	}
 }
 
 // JSONResult renders v as indented JSON in a tool result.
