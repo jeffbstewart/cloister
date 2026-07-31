@@ -104,15 +104,21 @@ type ghRuleset struct {
 			Exclude []string `json:"exclude"`
 		} `json:"ref_name"`
 	} `json:"conditions"`
-	Rules []struct {
-		Type       string          `json:"type"`
-		Parameters json.RawMessage `json:"parameters"`
-	} `json:"rules"`
+	Rules        []ghRule `json:"rules"`
 	BypassActors []struct {
 		ActorID    int64  `json:"actor_id"`
 		ActorType  string `json:"actor_type"`
 		BypassMode string `json:"bypass_mode"`
 	} `json:"bypass_actors"`
+}
+
+// ghRule is one rule as either the rulesets API (nested in a ghRuleset) or
+// the effective-rules API (a flat array) reports it — the element shape is
+// identical, so one decoder (applyBranchRules) serves the operator lint and
+// the bot-credential provision gate alike.
+type ghRule struct {
+	Type       string          `json:"type"`
+	Parameters json.RawMessage `json:"parameters"`
 }
 
 // ghAdminRoleID is the RepositoryRole actor id GitHub assigns the
@@ -192,9 +198,13 @@ func (g *GitHub) Snapshot(ctx context.Context) (*Snapshot, error) {
 	return s, nil
 }
 
-// applyMainRuleset folds the default branch's ruleset into the snapshot.
-func (g *GitHub) applyMainRuleset(s *Snapshot, rs *ghRuleset) {
-	for _, rule := range rs.Rules {
+// applyBranchRules folds a branch's effective rules — the pull-request,
+// status-check, force-push, and deletion protections — into the snapshot.
+// It is deliberately bypass-agnostic: the rulesets API carries the bypass
+// roster (applyMainRuleset adds it) while the effective-rules API does not
+// (the provision gate leaves BypassKnown false).
+func applyBranchRules(s *Snapshot, rules []ghRule) {
+	for _, rule := range rules {
 		switch rule.Type {
 		case "pull_request":
 			var p struct {
@@ -227,6 +237,11 @@ func (g *GitHub) applyMainRuleset(s *Snapshot, rs *ghRuleset) {
 			s.DeletionBlocked = true
 		}
 	}
+}
+
+// applyMainRuleset folds the default branch's ruleset into the snapshot.
+func (g *GitHub) applyMainRuleset(s *Snapshot, rs *ghRuleset) {
+	applyBranchRules(s, rs.Rules)
 	s.BypassKnown = true
 	s.BypassAdminOnly = true
 	var actors []string
