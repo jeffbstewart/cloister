@@ -146,6 +146,18 @@ the workspace's boundary events:
   fills it, `dispose` empties it.  Grange invariant 3 ("never revive a
   stale volume") holds because `provision` refuses a non-empty
   workspace and a resumed task is always a fresh clone of its branch.
+- **Clone-first, promote by rename.**  The volume is the grange ROOT; the
+  archivist manages `tree/` (the exported checkout) and `staging/` (the
+  pre-promote clone) under it.  `provision` clones into `staging/`, reads
+  the repository's own `.github/forge-lint.yaml` from that checkout and
+  runs the gate against it, and only on success **atomically renames**
+  `staging/` to `tree/` — so validation reads a real operator-approved
+  file (no new mounted config, no drift), and a refused gate or an
+  interrupted clone leaves the exported tree EMPTY, never CORRUPT.  The
+  full clone is needed for the workspace regardless, so it doubles as the
+  validation checkout; a sparse pre-validation is held in reserve for
+  outsized repos.  Keeping `tree/` a subdirectory (not the mount point)
+  is what makes the promote a rename.
 - **The provenance marker** (`.git/cloister-grange`: repo, branch,
   provision time as epoch seconds) is `provision`'s last write and
   `dispose`'s precondition — the rail that makes `dispose` structurally
@@ -362,8 +374,17 @@ those are realization details of the git adapter.
    refusals, the remote-op audit detail (KindRemote), and the
    compose-lint invariants pinning all of it.  Topology and lint moved
    together.
-4. **Grange lifecycle** — `provision`/`dispose`, the provenance marker,
-   the forgelint-backed provision gate, lifecycle audit records.
+4. DONE: **Grange lifecycle** — `provision`/`dispose` (internal/archive's
+   `Grange`), the provenance marker, the forgelint-backed provision gate
+   (internal/archivist's `ForgeGate`), and `KindLifecycle` audit records.
+   The archivist boots WITHOUT a checkout now (lazy open): provision clones
+   into a `staging/` sibling, reads the repo's OWN `.github/forge-lint.yaml`
+   there and gates against it, then **atomic-renames** staging to the
+   exported `tree/` and writes the marker last — so a refused gate or a
+   crash leaves the workspace EMPTY, not CORRUPT.  The grange volume is the
+   ROOT (`/grange`) holding `tree/` and `staging/`, not the checkout
+   itself; compose + compose-lint moved with it.  Verbs serialize behind
+   the one server lock, provision and dispose included.
 5. **`await_review`** — the long-poll with progress notifications.
 6. **Record cutover** — this doc's status, ARCHITECTURE.md's PLANNED
    sections, grange.md's M1 milestone.  (The CLAUDE.md invariant

@@ -346,18 +346,18 @@ func Check(data []byte) ([]string, error) {
 			if strings.Contains(vol, "${WORKSPACE") {
 				v = append(v, "archivist mounts ${WORKSPACE} — the operator's host tree must never enter; the grange volume is its workspace")
 			}
-			if strings.Contains(vol, ":/workspace") {
+			if strings.Contains(vol, ":/grange") {
 				wsMounts++
 				if !strings.HasPrefix(vol, "grange:") {
-					v = append(v, fmt.Sprintf("archivist /workspace must be the dedicated grange volume; mount = %q", vol))
+					v = append(v, fmt.Sprintf("archivist /grange must be the dedicated grange volume; mount = %q", vol))
 				}
 				if strings.HasSuffix(vol, ":ro") {
-					v = append(v, "archivist grange mount is `:ro` — the worktree verbs write")
+					v = append(v, "archivist grange mount is `:ro` — provision clones and the worktree verbs write")
 				}
 			}
 		}
 		if wsMounts != 1 {
-			v = append(v, fmt.Sprintf("archivist must mount exactly one workspace (the grange volume); found %d", wsMounts))
+			v = append(v, fmt.Sprintf("archivist must mount exactly one grange volume (the workspace root); found %d", wsMounts))
 		}
 	}
 	for _, n := range []string{"gitegress", "gitforward"} {

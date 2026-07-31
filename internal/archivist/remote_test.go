@@ -62,9 +62,12 @@ func TestPublishWithoutEndpointsIsAnAuditedRefusal(t *testing.T) {
 	}
 }
 
-// TestForgeToolsAbsentWithoutClient: a local-only instance has no PR
-// verbs to misuse — the tools are not registered at all.
-func TestForgeToolsAbsentWithoutClient(t *testing.T) {
+// TestForgeToolsRegisterAndRefuseWithoutAdapter: under lazy provisioning
+// the whole surface is advertised up front — the endpoint (and its forge
+// adapter) is not known until a workspace is provisioned — so the PR verbs
+// register and refuse cleanly when there is no adapter, rather than being
+// absent.
+func TestForgeToolsRegisterAndRefuseWithoutAdapter(t *testing.T) {
 	f := newFixtureWith(t, Config{Version: "test"})
 	res, err := f.session.ListTools(context.Background(), nil)
 	if err != nil {
@@ -74,13 +77,14 @@ func TestForgeToolsAbsentWithoutClient(t *testing.T) {
 	for _, tool := range res.Tools {
 		names[tool.Name] = true
 	}
-	if !names["publish"] {
-		t.Error("publish must register even in local-only mode (it refuses cleanly)")
-	}
-	for _, absent := range []string{"propose", "check_progress", "read_reviews", "reply_to_review"} {
-		if names[absent] {
-			t.Errorf("%s registered without a forge client", absent)
+	for _, want := range []string{"publish", "propose", "check_progress", "read_reviews", "reply_to_review", "provision", "dispose"} {
+		if !names[want] {
+			t.Errorf("%s is not registered; the full surface is advertised up front", want)
 		}
+	}
+	text, isErr := f.call(t, "propose", map[string]any{"title": "x", "body": "y"})
+	if !isErr || !strings.Contains(text, "no PR-verb adapter") {
+		t.Errorf("propose without an adapter = %q (err=%v), want a clean no-adapter refusal", text, isErr)
 	}
 }
 
