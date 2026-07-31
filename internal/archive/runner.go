@@ -141,14 +141,25 @@ func (r *runner) command(ctx context.Context, o overlay, args []string) *exec.Cm
 	full = append(full, o.cfg...)
 	full = append(full, args...)
 	cmd := exec.CommandContext(ctx, r.git, full...)
-	env := make([]string, 0, len(envKeep)+8)
+	cmd.Env = hardenedEnv(r.now, o.env)
+	return cmd
+}
+
+// hardenedEnv is the scrubbed environment every archivist git invocation
+// runs with: the platform allowlist and nothing else (no inherited GIT_*,
+// no credential material, no proxy), global/system config disabled, the
+// injected clock stamping author/committer dates, and the overlay's extra
+// entries (the credential) last.  Shared by the pinned runner and the
+// unpinned clone, so both carry identical containment.
+func hardenedEnv(now func() time.Time, extra []string) []string {
+	env := make([]string, 0, len(envKeep)+10+len(extra))
 	for _, k := range envKeep {
 		if v, ok := os.LookupEnv(k); ok {
 			env = append(env, k+"="+v)
 		}
 	}
-	stamp := fmt.Sprintf("@%d +0000", r.now().Unix())
-	cmd.Env = append(env,
+	stamp := fmt.Sprintf("@%d +0000", now().Unix())
+	env = append(env,
 		"GIT_CONFIG_GLOBAL="+os.DevNull,
 		"GIT_CONFIG_SYSTEM="+os.DevNull,
 		"GIT_CONFIG_NOSYSTEM=1",
@@ -174,8 +185,36 @@ func (r *runner) command(ctx context.Context, o overlay, args []string) *exec.Cm
 		"GIT_AUTHOR_DATE="+stamp,
 		"GIT_COMMITTER_DATE="+stamp,
 	)
-	cmd.Env = append(cmd.Env, o.env...)
-	return cmd
+	return append(env, extra...)
+}
+
+// hardenedClone clones repoURL into dst with the same hardening every
+// other invocation carries — the -c program-naming overrides, an empty
+// hooks path, the scrubbed environment, and the overlay's credential and
+// wire mapping — but WITHOUT the --git-dir/--work-tree pins: dst does not
+// exist yet, so there is nothing to pin.  The pinned runner takes over the
+// moment New opens dst.  --end-of-options keeps a repoURL that begins with
+// '-' from being read as a flag.
+func hardenedClone(ctx context.Context, git, hooks string, now func() time.Time, o overlay, repoURL, dst string) error {
+	args := make([]string, 0, len(hardening)+len(o.cfg)+6)
+	args = append(args, hardening...)
+	args = append(args, "-c", "core.hooksPath="+hooks)
+	args = append(args, o.cfg...)
+	args = append(args, "clone", "--origin", originRemote, "--end-of-options", repoURL, dst)
+	cmd := exec.CommandContext(ctx, git, args...)
+	cmd.Env = hardenedEnv(now, o.env)
+	var se bytes.Buffer
+	cmd.Stderr = &se
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("archive: git clone: %w", ctx.Err())
+		}
+		if msg := strings.TrimSpace(se.String()); msg != "" {
+			return fmt.Errorf("archive: git clone: %s", msg)
+		}
+		return fmt.Errorf("archive: git clone: %w", err)
+	}
+	return nil
 }
 
 // run is the shared execution core: stdout, stderr, and the exit code.

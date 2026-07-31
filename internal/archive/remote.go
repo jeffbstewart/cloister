@@ -54,14 +54,21 @@ func (a *Archive) remoteContext(ctx context.Context) (endpoint.Endpoint, overlay
 	if err != nil {
 		return endpoint.Endpoint{}, overlay{}, err
 	}
-	o := overlay{env: authEnv(tok)}
+	return ep, endpointOverlay(ep, tok), nil
+}
+
+// endpointOverlay is the per-invocation overlay for one endpoint: the
+// credential as GIT_CONFIG_* environment (never argv) and, when the wire
+// host differs from the canonical designation, the insteadOf mapping as an
+// extra -c.  guardConfig refuses url..insteadOf in the repo-local config,
+// so this -c is the only place designations get rewritten — shared by the
+// remote verbs and provision's clone.
+func endpointOverlay(ep endpoint.Endpoint, token string) overlay {
+	o := overlay{env: authEnv(token)}
 	if ep.Wire != ep.Canonical {
-		// The wire mapping rides per invocation; guardConfig refuses
-		// url..insteadOf in the repo-local config, so this -c is the only
-		// place designations get rewritten.
 		o.cfg = []string{"-c", "url." + ep.Wire + ".insteadOf=" + ep.Canonical}
 	}
-	return ep, o, nil
+	return o
 }
 
 // authEnv carries the endpoint's credential into one git invocation as

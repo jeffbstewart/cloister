@@ -52,3 +52,42 @@ type RemoteDetail struct {
 
 // Kind marks RemoteDetail as the archivist's detail body.
 func (*RemoteDetail) Kind() Kind { return KindRemote }
+
+// The grange-lifecycle vocabulary (docs/archivist.md, "Grange lifecycle").
+// provision and dispose are the workspace's boundary events — the moments a
+// grange comes into being and is destroyed — so both are audited, like the
+// remote verbs and unlike the working-tree verbs.
+
+const (
+	// DecisionProvisioned: a grange was cloned, gated, and handed over.
+	DecisionProvisioned Decision = "provisioned"
+	// DecisionDisposed: a grange was emptied back to nothing.
+	DecisionDisposed Decision = "disposed"
+	// DecisionLifecycleRefused: the archivist's own refusal — a non-empty
+	// workspace, a repository outside the endpoint allowlist, a repository
+	// not set up for grange service (missing/invalid forge-lint config), a
+	// failed provision gate, or a dispose blocked by unpublished work or a
+	// missing provenance marker.
+	DecisionLifecycleRefused Decision = "lifecycle_refused"
+	// DecisionLifecycleError: the clone, the forge read, or a filesystem
+	// operation failed.
+	DecisionLifecycleError Decision = "lifecycle_error"
+)
+
+// LifecycleDetail is one provision or dispose: which repository and line of
+// work the workspace held, and — when a provision gate refused — the first
+// requirement that failed.  Identifiers only, never the forge-lint config
+// or the protection facts themselves.
+type LifecycleDetail struct {
+	// Repo is the "owner/name" the grange was provisioned from; "" for a
+	// dispose or a provision that refused before the repo resolved.
+	Repo string `json:"repo,omitempty"`
+	// Branch is the line of work provisioned or disposed, when one is named.
+	Branch string `json:"branch,omitempty"`
+	// Requirement names the forge requirement (R1..R8) whose failure the
+	// gate refused on; "" when the refusal was not a gate verdict.
+	Requirement string `json:"requirement,omitempty"`
+}
+
+// Kind marks LifecycleDetail as the archivist's lifecycle detail body.
+func (*LifecycleDetail) Kind() Kind { return KindLifecycle }

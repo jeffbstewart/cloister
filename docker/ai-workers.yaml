@@ -414,12 +414,15 @@ services:
       - STATE_URL=http://state:9201
       - STATE_TOKEN=${STATE_TOKEN}
     volumes:
-      # A dedicated grange volume, NEVER ${WORKSPACE} — the operator's
-      # host tree does not enter the archivist (docs/archivist.md).
-      - grange:/workspace
+      # A dedicated grange volume, NEVER ${WORKSPACE} — the operator's host
+      # tree does not enter the archivist (docs/archivist.md).  The volume
+      # is the grange ROOT: the archivist manages tree/ (the exported
+      # checkout) and staging/ (the pre-promote clone) under it, so the
+      # promote can be an atomic rename.
+      - grange:/grange
       - ${ARCHIVIST_ENDPOINTS:?set ARCHIVIST_ENDPOINTS to the host path of the endpoint table yaml}:/etc/cloister/endpoints.yaml:ro
       - ${GITHUB_TOKEN_FILE:?set GITHUB_TOKEN_FILE to the host path of the bot token file}:/run/secrets/github-token:ro
-    working_dir: /workspace
+    working_dir: /grange
     read_only: true
     tmpfs:
       - /tmp                             # the runner's empty hooks dir lives here

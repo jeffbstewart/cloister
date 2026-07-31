@@ -62,17 +62,17 @@ type Auditor interface {
 	Append(audit.Record) error
 }
 
-// Config wires the archivist to its engine and, for the remote verbs,
-// its forge and audit sink.
+// Config wires the archivist to its grange (the workspace lifecycle owner,
+// which hands out the live Archive and forge client) and its audit sink.
 type Config struct {
 	Version string
-	Archive *archive.Archive
-	// Forge enables the PR verbs (propose, check_progress,
-	// read_reviews, reply_to_review); nil registers the local verbs and
-	// publish only.
-	Forge forge.Client
-	// Audit records remote operations; nil disables (tests).  Local
-	// verbs are unaudited by design.
+	// Grange owns the workspace: provision brings a checkout into being,
+	// dispose returns it to empty, and every other verb operates on the
+	// live Archive it hands out — refusing cleanly until one is
+	// provisioned.
+	Grange *archive.Grange
+	// Audit records remote and lifecycle operations; nil disables (tests).
+	// Working-tree verbs are unaudited by design.
 	Audit Auditor
 }
 
@@ -80,19 +80,25 @@ type Config struct {
 type Server struct {
 	cfg Config
 	mcp *mcp.Server
-	// mu serializes the verbs: the MCP SDK dispatches every tool call in
-	// its own goroutine, and one working tree is single-writer — an
-	// unserialized checkpoint racing a restore could record a half-reset
-	// tree, and even reads during a replay would testify mid-surgery.
+	// mu serializes every verb, provision and dispose included: the MCP
+	// SDK dispatches each tool call in its own goroutine, and both the one
+	// working tree (single-writer) and the grange's live-workspace pointer
+	// are shared state.  Without it a checkpoint could race a dispose's
+	// teardown (use-after-free on the Archive), two provisions could both
+	// clone onto the same empty workspace, and a read during a replay
+	// would testify mid-surgery.  Every handler runs under this lock
+	// because add — the sole registration path — takes it.
 	mu sync.Mutex
 }
 
-// New builds the archivist tool surface over an opened Archive.  The
-// forge-backed PR verbs register only when a forge client is wired, so
-// a local-only instance simply has no remote surface to misuse.
+// New builds the archivist tool surface over a grange.  Every verb is
+// registered; the working-tree and remote verbs refuse until a workspace
+// is provisioned, so an unprovisioned instance has a full surface that
+// simply says "provision first".
 func New(cfg Config) *Server {
 	s := &Server{cfg: cfg}
 	s.mcp = mcp.NewServer(&mcp.Implementation{Name: "archivist", Version: cfg.Version}, nil)
+	s.registerLifecycleTools()
 	s.registerTools()
 	s.registerRemoteTools()
 	return s
@@ -103,8 +109,9 @@ func (s *Server) Handler() http.Handler {
 	return mcpserve.Handler(s.mcp)
 }
 
-// add registers one tool with the worktree lock taken around its
-// handler.
+// add registers one tool with the serialization lock taken around its
+// handler.  It is the sole registration path, so holding the lock here is
+// what makes "every verb is serialized" true by construction.
 func (s *Server) add(tool *mcp.Tool, h func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error)) {
 	s.mcp.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		s.mu.Lock()
@@ -113,8 +120,35 @@ func (s *Server) add(tool *mcp.Tool, h func(context.Context, *mcp.CallToolReques
 	})
 }
 
+// addArc registers a verb that operates on the live workspace: the lock is
+// taken, the provisioned Archive resolved, and a clean refusal returned
+// when none is provisioned — so no verb body repeats that guard, and every
+// working-tree verb uniformly says "provision first" until there is one.
+func (s *Server) addArc(tool *mcp.Tool, h func(context.Context, *mcp.CallToolRequest, *archive.Archive) (*mcp.CallToolResult, error)) {
+	s.add(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		arc, err := s.cfg.Grange.Archive()
+		if err != nil {
+			return mcpserve.ErrResult(err.Error()), nil
+		}
+		return h(ctx, req, arc)
+	})
+}
+
+// addForge registers a verb that also needs the endpoint's PR-verb client,
+// resolving both under the lock; it refuses when the workspace is
+// unprovisioned or its endpoint has no forge adapter.
+func (s *Server) addForge(tool *mcp.Tool, h func(context.Context, *mcp.CallToolRequest, *archive.Archive, forge.Client) (*mcp.CallToolResult, error)) {
+	s.addArc(tool, func(ctx context.Context, req *mcp.CallToolRequest, arc *archive.Archive) (*mcp.CallToolResult, error) {
+		fc, err := s.cfg.Grange.Forge()
+		if err != nil {
+			return mcpserve.ErrResult(err.Error()), nil
+		}
+		return h(ctx, req, arc, fc)
+	})
+}
+
 func (s *Server) registerTools() {
-	s.add(&mcp.Tool{
+	s.addArc(&mcp.Tool{
 		Name: "current_state",
 		Description: "Where the working tree stands: branch, publication state, ahead/behind, " +
 			"dirty and untracked files, set-aside parcels.  Read this before any destructive verb.  " +
@@ -122,7 +156,7 @@ func (s *Server) registerTools() {
 		InputSchema: &jsonschema.Schema{Type: "object", AdditionalProperties: mcpserve.NoExtras()},
 	}, s.currentState)
 
-	s.add(&mcp.Tool{
+	s.addArc(&mcp.Tool{
 		Name:        "history",
 		Description: "Recorded checkpoints, newest first.  Optionally from a revision, scoped to one path, or limited (default 50, max 200).",
 		InputSchema: &jsonschema.Schema{
@@ -136,7 +170,7 @@ func (s *Server) registerTools() {
 		},
 	}, s.history)
 
-	s.add(&mcp.Tool{
+	s.addArc(&mcp.Tool{
 		Name:        "show_change",
 		Description: "One checkpoint with its full diff against its parent.",
 		InputSchema: &jsonschema.Schema{
@@ -149,7 +183,7 @@ func (s *Server) registerTools() {
 		},
 	}, s.showChange)
 
-	s.add(&mcp.Tool{
+	s.addArc(&mcp.Tool{
 		Name:        "file_at",
 		Description: "One file's content at a revision, without touching the working tree.  UTF-8 text up to 1 MiB; binary content is refused.",
 		InputSchema: &jsonschema.Schema{
@@ -163,7 +197,7 @@ func (s *Server) registerTools() {
 		},
 	}, s.fileAt)
 
-	s.add(&mcp.Tool{
+	s.addArc(&mcp.Tool{
 		Name:        "pending_changes",
 		Description: "The uncommitted delta versus the last checkpoint as a unified diff, plus untracked files — the whole tree or one path.",
 		InputSchema: &jsonschema.Schema{
@@ -175,7 +209,7 @@ func (s *Server) registerTools() {
 		},
 	}, s.pendingChanges)
 
-	s.add(&mcp.Tool{
+	s.addArc(&mcp.Tool{
 		Name: "start_work",
 		Description: "Begin a NEW line of work off the local default branch (to update that base first, run sync_from_upstream while on the default branch).  " +
 			"Uncommitted changes ride along.  The name must not already exist — switch_work returns to an existing line of work.",
@@ -189,7 +223,7 @@ func (s *Server) registerTools() {
 		},
 	}, s.startWork)
 
-	s.add(&mcp.Tool{
+	s.addArc(&mcp.Tool{
 		Name: "switch_work",
 		Description: "Return to an EXISTING local line of work (or the default branch).  " +
 			"Uncommitted changes ride along when they can be carried cleanly; otherwise the switch is refused — checkpoint or set_aside first.",
@@ -203,7 +237,7 @@ func (s *Server) registerTools() {
 		},
 	}, s.switchWork)
 
-	s.add(&mcp.Tool{
+	s.addArc(&mcp.Tool{
 		Name: "abandon_work",
 		Description: "Discard a line of work: delete the local branch (switching to the default branch first when the doomed branch is checked out).  " +
 			"Refuses the default branch and a dirty tree.  deleteRemote also removes the published counterpart; a branch never published has none, and that is not an error.",
@@ -218,7 +252,7 @@ func (s *Server) registerTools() {
 		},
 	}, s.abandonWork)
 
-	s.add(&mcp.Tool{
+	s.addArc(&mcp.Tool{
 		Name: "checkpoint",
 		Description: "Record the working tree — all of it, or just the named paths — as one checkpoint.  " +
 			"There is no staging: the tree is what gets recorded.  Refused on the default branch (start_work first), " +
@@ -234,7 +268,7 @@ func (s *Server) registerTools() {
 		},
 	}, s.checkpoint)
 
-	s.add(&mcp.Tool{
+	s.addArc(&mcp.Tool{
 		Name: "restore",
 		Description: "DESTRUCTIVE rollback; discarded edits are unrecoverable (parked work comes back with resume, and set_aside is the recoverable way to clear the tree).  " +
 			"Shapes: path only — discard one file's local edits; checkpoint + path — one file's content from that checkpoint; " +
@@ -252,20 +286,20 @@ func (s *Server) registerTools() {
 		},
 	}, s.restore)
 
-	s.add(&mcp.Tool{
+	s.addArc(&mcp.Tool{
 		Name: "set_aside",
 		Description: "Park all uncommitted work — tracked edits and untracked files — so the tree matches the last checkpoint.  " +
 			"Recoverable: resume brings the parcel back (unlike restore, which discards).  Refused when the tree is already clean.",
 		InputSchema: &jsonschema.Schema{Type: "object", AdditionalProperties: mcpserve.NoExtras()},
 	}, s.setAside)
 
-	s.add(&mcp.Tool{
+	s.addArc(&mcp.Tool{
 		Name:        "resume",
 		Description: "Recover the most recently parked parcel (the counterpart to set_aside).  A conflict leaves markers in the tree and keeps the parcel parked; current_state shows both.",
 		InputSchema: &jsonschema.Schema{Type: "object", AdditionalProperties: mcpserve.NoExtras()},
 	}, s.resume)
 
-	s.add(&mcp.Tool{
+	s.addArc(&mcp.Tool{
 		Name: "sync_from_upstream",
 		Description: "Update the local default branch from its remote and replay the current line of work on it.  " +
 			"Requires a clean tree (untracked files count).  A conflicted replay is aborted — the tree is restored and the answer lists the conflicting files.",
@@ -275,8 +309,8 @@ func (s *Server) registerTools() {
 
 // --- tool handlers ---
 
-func (s *Server) currentState(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	st, err := s.cfg.Archive.CurrentState(ctx)
+func (s *Server) currentState(ctx context.Context, _ *mcp.CallToolRequest, arc *archive.Archive) (*mcp.CallToolResult, error) {
+	st, err := arc.CurrentState(ctx)
 	if err != nil {
 		return mcpserve.ErrResult(err.Error()), nil
 	}
@@ -302,7 +336,7 @@ func (s *Server) currentState(ctx context.Context, _ *mcp.CallToolRequest) (*mcp
 	}), nil
 }
 
-func (s *Server) history(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (s *Server) history(ctx context.Context, req *mcp.CallToolRequest, arc *archive.Archive) (*mcp.CallToolResult, error) {
 	var a struct {
 		Ref   string `json:"ref"`
 		Path  string `json:"path"`
@@ -319,7 +353,7 @@ func (s *Server) history(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Ca
 		}
 		q.Ref = ref
 	}
-	changes, err := s.cfg.Archive.History(ctx, q)
+	changes, err := arc.History(ctx, q)
 	if err != nil {
 		return mcpserve.ErrResult(err.Error()), nil
 	}
@@ -330,7 +364,7 @@ func (s *Server) history(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Ca
 	return mcpserve.JSONResult(map[string]any{"changes": out}), nil
 }
 
-func (s *Server) showChange(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (s *Server) showChange(ctx context.Context, req *mcp.CallToolRequest, arc *archive.Archive) (*mcp.CallToolResult, error) {
 	var a struct {
 		ID string `json:"id"`
 	}
@@ -341,7 +375,7 @@ func (s *Server) showChange(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 	if err != nil {
 		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
-	c, err := s.cfg.Archive.ShowChange(ctx, id)
+	c, err := arc.ShowChange(ctx, id)
 	if err != nil {
 		return mcpserve.ErrResult(err.Error()), nil
 	}
@@ -354,7 +388,7 @@ func (s *Server) showChange(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 	return mcpserve.JSONResult(out), nil
 }
 
-func (s *Server) fileAt(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (s *Server) fileAt(ctx context.Context, req *mcp.CallToolRequest, arc *archive.Archive) (*mcp.CallToolResult, error) {
 	var a struct {
 		Ref  string `json:"ref"`
 		Path string `json:"path"`
@@ -366,7 +400,7 @@ func (s *Server) fileAt(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 	if err != nil {
 		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
-	content, err := s.cfg.Archive.FileAt(ctx, ref, a.Path)
+	content, err := arc.FileAt(ctx, ref, a.Path)
 	if err != nil {
 		return mcpserve.ErrResult(err.Error()), nil
 	}
@@ -383,14 +417,14 @@ func (s *Server) fileAt(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 	return mcpserve.TextResult(string(content)), nil
 }
 
-func (s *Server) pendingChanges(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (s *Server) pendingChanges(ctx context.Context, req *mcp.CallToolRequest, arc *archive.Archive) (*mcp.CallToolResult, error) {
 	var a struct {
 		Path string `json:"path"`
 	}
 	if err := mcpserve.Decode(req, &a); err != nil {
 		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
-	p, err := s.cfg.Archive.PendingChanges(ctx, a.Path)
+	p, err := arc.PendingChanges(ctx, a.Path)
 	if err != nil {
 		return mcpserve.ErrResult(err.Error()), nil
 	}
@@ -403,7 +437,7 @@ func (s *Server) pendingChanges(ctx context.Context, req *mcp.CallToolRequest) (
 	return mcpserve.JSONResult(out), nil
 }
 
-func (s *Server) startWork(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (s *Server) startWork(ctx context.Context, req *mcp.CallToolRequest, arc *archive.Archive) (*mcp.CallToolResult, error) {
 	var a struct {
 		Name string `json:"name"`
 	}
@@ -414,13 +448,13 @@ func (s *Server) startWork(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 	if err != nil {
 		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
-	if err := s.cfg.Archive.StartWork(ctx, name); err != nil {
+	if err := arc.StartWork(ctx, name); err != nil {
 		return mcpserve.ErrResult(err.Error()), nil
 	}
-	return mcpserve.TextResult(fmt.Sprintf("working on %s (off %s)", name, s.cfg.Archive.DefaultBranch())), nil
+	return mcpserve.TextResult(fmt.Sprintf("working on %s (off %s)", name, arc.DefaultBranch())), nil
 }
 
-func (s *Server) switchWork(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (s *Server) switchWork(ctx context.Context, req *mcp.CallToolRequest, arc *archive.Archive) (*mcp.CallToolResult, error) {
 	var a struct {
 		Name string `json:"name"`
 	}
@@ -431,13 +465,13 @@ func (s *Server) switchWork(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 	if err != nil {
 		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
-	if err := s.cfg.Archive.SwitchWork(ctx, name); err != nil {
+	if err := arc.SwitchWork(ctx, name); err != nil {
 		return mcpserve.ErrResult(err.Error()), nil
 	}
 	return mcpserve.TextResult(fmt.Sprintf("working on %s", name)), nil
 }
 
-func (s *Server) abandonWork(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (s *Server) abandonWork(ctx context.Context, req *mcp.CallToolRequest, arc *archive.Archive) (*mcp.CallToolResult, error) {
 	var a struct {
 		Name         string `json:"name"`
 		DeleteRemote bool   `json:"deleteRemote"`
@@ -457,10 +491,10 @@ func (s *Server) abandonWork(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	// tree, the default branch), so the local guards are checked first;
 	// handlers are serialized, so nothing changes between check and act.
 	if a.DeleteRemote {
-		if err := s.cfg.Archive.CanAbandon(ctx, name); err != nil {
+		if err := arc.CanAbandon(ctx, name); err != nil {
 			return mcpserve.ErrResult(err.Error()), nil
 		}
-		deleted, derr := s.cfg.Archive.DeleteRemoteBranch(ctx, name)
+		deleted, derr := arc.DeleteRemoteBranch(ctx, name)
 		if deleted || derr != nil {
 			s.auditRemote("abandon_remote", audit.RemoteDetail{Branch: name.String()}, remoteDecision(derr))
 		}
@@ -468,20 +502,20 @@ func (s *Server) abandonWork(ctx context.Context, req *mcp.CallToolRequest) (*mc
 			return mcpserve.ErrResult(derr.Error()), nil
 		}
 	}
-	if err := s.cfg.Archive.AbandonWork(ctx, name); err != nil {
+	if err := arc.AbandonWork(ctx, name); err != nil {
 		return mcpserve.ErrResult(err.Error()), nil
 	}
 	// Report the branch actually checked out: the engine only switches
 	// to the default branch when the doomed branch was current, and a
 	// caller told "on main" while on another line of work would record
 	// its next checkpoint in the wrong place.
-	if st, err := s.cfg.Archive.CurrentState(ctx); err == nil {
+	if st, err := arc.CurrentState(ctx); err == nil {
 		return mcpserve.TextResult(fmt.Sprintf("abandoned %s; on %s", name, st.Branch)), nil
 	}
 	return mcpserve.TextResult(fmt.Sprintf("abandoned %s", name)), nil
 }
 
-func (s *Server) checkpoint(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (s *Server) checkpoint(ctx context.Context, req *mcp.CallToolRequest, arc *archive.Archive) (*mcp.CallToolResult, error) {
 	var a struct {
 		Message string   `json:"message"`
 		Paths   []string `json:"paths"`
@@ -489,14 +523,14 @@ func (s *Server) checkpoint(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 	if err := mcpserve.Decode(req, &a); err != nil {
 		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
-	id, err := s.cfg.Archive.Checkpoint(ctx, a.Message, a.Paths)
+	id, err := arc.Checkpoint(ctx, a.Message, a.Paths)
 	if err != nil {
 		return mcpserve.ErrResult(err.Error()), nil
 	}
 	return mcpserve.JSONResult(map[string]any{"checkpoint": id.String()}), nil
 }
 
-func (s *Server) restore(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (s *Server) restore(ctx context.Context, req *mcp.CallToolRequest, arc *archive.Archive) (*mcp.CallToolResult, error) {
 	var a struct {
 		Checkpoint string `json:"checkpoint"`
 		Path       string `json:"path"`
@@ -523,7 +557,7 @@ func (s *Server) restore(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Ca
 		}
 		cp = parsed
 	}
-	res, err := s.cfg.Archive.Restore(ctx, cp, a.Path)
+	res, err := arc.Restore(ctx, cp, a.Path)
 	if err != nil {
 		return mcpserve.ErrResult(err.Error()), nil
 	}
@@ -544,22 +578,22 @@ func (s *Server) restore(ctx context.Context, req *mcp.CallToolRequest) (*mcp.Ca
 	return mcpserve.JSONResult(out), nil
 }
 
-func (s *Server) setAside(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	if err := s.cfg.Archive.SetAside(ctx); err != nil {
+func (s *Server) setAside(ctx context.Context, _ *mcp.CallToolRequest, arc *archive.Archive) (*mcp.CallToolResult, error) {
+	if err := arc.SetAside(ctx); err != nil {
 		return mcpserve.ErrResult(err.Error()), nil
 	}
 	return mcpserve.TextResult("set aside; the tree matches the last checkpoint"), nil
 }
 
-func (s *Server) resume(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	if err := s.cfg.Archive.Resume(ctx); err != nil {
+func (s *Server) resume(ctx context.Context, _ *mcp.CallToolRequest, arc *archive.Archive) (*mcp.CallToolResult, error) {
+	if err := arc.Resume(ctx); err != nil {
 		return mcpserve.ErrResult(err.Error()), nil
 	}
 	return mcpserve.TextResult("resumed the most recent parcel"), nil
 }
 
-func (s *Server) syncFromUpstream(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	res, err := s.cfg.Archive.SyncFromUpstream(ctx)
+func (s *Server) syncFromUpstream(ctx context.Context, _ *mcp.CallToolRequest, arc *archive.Archive) (*mcp.CallToolResult, error) {
+	res, err := arc.SyncFromUpstream(ctx)
 	if err != nil {
 		// A conflict is a structured answer, not prose: the caller needs
 		// the file list as data and — critically — needs to know the

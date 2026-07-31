@@ -34,7 +34,8 @@ import (
 func archivistRole(args []string) (func(), error) {
 	fs := flag.NewFlagSet("archivist", flag.ContinueOnError)
 	common := registerCommon(fs, ":9600")
-	workspace := fs.String("workspace", "/workspace", "the provisioned checkout the archivist drives")
+	grangeRoot := fs.String("grange", envOr("GRANGE_ROOT", "/grange"),
+		"the grange volume root; the archivist manages tree/ (the exported checkout) and staging/ under it")
 	endpoints := fs.String("endpoints", envOr("ENDPOINTS_FILE", "/etc/cloister/endpoints.yaml"),
 		"the endpoint table (read-only mount): identities, credential paths, and the remote allowlist")
 	stateURL := fs.String("state-url", envOr("STATE_URL", ""), "base URL of the state service (remote ops audit there)")
@@ -45,7 +46,7 @@ func archivistRole(args []string) (func(), error) {
 	}
 	return common.runOrProbe(func() {
 		runArchivist(archivistOptions{
-			Addr: *common.addr, Workspace: *workspace, Endpoints: *endpoints,
+			Addr: *common.addr, GrangeRoot: *grangeRoot, Endpoints: *endpoints,
 			StateURL: *stateURL, DefaultBranch: *defBranch,
 		})
 	}), nil
@@ -54,7 +55,7 @@ func archivistRole(args []string) (func(), error) {
 // archivistOptions carries the archivist's bootstrap inputs.
 type archivistOptions struct {
 	Addr          string
-	Workspace     string
+	GrangeRoot    string
 	Endpoints     string
 	StateURL      string
 	DefaultBranch string
@@ -73,37 +74,50 @@ func runArchivist(o archivistOptions) {
 		log.Fatalf("archivist: STATE_URL and STATE_TOKEN are required: remote operations are audited")
 	}
 
-	// Endpoint mode: identity, credentials, and the allowlist all derive
-	// from the table (docs/archivist.md) — there is no identity to pass.
-	opts := []archive.Option{archive.WithEndpoints(table)}
-	if o.DefaultBranch != "" {
-		opts = append(opts, archive.WithDefaultBranch(o.DefaultBranch))
-	}
-	a, err := archive.New(o.Workspace, opts...)
+	// The grange owns the workspace lifecycle: provision brings a checkout
+	// into being (there is none at boot — an EMPTY volume is the norm), so
+	// the archivist no longer opens one here.  Identity, credentials, and
+	// the allowlist all derive from the table.
+	grange, err := archive.NewGrange(archive.GrangeConfig{
+		Root:          o.GrangeRoot,
+		Table:         table,
+		Gate:          provisionGate(),
+		OpenForge:     func(ep endpoint.Endpoint) (forge.Client, error) { return buildForge(&ep) },
+		DefaultBranch: o.DefaultBranch,
+	})
 	if err != nil {
-		log.Fatalf("archivist: %v", err)
-	}
-	forgeClient, err := buildForge(a.Endpoint())
-	if err != nil {
-		a.Close()
 		log.Fatalf("archivist: %v", err)
 	}
 
 	srv := archivist.New(archivist.Config{
 		Version: version,
-		Archive: a,
-		Forge:   forgeClient,
+		Grange:  grange,
 		Audit:   sink.NewClient(o.StateURL, token),
 	})
-	// Close before any fatal exit, not deferred past one: log.Fatalf
-	// skips defers, and a crash-looping container would leak one hooks
-	// dir per restart.
+	// Close before any fatal exit, not deferred past one: log.Fatalf skips
+	// defers, and a crash-looping container would leak a hooks dir per
+	// restart.
 	serveErr := serveHTTP(&http.Server{Addr: o.Addr, Handler: srv.Handler()},
-		fmt.Sprintf("archivist (workspace %s, endpoint %s, default branch %s)",
-			o.Workspace, a.Endpoint().Name, a.DefaultBranch()))
-	a.Close()
+		fmt.Sprintf("archivist (grange %s)", o.GrangeRoot))
+	grange.Close()
 	if serveErr != nil {
 		log.Fatalf("serve: %v", serveErr)
+	}
+}
+
+// provisionGate builds the forge-lint provision gate, dialing each
+// endpoint's API through its relay the same way buildForge does for the PR
+// verbs (the relay address holds the connection; TLS still verifies the
+// real API host).
+func provisionGate() archivist.ForgeGate {
+	return archivist.ForgeGate{
+		Dial: func(apiBase, apiRelay string) (*http.Client, error) {
+			u, err := url.Parse(apiBase)
+			if err != nil || u.Hostname() == "" {
+				return nil, fmt.Errorf("api %q is not a URL", apiBase)
+			}
+			return wire.NewGuardedClient(map[string]string{u.Hostname(): apiRelay}, forgeTimeout)
+		},
 	}
 }
 

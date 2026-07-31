@@ -13,17 +13,25 @@ mode of one Go binary, wired into per-project "cells" (docker/ai-workers.yaml).
   (dispatch, flags, MCP surface, healthcheck, tests, image links).
 - `internal/*` — the packages. `cmd/compose-lint` — topology drift guard.
 - `docker/` — Dockerfiles + compose. `etc/` — config templates. `docs/` — design.
-  `bin/` — operator tools. `scripts/` — repo plumbing.
+  `bin/` — operator tools. `scripts/` — repo plumbing invoked by tooling (git
+  hooks, the presubmit scanner). `lifecycle/` — runnable build/verify/deploy
+  pipelines a human or agent invokes directly (e.g. `lifecycle/verify.sh`); this
+  is the right home for such a script, not `scripts/`.
 
 ## Build & verify (from repo root)
+Run the full gate set with **`bash lifecycle/verify.sh`** (stops at the first
+failure).  It runs, in order:
     go build ./...
     GOOS=linux go build ./...   # the deploy target; catches build-tag splits a Windows build misses
     go test ./...
     gofmt -l .              # must be empty
     go vet ./...
-    go-licenses check ./... # deny copyleft
+    go-licenses check ./... # deny copyleft (benign "non-Go code can't be inspected" asm warnings are expected, not failures)
     go run ./cmd/compose-lint docker/ai-workers.yaml docker/inference.yaml
     go run ./cmd/copyright-lint   # headers present + year current (policy embedded from cmd/copyright-lint/copyright.yaml)
+
+Codify pipelines instead of retyping them: if you run the same multi-command
+sequence 3+ times, add it to `lifecycle/`.
 
 ## Conventions (do not regress)
 - Domain IDs are structs wrapping a private string with a validating parser — no

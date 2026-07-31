@@ -72,7 +72,7 @@ services:
     entrypoint: ["/usr/local/bin/archivist"]
     dns: "127.0.0.1"
     networks: [buildnet, statenet, gitegress]
-    volumes: ["grange:/workspace"]
+    volumes: ["grange:/grange"]
   github-relay:
     command: ["TCP-LISTEN:443,fork,reuseaddr", "TCP:github-egress:443"]
     dns: "127.0.0.1"
@@ -197,7 +197,7 @@ services:
 		// The git jail (docs/archivist.md): grange volume only, exact
 		// network membership, literal relay pins, hostname aliases.
 		"archivist mounts the host workspace": strings.Replace(cleanCompose(),
-			`volumes: ["grange:/workspace"]`, `volumes: ["${WORKSPACE}:/workspace"]`, 1),
+			`volumes: ["grange:/grange"]`, `volumes: ["${WORKSPACE}:/workspace"]`, 1),
 		"archivist holds egress": strings.Replace(cleanCompose(),
 			`networks: [buildnet, statenet, gitegress]`, `networks: [buildnet, statenet, gitegress, egress]`, 1),
 		"git relay destination not literal": strings.Replace(cleanCompose(),

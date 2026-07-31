@@ -47,8 +47,9 @@ func newFixture(t *testing.T) *fixture {
 	return newFixtureWith(t, Config{Version: "test"})
 }
 
-// newFixtureWith builds the rig with the caller's Config; the Archive
-// field is filled in here.
+// newFixtureWith builds the rig with the caller's Config; the Grange is
+// filled in here, wrapping a local-mode Archive on the seeded clone so the
+// working-tree and sync verbs run against a local remote.
 func newFixtureWith(t *testing.T, cfg Config) *fixture {
 	t.Helper()
 	tmp := t.TempDir()
@@ -72,8 +73,13 @@ func newFixtureWith(t *testing.T, cfg Config) *fixture {
 	}
 	t.Cleanup(func() { a.Close() })
 
-	cfg.Archive = a
-	srv := New(cfg)
+	cfg.Grange = archive.AdoptArchive(a)
+	return &fixture{tmp: tmp, dir: dir, session: dial(t, New(cfg))}
+}
+
+// dial connects an in-memory MCP client to the server under test.
+func dial(t *testing.T, srv *Server) *mcp.ClientSession {
+	t.Helper()
 	clientT, serverT := mcp.NewInMemoryTransports()
 	ctx := context.Background()
 	if _, err := srv.mcp.Connect(ctx, serverT, nil); err != nil {
@@ -85,7 +91,7 @@ func newFixtureWith(t *testing.T, cfg Config) *fixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { session.Close() })
-	return &fixture{tmp: tmp, dir: dir, session: session}
+	return session
 }
 
 // call invokes a tool, returning the first text content and IsError.

@@ -110,7 +110,7 @@ func TestRoleParsersAcceptTheirOwnFlags(t *testing.T) {
 		{"scribe", []string{"-scribe-approvals"}},
 		{"scholar", nil},
 		{"librarian", nil},
-		{"archivist", []string{"-workspace", "/workspace", "-default-branch", "main"}},
+		{"archivist", []string{"-grange", "/grange", "-default-branch", "main"}},
 		{"agency", []string{"-status-dir", "/status"}},
 		{"scribe", []string{"-healthcheck"}},
 		{"archivist", []string{"-healthcheck"}},
