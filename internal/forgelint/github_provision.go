@@ -73,8 +73,9 @@ func (g *GitHub) ProvisionSnapshot(ctx context.Context) (*Snapshot, error) {
 	s.BypassDetail = "effective-rules endpoint does not expose the bypass roster (the operator-credential lint verifies it)"
 
 	// CODEOWNERS completes R2 (owner review names exactly the operator) and
-	// R6's mergeable half (.github/** is owner-guarded).
-	g.applyCodeOwners(ctx, s)
+	// R6's mergeable half (.github/** is owner-guarded).  API-only: the gate
+	// runs before any checkout, so the process CWD is not the target repo.
+	g.applyCodeOwners(ctx, s, false)
 
 	// The Actions-secrets inventory needs repo admin; it stays the operator
 	// lint's job.  Left unread → R6 UNVERIFIED, tolerated by the gate.
@@ -98,23 +99,24 @@ func (g *GitHub) effectiveRules(ctx context.Context, branch string) ([]ghRule, e
 	return rules, nil
 }
 
-// nsProbeOutside and nsProbeInside are the two branch names the R8 probe
-// evaluates.  Neither is ever created — the effective-rules endpoint scores
-// them hypothetically.  The inside name is minted under the configured
-// namespace so it moves with it.
-const nsProbeOutside = "forgelint-namespace-probe"
+// nsProbeBase is the branch name the R8 probe evaluates, twice: bare (a
+// name OUTSIDE the agent namespace) and prefixed with the namespace (an
+// inside name).  Neither is ever created — the effective-rules endpoint
+// scores them hypothetically — and both derive from this one literal so the
+// two probes can never drift apart.
+const nsProbeBase = "forgelint-namespace-probe"
 
 // probeNamespace establishes R8 without reading the ruleset roster: a name
 // OUTSIDE the agent namespace must be creation/update restricted, and an
 // agent/… name must NOT be.  Confinement is the two facts together — a repo
 // that restricts everything (or nothing) is not confinement.
 func (g *GitHub) probeNamespace(ctx context.Context, s *Snapshot) {
-	inside := g.cfg.AgentNamespace + "forgelint-namespace-probe"
-	outRules, errOut := g.effectiveRules(ctx, nsProbeOutside)
+	inside := g.cfg.AgentNamespace + nsProbeBase
+	outRules, errOut := g.effectiveRules(ctx, nsProbeBase)
 	inRules, errIn := g.effectiveRules(ctx, inside)
 	if errOut != nil || errIn != nil {
 		s.NamespaceKnown = false
-		s.NamespaceDetail = fmt.Sprintf("namespace probes unreadable with this credential (outside %q: %v; inside: %v)", nsProbeOutside, errOut, errIn)
+		s.NamespaceDetail = fmt.Sprintf("namespace probes unreadable with this credential (outside %q: %v; inside %q: %v)", nsProbeBase, errOut, inside, errIn)
 		return
 	}
 	outsideRestricted := hasRule(outRules, "creation") && hasRule(outRules, "update")
@@ -124,7 +126,7 @@ func (g *GitHub) probeNamespace(ctx context.Context, s *Snapshot) {
 	if s.NamespaceConfined {
 		s.NamespaceDetail = fmt.Sprintf("branch creation/updates outside %q are restricted, inside are not (probed live)", g.cfg.AgentNamespace)
 	} else {
-		s.NamespaceDetail = fmt.Sprintf("namespace not confined: %q restricted=%v, %q restricted=%v (want true/false)", nsProbeOutside, outsideRestricted, inside, insideRestricted)
+		s.NamespaceDetail = fmt.Sprintf("namespace not confined: %q restricted=%v, %q restricted=%v (want true/false)", nsProbeBase, outsideRestricted, inside, insideRestricted)
 	}
 }
 

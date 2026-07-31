@@ -38,11 +38,13 @@ type GateResult struct {
 	Blocking []Verdict
 }
 
-// Gate applies the provision policy to a bot-credential Check: refuse on any
-// VIOLATION, and tolerate UNVERIFIED only on the admin-only residue (R1, R6)
-// — and R1's residue only when R5 proved the bot is not an admin, since the
-// bypass roster is discountable precisely because admin is the sole bypass
-// and the bot verifiably lacks it.
+// Gate applies the provision policy to a bot-credential Check — the last
+// step of the ProvisionSnapshot -> Check -> Gate pipeline the archivist runs
+// before handing over a grange.  It refuses on any VIOLATION, and tolerates
+// UNVERIFIED only on the admin-only residue (R1, R6) — and R1's residue only
+// when R5 proved the bot is not an admin, since the bypass roster is
+// discountable precisely because admin is the sole bypass and the bot
+// verifiably lacks it.
 func Gate(verdicts []Verdict) GateResult {
 	r5OK := false
 	for _, v := range verdicts {

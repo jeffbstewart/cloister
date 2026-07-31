@@ -170,7 +170,7 @@ func (g *GitHub) Snapshot(ctx context.Context) (*Snapshot, error) {
 		s.NamespaceConfined = false
 	}
 
-	g.applyCodeOwners(ctx, s)
+	g.applyCodeOwners(ctx, s, true)
 
 	var perm struct {
 		Permission string `json:"permission"`
@@ -291,18 +291,25 @@ func (g *GitHub) applyNamespaceRuleset(s *Snapshot, rs *ghRuleset, exclude []str
 // the owner-review rule only bites if the catch-all pattern names exactly
 // the operator, and workflow files need an owner so their changes cannot
 // merge without the operator.
-func (g *GitHub) applyCodeOwners(ctx context.Context, s *Snapshot) {
+//
+// allowWorkingTree governs where CODEOWNERS is read.  The CI lint runs
+// INSIDE the checkout being merged and must assert the post-merge file, so
+// it prefers the working tree (true).  The provision gate reads a repo it
+// has NOT checked out into its CWD, where a stray CODEOWNERS on disk would
+// be the wrong repo's — it reads the default branch via the API only
+// (false).
+func (g *GitHub) applyCodeOwners(ctx context.Context, s *Snapshot, allowWorkingTree bool) {
 	var raw []byte
 	found := ""
-	// Prefer the working tree: in CI the lint runs inside the checkout
-	// being merged, and the CODEOWNERS that will govern after the merge is
-	// the one to assert.  The API fallback serves operator runs outside a
-	// checkout (it reads the default branch's copy).
 	locations := []string{".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"}
-	for _, path := range locations {
-		if b, err := os.ReadFile(path); err == nil {
-			raw, found = b, path+" (working tree)"
-			break
+	if allowWorkingTree {
+		// In CI the CODEOWNERS that will govern after the merge is the one to
+		// assert, so the checkout under CWD wins over the default branch.
+		for _, path := range locations {
+			if b, err := os.ReadFile(path); err == nil {
+				raw, found = b, path+" (working tree)"
+				break
+			}
 		}
 	}
 	if found == "" {

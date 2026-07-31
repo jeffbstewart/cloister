@@ -18,6 +18,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -74,9 +76,9 @@ func (f *provFixture) serve(t *testing.T) *httptest.Server {
 				return
 			}
 			w.Write([]byte(f.mainRules))
-		case nsProbeOutside:
+		case nsProbeBase:
 			w.Write([]byte(f.outsideRules))
-		case "agent/forgelint-namespace-probe":
+		case "agent/" + nsProbeBase:
 			w.Write([]byte(f.insideRules))
 		default:
 			http.NotFound(w, r)
@@ -173,6 +175,30 @@ func TestProvisionGateRefuses(t *testing.T) {
 		if !found {
 			t.Errorf("%s: blocking %v, want %s among them", name, r.Blocking, tc.want)
 		}
+	}
+}
+
+func TestProvisionCodeownersIgnoresWorkingTree(t *testing.T) {
+	// The gate reads a repo it has NOT checked out; a CODEOWNERS sitting in
+	// the archivist's CWD (its own jail, a stale grange) must not be mistaken
+	// for the target repo's.  Poison the CWD with a bot-naming CODEOWNERS —
+	// which would sink R2 if read — and confirm the operator-only API copy
+	// still governs and the gate passes.
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".github"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".github", "CODEOWNERS"), []byte("* @op @bot\n/.github/ @op\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	cfg, snap, err := provSnapshot(t, compliantProv())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := Gate(Check(cfg, snap)); !r.OK {
+		t.Fatalf("working-tree CODEOWNERS leaked into the provision read; blocked on %v", r.Blocking)
 	}
 }
 
