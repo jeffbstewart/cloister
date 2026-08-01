@@ -49,9 +49,10 @@ assuming anything works the way an open laptop does.
 ## Toolchains on board
 
 Go, Rust, and the JVM (Java 25; Kotlin builds via each repo's Gradle
-wrapper).  No Python and no C++ toolchain — do not scaffold solutions
-that need them.  Build systems: each repo's `gradlew`, `go`, `cargo`,
-`make`.
+wrapper), plus `protoc` and the usual unix toolbox (ripgrep, jq, gawk,
+sed, patch, emacs and the rest).  No Python and no C++ toolchain — do
+not scaffold solutions that need them.  Build systems: each repo's
+`gradlew`, `go`, `cargo`, `make`.
 
 ## Housekeeping
 
