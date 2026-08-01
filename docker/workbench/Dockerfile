@@ -60,13 +60,17 @@ FROM debian:bookworm-slim
 # gaps a working shell (and a working agent) actually hits: gawk (slim
 # ships at best mawk), procps (ps — tmux triage), less, file, patch,
 # xz, and the two tools coding agents reach for constantly, ripgrep
-# and jq.  protoc is the protobuf compiler alone — the per-language
+# and jq.  curl is the operator's diagnostic probe (healthz endpoints,
+# the agency door) — inside the cell it can only reach what the
+# topology already grants, and during the airlock's egress window no
+# agent session is running (the airlock's own gate).
+# protoc is the protobuf compiler alone — the per-language
 # codegen plugins (protoc-gen-go, grpc) are repo-level tools an agent
 # builds offline from the warmed module cache, not image freight.
 # emacs-nox by operator decree (no X stack rides in with -nox).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates git gcc libc6-dev make zip unzip tmux \
-      gawk procps less file patch tree xz-utils ripgrep jq \
+      gawk procps less file patch tree xz-utils ripgrep jq curl \
       protobuf-compiler emacs-nox \
     && rm -rf /var/lib/apt/lists/*
 
