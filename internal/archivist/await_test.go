@@ -475,8 +475,7 @@ func TestAwaitReviewProgressNotifications(t *testing.T) {
 		}
 	}
 
-	var mu sync.Mutex
-	var notes []string
+	notes := make(chan string, 8)
 	clientT, serverT := mcp.NewInMemoryTransports()
 	ctx := context.Background()
 	if _, err := srv.mcp.Connect(ctx, serverT, nil); err != nil {
@@ -484,9 +483,7 @@ func TestAwaitReviewProgressNotifications(t *testing.T) {
 	}
 	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, &mcp.ClientOptions{
 		ProgressNotificationHandler: func(_ context.Context, req *mcp.ProgressNotificationClientRequest) {
-			mu.Lock()
-			defer mu.Unlock()
-			notes = append(notes, req.Params.Message)
+			notes <- req.Params.Message
 		},
 	})
 	session, err := client.Connect(ctx, clientT, nil)
@@ -511,15 +508,23 @@ func TestAwaitReviewProgressNotifications(t *testing.T) {
 		t.Fatalf("await_review errored: %v", res.Content)
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
-	if len(notes) != 2 {
-		t.Fatalf("notes = %q, want the opening notice and one heartbeat", notes)
+	// The server wrote both notifications before the result, but the
+	// client dispatches notification handlers asynchronously — the call
+	// can return before they fire.  Collect through the channel with a
+	// bounded wait rather than asserting on arrival timing.
+	var got []string
+	for len(got) < 2 {
+		select {
+		case m := <-notes:
+			got = append(got, m)
+		case <-time.After(10 * time.Second):
+			t.Fatalf("notes = %q, want the opening notice and one heartbeat", got)
+		}
 	}
-	if !strings.Contains(notes[0], "PR #7") || !strings.Contains(notes[0], "Waiting up to") {
-		t.Errorf("opening notice = %q, want the PR and the bound named", notes[0])
+	if !strings.Contains(got[0], "PR #7") || !strings.Contains(got[0], "Waiting up to") {
+		t.Errorf("opening notice = %q, want the PR and the bound named", got[0])
 	}
-	if !strings.Contains(notes[1], "Still waiting") {
-		t.Errorf("heartbeat = %q, want a still-waiting note", notes[1])
+	if !strings.Contains(got[1], "Still waiting") {
+		t.Errorf("heartbeat = %q, want a still-waiting note", got[1])
 	}
 }
