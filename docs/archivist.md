@@ -108,7 +108,7 @@ waits for approval):
 | `check_progress(pr?)` | PR state + CI check results — defaults to the current branch's PR, takes an explicit PR number |
 | `read_reviews(pr?)` | review comments and threads — same explicit-target rule; includes the PR's diff for a caller that wasn't its author |
 | `reply_to_review(thread, body)` | respond on a review thread |
-| `await_review(maxWait)` | block until review activity on the agent's PR: new comments, approval, changes-requested, or merge/close |
+| `await_review(maxWait?)` | block until review activity on the agent's PR: new comments, approval, changes-requested, or merge/close |
 
 The PR-read verbs take an explicit target rather than assuming "the
 agent's PR" because the corrector ([corrector.md](corrector.md)) reviews
@@ -385,7 +385,18 @@ those are realization details of the git adapter.
    ROOT (`/grange`) holding `tree/` and `staging/`, not the checkout
    itself; compose + compose-lint moved with it.  Verbs serialize behind
    the one server lock, provision and dispose included.
-5. **`await_review`** — the long-poll with progress notifications.
+5. DONE: **`await_review`** — the long-poll with progress notifications.
+   Activity is measured from the moment of the call (a baseline of the
+   PR's reviews and comments, so feedback already readable never
+   retriggers; merge/close are absolute and always terminal), polled at
+   a bounded interval under a bounded `maxWait` whose expiry is a
+   successful "timeout" answer, not an error.  A few consecutive failed
+   polls end the wait loudly rather than spinning to the deadline.  The
+   one verb that does not hold the serialization lock for its whole run:
+   it resolves its target under the lock, then waits on the captured
+   forge client with the lock released, so a minutes-long wait never
+   wedges the rest of the surface.  One audit record per call that
+   reaches the endpoint, at the wait's end.
 6. **Record cutover** — this doc's status, ARCHITECTURE.md's PLANNED
    sections, grange.md's M1 milestone.  (The CLAUDE.md invariant
    rewrite stays at grange M5.)

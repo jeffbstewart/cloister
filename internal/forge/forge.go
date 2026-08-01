@@ -98,7 +98,11 @@ type Client interface {
 	GetPR(ctx context.Context, repo string, number int) (PR, error)
 	// Checks lists the check runs for a commit.
 	Checks(ctx context.Context, repo, sha string) ([]Check, error)
-	// Reviews lists a PR's submitted reviews.
+	// Reviews lists a PR's submitted reviews in submission order.  The
+	// list is treated as append-only — GitHub satisfies this (a
+	// dismissed review stays listed, re-stated) and await_review's
+	// count-based delta leans on it; an adapter for a forge that can
+	// delete reviews must synthesize the same property.
 	Reviews(ctx context.Context, repo string, number int) ([]Review, error)
 	// ReviewComments lists a PR's review-thread comments.
 	ReviewComments(ctx context.Context, repo string, number int) ([]ReviewComment, error)

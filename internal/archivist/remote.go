@@ -108,6 +108,8 @@ func (s *Server) registerRemoteTools() {
 			AdditionalProperties: mcpserve.NoExtras(),
 		},
 	}, s.replyToReview)
+
+	s.registerAwaitReview()
 }
 
 // auditRemote appends one remote-op record.  Append failure is logged,
@@ -290,32 +292,10 @@ func (s *Server) readReviews(ctx context.Context, req *mcp.CallToolRequest, arc 
 		return mcpserve.ErrResult(err.Error()), nil
 	}
 
-	outReviews := make([]map[string]any, 0, len(reviews))
-	for _, r := range reviews {
-		outReviews = append(outReviews, map[string]any{
-			"author": r.Author, "state": r.State, "body": r.Body,
-			"time": r.Time.UTC().Format(time.RFC3339),
-		})
-	}
-	outComments := make([]map[string]any, 0, len(comments))
-	for _, c := range comments {
-		m := map[string]any{
-			"id": c.ID, "author": c.Author, "body": c.Body,
-			"time": c.Time.UTC().Format(time.RFC3339),
-		}
-		if c.InReplyTo != 0 {
-			m["in_reply_to"] = c.InReplyTo
-		}
-		if c.Path != "" {
-			m["path"] = c.Path
-			m["line"] = c.Line
-		}
-		outComments = append(outComments, m)
-	}
 	cappedDiff, truncated := capDiff(diff)
 	out := map[string]any{
 		"pr": pr.Number, "url": pr.URL, "state": pr.State,
-		"reviews": outReviews, "comments": outComments, "diff": cappedDiff,
+		"reviews": reviewsOut(reviews), "comments": commentsOut(comments), "diff": cappedDiff,
 	}
 	if truncated {
 		out["diff_truncated"] = true
@@ -365,6 +345,38 @@ func (s *Server) replyToReview(ctx context.Context, req *mcp.CallToolRequest, ar
 		return mcpserve.ErrResult(err.Error()), nil
 	}
 	return mcpserve.JSONResult(map[string]any{"id": c.ID, "in_reply_to": c.InReplyTo}), nil
+}
+
+// reviewsOut renders submitted reviews for a tool answer.
+func reviewsOut(reviews []forge.Review) []map[string]any {
+	out := make([]map[string]any, 0, len(reviews))
+	for _, r := range reviews {
+		out = append(out, map[string]any{
+			"author": r.Author, "state": r.State, "body": r.Body,
+			"time": r.Time.UTC().Format(time.RFC3339),
+		})
+	}
+	return out
+}
+
+// commentsOut renders review-thread comments for a tool answer.
+func commentsOut(comments []forge.ReviewComment) []map[string]any {
+	out := make([]map[string]any, 0, len(comments))
+	for _, c := range comments {
+		m := map[string]any{
+			"id": c.ID, "author": c.Author, "body": c.Body,
+			"time": c.Time.UTC().Format(time.RFC3339),
+		}
+		if c.InReplyTo != 0 {
+			m["in_reply_to"] = c.InReplyTo
+		}
+		if c.Path != "" {
+			m["path"] = c.Path
+			m["line"] = c.Line
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 // threadRoot walks a comment id up its in-reply-to chain to the thread's

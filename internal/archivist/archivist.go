@@ -74,6 +74,11 @@ type Config struct {
 	// Audit records remote and lifecycle operations; nil disables (tests).
 	// Working-tree verbs are unaudited by design.
 	Audit Auditor
+	// Now and Sleep are await_review's clock: the deadline arithmetic and
+	// the spacing between endpoint polls.  nil means the real time.Now and
+	// a context-aware sleep; tests pin both (never real sleeps).
+	Now   func() time.Time
+	Sleep func(ctx context.Context, d time.Duration) error
 }
 
 // Server owns the archivist's MCP tool surface.
@@ -87,7 +92,9 @@ type Server struct {
 	// teardown (use-after-free on the Archive), two provisions could both
 	// clone onto the same empty workspace, and a read during a replay
 	// would testify mid-surgery.  Every handler runs under this lock
-	// because add — the sole registration path — takes it.
+	// because add — the sole registration path — takes it.  The one
+	// exception is await_review, whose wait spans minutes: it takes the
+	// lock only around its target resolution (see registerAwaitReview).
 	mu sync.Mutex
 }
 
@@ -110,8 +117,10 @@ func (s *Server) Handler() http.Handler {
 }
 
 // add registers one tool with the serialization lock taken around its
-// handler.  It is the sole registration path, so holding the lock here is
-// what makes "every verb is serialized" true by construction.
+// handler.  Every verb but await_review registers through here, so
+// holding the lock here is what makes "every verb is serialized" true by
+// construction; await_review manages the lock itself around its target
+// resolution (see registerAwaitReview for why).
 func (s *Server) add(tool *mcp.Tool, h func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error)) {
 	s.mcp.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		s.mu.Lock()

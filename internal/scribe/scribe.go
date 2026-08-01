@@ -330,7 +330,7 @@ func (s *Server) createTextFile(ctx context.Context, req *mcp.CallToolRequest) (
 		return s.awaitApproval(rec, stagedOp{
 			OpID: rec.RunID, Tool: rec.Tool, Path: s.rel(p),
 			Content: []byte(a.Content), Perm: 0o644, Payload: payload,
-		}, s.progressNotifier(ctx, req)), nil
+		}, mcpserve.ProgressNotifier(ctx, req)), nil
 	}
 	if err := os.MkdirAll(filepath.Dir(p.String()), 0o755); err != nil {
 		return s.rejected(rec, decError, err), nil
@@ -366,7 +366,7 @@ func (s *Server) applyDiff(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 		return res, nil
 	}
 	if a.PermitNonUTF8 {
-		return s.applyDiffRepair(rec, p, a.Diff, a.DryRun, s.progressNotifier(ctx, req)), nil
+		return s.applyDiffRepair(rec, p, a.Diff, a.DryRun, mcpserve.ProgressNotifier(ctx, req)), nil
 	}
 	old, fi, rerr := s.readForEdit(p)
 	if rerr != nil {
@@ -384,7 +384,7 @@ func (s *Server) applyDiff(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 	if !workspace.ValidUTF8(newContent) {
 		return s.rejected(rec, decError, fmt.Errorf("result would not be valid UTF-8")), nil
 	}
-	return s.finishEdit(rec, p, old, newContent, a.Diff, fi.Mode().Perm(), a.DryRun, s.progressNotifier(ctx, req))
+	return s.finishEdit(rec, p, old, newContent, a.Diff, fi.Mode().Perm(), a.DryRun, mcpserve.ProgressNotifier(ctx, req))
 }
 
 func (s *Server) replaceString(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -413,7 +413,7 @@ func (s *Server) replaceString(ctx context.Context, req *mcp.CallToolRequest) (*
 		return res, nil
 	}
 	if a.PermitNonUTF8 {
-		return s.replaceStringRepair(rec, p, a.Find, a.Replace, a.Scope, a.ExpectedCount, a.DryRun, s.progressNotifier(ctx, req)), nil
+		return s.replaceStringRepair(rec, p, a.Find, a.Replace, a.Scope, a.ExpectedCount, a.DryRun, mcpserve.ProgressNotifier(ctx, req)), nil
 	}
 	old, fi, rerr := s.readForEdit(p)
 	if rerr != nil {
@@ -435,7 +435,7 @@ func (s *Server) replaceString(ctx context.Context, req *mcp.CallToolRequest) (*
 	if !workspace.ValidUTF8(newContent) {
 		return s.rejected(rec, decError, fmt.Errorf("result would not be valid UTF-8")), nil
 	}
-	return s.finishEdit(rec, p, old, newContent, "", fi.Mode().Perm(), a.DryRun, s.progressNotifier(ctx, req))
+	return s.finishEdit(rec, p, old, newContent, "", fi.Mode().Perm(), a.DryRun, mcpserve.ProgressNotifier(ctx, req))
 }
 
 func (s *Server) replaceRegex(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -465,7 +465,7 @@ func (s *Server) replaceRegex(ctx context.Context, req *mcp.CallToolRequest) (*m
 		return res, nil
 	}
 	if a.PermitNonUTF8 {
-		return s.replaceRegexRepair(rec, p, re, a.Replacement, a.Scope, a.ExpectedCount, a.DryRun, s.progressNotifier(ctx, req)), nil
+		return s.replaceRegexRepair(rec, p, re, a.Replacement, a.Scope, a.ExpectedCount, a.DryRun, mcpserve.ProgressNotifier(ctx, req)), nil
 	}
 	old, fi, rerr := s.readForEdit(p)
 	if rerr != nil {
@@ -489,7 +489,7 @@ func (s *Server) replaceRegex(ctx context.Context, req *mcp.CallToolRequest) (*m
 	if !workspace.ValidUTF8(newContent) {
 		return s.rejected(rec, decError, fmt.Errorf("result would not be valid UTF-8")), nil
 	}
-	return s.finishEdit(rec, p, old, newContent, "", fi.Mode().Perm(), a.DryRun, s.progressNotifier(ctx, req))
+	return s.finishEdit(rec, p, old, newContent, "", fi.Mode().Perm(), a.DryRun, mcpserve.ProgressNotifier(ctx, req))
 }
 
 func (s *Server) writeBinaryFile(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -530,7 +530,7 @@ func (s *Server) writeBinaryFile(ctx context.Context, req *mcp.CallToolRequest) 
 	rec.Mutation().SHA256After = sha256hex(data)
 	// Store hash + size, not the bytes; ALWAYS approval-gated (opaque).
 	payload := []byte(fmt.Sprintf("binary write to %s\n%d bytes\nsha256 %s\n(binary content is not stored for review)", a.Path, len(data), rec.Mutation().SHA256After))
-	return s.awaitApproval(rec, stagedOp{OpID: rec.RunID, Tool: rec.Tool, Path: s.rel(p), Content: data, Perm: 0o644, Payload: payload}, s.progressNotifier(ctx, req)), nil
+	return s.awaitApproval(rec, stagedOp{OpID: rec.RunID, Tool: rec.Tool, Path: s.rel(p), Content: data, Perm: 0o644, Payload: payload}, mcpserve.ProgressNotifier(ctx, req)), nil
 }
 
 // readErr carries a decision code alongside the error so the caller can audit it.
@@ -1044,24 +1044,4 @@ func (s *Server) resolveConfined(rec audit.Record, input string) (workspace.Path
 		return workspace.Path{}, s.rejected(rec, decConfine, err)
 	}
 	return p, nil
-}
-
-// progressNotifier returns a function that sends an MCP progress notification to
-// the caller mid-call, or nil if the client didn't supply a progress token (so
-// there's nothing to key progress to).  Used to tell whoever is driving the qwen
-// session that a write is now waiting on a human, without unblocking the call.
-func (s *Server) progressNotifier(ctx context.Context, req *mcp.CallToolRequest) func(string) {
-	token := req.Params.GetProgressToken()
-	if token == nil {
-		return nil
-	}
-	var n float64
-	return func(msg string) {
-		n++
-		_ = req.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{
-			ProgressToken: token,
-			Message:       msg,
-			Progress:      n,
-		})
-	}
 }
