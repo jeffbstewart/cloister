@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/jeffbstewart/cloister/internal/shield"
+	"github.com/jeffbstewart/cloister/internal/workspace"
 )
 
 const testBudget = 1 << 20
@@ -471,5 +472,51 @@ func TestConfigFailsClosed(t *testing.T) {
 	}
 	if _, err := New(root, Config{Budget: 100, MaxFileSize: 200}); err == nil {
 		t.Error("per-file cap above budget accepted")
+	}
+}
+
+// TestAbsentRootLifecycle: the grange cycle.  New on an absent root
+// builds an empty model (not an error — before provision is a normal
+// state), Ready names the state, a Rescan after the tree appears
+// populates the model, and a Rescan after it vanishes empties it again.
+func TestAbsentRootLifecycle(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "tree") // not created yet
+	r, err := New(root, Config{Budget: testBudget, MaxFileSize: 64 << 10})
+	if err != nil {
+		t.Fatalf("New on an absent root = %v, want an empty model", err)
+	}
+	if err := r.Ready(); !errors.Is(err, workspace.ErrNotProvisioned) {
+		t.Fatalf("Ready on an absent root = %v, want ErrNotProvisioned", err)
+	}
+
+	// The tree appears (provision) with one file.
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Ready(); err != nil {
+		t.Fatalf("Ready after the tree appeared = %v, want nil", err)
+	}
+	if err := r.Rescan(); err != nil {
+		t.Fatalf("Rescan after the tree appeared: %v", err)
+	}
+	if _, err := r.Stat("a.txt"); err != nil {
+		t.Errorf("a.txt is not in the model after the appearance rescan: %v", err)
+	}
+
+	// The tree vanishes (dispose): the model empties, Ready refuses again.
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Rescan(); err != nil {
+		t.Fatalf("Rescan after the tree vanished: %v", err)
+	}
+	if _, err := r.Stat("a.txt"); err == nil {
+		t.Error("a.txt survived in the model after the tree vanished")
+	}
+	if err := r.Ready(); !errors.Is(err, workspace.ErrNotProvisioned) {
+		t.Errorf("Ready after dispose = %v, want ErrNotProvisioned", err)
 	}
 }

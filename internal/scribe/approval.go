@@ -162,8 +162,14 @@ func (s *Server) resolveStaged(rec audit.Record, op stagedOp, d approval.Decisio
 }
 
 // applyStaged writes approved content into the workspace, RE-confining the path
-// (never trusting the staged string) and creating parents for a create.
+// (never trusting the staged string) and creating parents for a create.  The
+// readiness check guards the MkdirAll below: an approval resolved after a
+// dispose must fail loudly, not materialize parents under a root that is not
+// there (a bare tree/ in a grange root reads as CORRUPT to the archivist).
 func (s *Server) applyStaged(op stagedOp) error {
+	if err := s.root.Ready(); err != nil {
+		return err
+	}
 	p, err := s.root.Resolve(op.Path)
 	if err != nil {
 		return err

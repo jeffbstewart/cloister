@@ -164,3 +164,43 @@ func TestOpenValidatesRoot(t *testing.T) {
 		t.Error("Open accepted a symlink-to-directory as root")
 	}
 }
+
+// TestAtReadyLifecycle: At constructs a root for a tree that does not
+// exist yet, Ready names the absent state as ErrNotProvisioned, and the
+// same root becomes ready the moment the directory appears — the grange
+// provision cycle, where existence is a per-operation question.
+func TestAtReadyLifecycle(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "tree")
+	r, err := At(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Ready(); !errors.Is(err, ErrNotProvisioned) {
+		t.Fatalf("Ready on an absent root = %v, want ErrNotProvisioned", err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Ready(); err != nil {
+		t.Fatalf("Ready after the tree appeared = %v, want nil", err)
+	}
+
+	// A root that exists but is a FILE is a loud error, never the
+	// lifecycle state — nothing should treat it as "just not yet".
+	plain := filepath.Join(t.TempDir(), "plain")
+	if err := os.WriteFile(plain, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rf, err := At(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rf.Ready(); err == nil || errors.Is(err, ErrNotProvisioned) {
+		t.Errorf("Ready on a file = %v, want a non-lifecycle error", err)
+	}
+
+	// At still refuses a relative root outright.
+	if _, err := At(filepath.Join("relative", "tree")); err == nil {
+		t.Error("At accepted a relative root")
+	}
+}

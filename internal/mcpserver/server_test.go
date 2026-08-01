@@ -357,3 +357,67 @@ func TestHealthz(t *testing.T) {
 		t.Errorf("healthz = %d, want 200", resp.StatusCode)
 	}
 }
+
+// TestManifestAppearsAfterProvision: the grange boot.  The server comes
+// up degraded because the workspace itself does not exist yet — and says
+// so by name — then TryManifest registers the full menu the moment the
+// tree (manifest included) appears.  No container restart involved.
+func TestManifestAppearsAfterProvision(t *testing.T) {
+	ws := filepath.Join(t.TempDir(), "tree") // not created yet
+	logs := t.TempDir()
+	manifestPath := filepath.Join(ws, "agent-harness.yaml")
+	srv := New(Config{
+		Version: "test", ToolchainID: "tc-test",
+		Workspace: ws, ManifestPath: manifestPath, LogsDir: logs,
+		Runner: &runner.Runner{LogsDir: logs, ToolchainID: "tc-test"},
+	})
+	if d := srv.Degraded(); !strings.Contains(d, "no workspace is provisioned") {
+		t.Fatalf("Degraded() = %q, want the unprovisioned state named", d)
+	}
+
+	clientT, serverT := mcp.NewInMemoryTransports()
+	ctx := context.Background()
+	if _, err := srv.mcp.Connect(ctx, serverT, nil); err != nil {
+		t.Fatal(err)
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0"}, nil)
+	session, err := client.Connect(ctx, clientT, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { session.Close() })
+	tools := func() map[string]bool {
+		res, err := session.ListTools(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := map[string]bool{}
+		for _, tool := range res.Tools {
+			m[tool.Name] = true
+		}
+		return m
+	}
+	if m := tools(); !m["harness_info"] || m["get_log"] || m["run_ok"] {
+		t.Fatalf("degraded menu = %v, want harness_info only", m)
+	}
+
+	// The tree appears (provision), manifest included.
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, []byte(manifestYAML()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !srv.TryManifest() {
+		t.Fatalf("TryManifest after provision = false (%s)", srv.Degraded())
+	}
+	if d := srv.Degraded(); d != "" {
+		t.Errorf("Degraded() = %q after registration, want empty", d)
+	}
+	if m := tools(); !m["get_log"] || !m["run_ok"] || !m["run_fail"] {
+		t.Errorf("post-provision menu = %v, want get_log and both actions", m)
+	}
+	if !srv.TryManifest() {
+		t.Error("TryManifest on a served menu should stay true (idempotent no-op)")
+	}
+}

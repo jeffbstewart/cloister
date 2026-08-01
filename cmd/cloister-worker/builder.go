@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/jeffbstewart/cloister/internal/manifest"
 	"github.com/jeffbstewart/cloister/internal/mcpserver"
@@ -133,11 +134,29 @@ func runBuilder(o builderOptions) {
 		LogFetcher: stateSink.Client, // ...and mcpserver.LogFetcher
 		WarmCheck:  warmingConfig(toolchainID).Check,
 	})
+	if srv.Degraded() != "" {
+		// The grange boot: the tree (and its manifest) appears when the
+		// archivist provisions, after this process is already up — poll
+		// until the action menu registers, never require a restart.
+		go func() {
+			tick := time.NewTicker(manifestRetryInterval)
+			defer tick.Stop()
+			for range tick.C {
+				if srv.TryManifest() {
+					return
+				}
+			}
+		}()
+	}
 	if err := serveHTTP(&http.Server{Addr: o.Addr, Handler: srv.Handler()},
 		fmt.Sprintf("mcp (toolchain %s → state %s)", toolchainID, o.StateURL)); err != nil {
 		log.Fatalf("serve: %v", err)
 	}
 }
+
+// manifestRetryInterval paces the degraded-mode manifest poll: the menu
+// should follow a provision promptly without hammering the filesystem.
+const manifestRetryInterval = 5 * time.Second
 
 // sinkAdapter adapts *sink.Client to runner.Sink: the embedded client
 // supplies Reupload/Finalize/PutStatus directly; only StartRun needs the

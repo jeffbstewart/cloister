@@ -45,6 +45,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/jeffbstewart/cloister/internal/shield"
+	"github.com/jeffbstewart/cloister/internal/workspace"
 )
 
 // Typed refusals.  ErrForbidden and friends carry enough for the caller
@@ -152,6 +153,25 @@ func New(root string, cfg Config) (*Repo, error) {
 // (a 52 s serial scan of a Docker Desktop mount was the motivating case).
 const scanConcurrency = 16
 
+// Ready reports whether the workspace root currently exists as a
+// directory.  Under a grange the tree exists only between provision and
+// dispose, and the librarian's verbs refuse — rather than answer as a
+// confidently empty repository — while it is absent (the walk treats a
+// missing root as zero entries, so nothing else would notice).
+func (r *Repo) Ready() error {
+	fi, err := os.Stat(r.root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("%w (%s)", workspace.ErrNotProvisioned, r.root)
+		}
+		return fmt.Errorf("repo: root %q: %w", r.root, err)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("repo: root %q is not a directory", r.root)
+	}
+	return nil
+}
+
 // Rescan walks the workspace metadata, reloading the shield and any file
 // whose size or mtime changed, adding new paths, dropping vanished ones.
 // New files that would exceed the budget stay metadata-only (whyNot =
@@ -164,6 +184,17 @@ const scanConcurrency = 16
 // out over-budget never depends on goroutine timing.
 func (r *Repo) Rescan() error {
 	walkStart := now()
+	// An absent root is the grange's between-lives state, not a failure:
+	// the model empties (a disposed tree must not linger as ghost
+	// content) and the scan reports clean.  Ready is what tells callers
+	// the difference between this and a genuinely empty repository.
+	if err := r.Ready(); errors.Is(err, workspace.ErrNotProvisioned) {
+		r.mu.Lock()
+		r.sh, r.files, r.sorted, r.spent = shield.Empty(), nil, nil, 0
+		r.lastScan = ScanStats{Walk: now().Sub(walkStart)}
+		r.mu.Unlock()
+		return nil
+	}
 	sh, err := shield.Load(os.DirFS(r.root))
 	if err != nil {
 		return fmt.Errorf("repo: load shield: %w", err)

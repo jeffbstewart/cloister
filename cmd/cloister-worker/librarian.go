@@ -71,7 +71,9 @@ func runLibrarian(o librarianOptions) {
 	}
 	// The initial scan reads every visible file into the model — it can
 	// take a while on a large tree, so bracket it with progress logs
-	// (stderr, so `docker logs` shows them).
+	// (stderr, so `docker logs` shows them).  An absent tree scans to an
+	// empty model: under a grange that is the normal boot, and the tools
+	// refuse by name until the archivist provisions.
 	log.Printf("librarian: scanning workspace %s into memory (this can take a while) ...", o.Workspace)
 	scanStart := time.Now()
 	rep, err := repo.New(o.Workspace, repo.Config{
@@ -81,45 +83,14 @@ func runLibrarian(o librarianOptions) {
 	if err != nil {
 		log.Fatalf("librarian: %v", err) // fail loud: the over-budget message names the offenders
 	}
-	st := rep.ScanStats()
-	log.Printf("librarian: workspace scan complete in %s (metadata walk %s + content read %s)",
-		time.Since(scanStart).Round(time.Millisecond), st.Walk.Round(time.Millisecond), st.Read.Round(time.Millisecond))
-
-	// Watcher-primary freshness (the spike verdict): container writers
-	// arrive as events; the minute rescan bounds host-edit staleness and
-	// is the whole story on platforms without a watcher.
-	w, err := watch.New(o.Workspace, rep.Watchable, rep.Invalidate, func() {
-		if err := rep.Rescan(); err != nil {
-			log.Printf("librarian: overflow rescan: %v", err)
-		}
-	})
-	switch {
-	case errors.Is(err, watch.ErrUnsupported):
-		log.Printf("librarian: no filesystem watcher on this platform; rescan-only freshness")
-	case err != nil:
-		log.Fatalf("librarian: start watcher: %v", err)
-	default:
-		defer w.Close()
+	if rerr := rep.Ready(); rerr != nil {
+		log.Printf("librarian: %v — serving refusals until the workspace is provisioned", rerr)
+	} else {
+		st := rep.ScanStats()
+		log.Printf("librarian: workspace scan complete in %s (metadata walk %s + content read %s)",
+			time.Since(scanStart).Round(time.Millisecond), st.Walk.Round(time.Millisecond), st.Read.Round(time.Millisecond))
 	}
-	go func() {
-		tick := time.NewTicker(o.RescanInterval)
-		defer tick.Stop()
-		for range tick.C {
-			if err := rep.Rescan(); err != nil {
-				log.Printf("librarian: rescan: %v", err)
-				continue
-			}
-			// The rescan repeats every interval; if one eats more than a
-			// tenth of it, the metadata walk is too costly for this cadence
-			// (back off the interval, or the watcher is carrying freshness
-			// anyway — the rescan only catches host edits).
-			if st := rep.ScanStats(); st.Total() > o.RescanInterval/10 {
-				log.Printf("librarian: SLOW rescan %s (metadata walk %s + content read %s) — over 10%% of the %s interval",
-					st.Total().Round(time.Millisecond), st.Walk.Round(time.Millisecond),
-					st.Read.Round(time.Millisecond), o.RescanInterval)
-			}
-		}
-	}()
+	go superviseFreshness(o, rep)
 
 	srv := librarian.New(librarian.Config{
 		Version: version,
@@ -142,6 +113,86 @@ func runLibrarian(o librarianOptions) {
 		fmt.Sprintf("librarian (workspace %s, %d/%d MiB resident → state %s)",
 			o.Workspace, report.Bytes>>20, report.Budget>>20, o.StateURL)); err != nil {
 		log.Fatalf("serve: %v", err)
+	}
+}
+
+// appearPollInterval paces the wait for an absent workspace to appear
+// (the archivist's provision) — prompt without hammering the volume.
+const appearPollInterval = 5 * time.Second
+
+// superviseFreshness keeps the model fresh across the grange lifecycle.
+// While the tree exists, the filesystem watcher carries freshness with
+// the periodic rescan as backstop (the spike verdict: container writers
+// arrive as events; the rescan bounds host-edit staleness and is the
+// whole story on platforms without a watcher).  While the tree is
+// absent — before provision, after dispose — a short poll waits for it
+// to appear, scans, and restarts the watcher: the watcher dies with the
+// directory it watches, so each provisioned life gets a fresh one.
+func superviseFreshness(o librarianOptions, rep *repo.Repo) {
+	// The boot scan already covered a tree that existed at startup; only
+	// a tree that APPEARS later needs the supervisor's own scan.
+	scanned := rep.Ready() == nil
+	for {
+		for rep.Ready() != nil {
+			scanned = false
+			time.Sleep(appearPollInterval)
+		}
+		if !scanned {
+			scanStart := time.Now()
+			if err := rep.Rescan(); err != nil {
+				log.Printf("librarian: scan after the workspace appeared: %v", err)
+				time.Sleep(appearPollInterval)
+				continue
+			}
+			st := rep.ScanStats()
+			log.Printf("librarian: workspace appeared; scanned in %s (metadata walk %s + content read %s)",
+				time.Since(scanStart).Round(time.Millisecond), st.Walk.Round(time.Millisecond), st.Read.Round(time.Millisecond))
+		}
+		scanned = false // the next life always needs its own scan
+
+		w, werr := watch.New(o.Workspace, rep.Watchable, rep.Invalidate, func() {
+			if err := rep.Rescan(); err != nil {
+				log.Printf("librarian: overflow rescan: %v", err)
+			}
+		})
+		switch {
+		case errors.Is(werr, watch.ErrUnsupported):
+			log.Printf("librarian: no filesystem watcher on this platform; rescan-only freshness")
+		case werr != nil:
+			log.Printf("librarian: start watcher: %v — rescan-only freshness for this life", werr)
+		}
+
+		tick := time.NewTicker(o.RescanInterval)
+		for rep.Ready() == nil {
+			select {
+			case <-tick.C:
+				if err := rep.Rescan(); err != nil {
+					log.Printf("librarian: rescan: %v", err)
+					continue
+				}
+				// The rescan repeats every interval; if one eats more than a
+				// tenth of it, the metadata walk is too costly for this cadence
+				// (back off the interval, or the watcher is carrying freshness
+				// anyway — the rescan only catches host edits).
+				if st := rep.ScanStats(); st.Total() > o.RescanInterval/10 {
+					log.Printf("librarian: SLOW rescan %s (metadata walk %s + content read %s) — over 10%% of the %s interval",
+						st.Total().Round(time.Millisecond), st.Walk.Round(time.Millisecond),
+						st.Read.Round(time.Millisecond), o.RescanInterval)
+				}
+			case <-time.After(appearPollInterval):
+				// Just re-check Ready: dispose is noticed within one poll.
+			}
+		}
+		tick.Stop()
+		if w != nil {
+			w.Close()
+		}
+		// Vanished (dispose): empty the model so nothing serves a ghost
+		// tree, then wait for the next provision.
+		if err := rep.Rescan(); err != nil {
+			log.Printf("librarian: rescan after the workspace vanished: %v", err)
+		}
+		log.Printf("librarian: workspace disposed; model emptied, waiting for the next provision")
 	}
 }
 

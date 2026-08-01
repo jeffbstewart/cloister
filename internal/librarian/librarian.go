@@ -90,8 +90,22 @@ func (s *Server) Handler() http.Handler {
 	return mcpserve.Handler(s.mcp)
 }
 
+// add registers one tool with the workspace-readiness guard in front of
+// its handler.  Under a grange the tree exists only between provision
+// and dispose, and every read must refuse by name while it is absent —
+// the emptied model would otherwise answer as a confidently empty
+// repository, which is a lie with a success status.
+func (s *Server) add(tool *mcp.Tool, h func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error)) {
+	s.mcp.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if err := s.cfg.Repo.Ready(); err != nil {
+			return mcpserve.ErrResult(err.Error() + " — the archivist's provision brings it into being"), nil
+		}
+		return h(ctx, req)
+	})
+}
+
 func (s *Server) registerTools() {
-	s.mcp.AddTool(&mcp.Tool{
+	s.add(&mcp.Tool{
 		Name:        "read_file",
 		Description: "Read a workspace text file. Files marked unreadable (permission bits without r) refuse; binaries and oversized files are not served.",
 		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
@@ -101,7 +115,7 @@ func (s *Server) registerTools() {
 		},
 	}, s.readFile)
 
-	s.mcp.AddTool(&mcp.Tool{
+	s.add(&mcp.Tool{
 		Name:        "read_range",
 		Description: "Read lines start..end of a text file (1-based, inclusive).",
 		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
@@ -115,7 +129,7 @@ func (s *Server) registerTools() {
 		},
 	}, s.readRange)
 
-	s.mcp.AddTool(&mcp.Tool{
+	s.add(&mcp.Tool{
 		Name:        "read_head",
 		Description: "Read the first N lines of a text file.",
 		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
@@ -128,7 +142,7 @@ func (s *Server) registerTools() {
 		},
 	}, s.readHead)
 
-	s.mcp.AddTool(&mcp.Tool{
+	s.add(&mcp.Tool{
 		Name:        "read_tail",
 		Description: "Read the last N lines of a text file.",
 		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
@@ -141,7 +155,7 @@ func (s *Server) registerTools() {
 		},
 	}, s.readTail)
 
-	s.mcp.AddTool(&mcp.Tool{
+	s.add(&mcp.Tool{
 		Name:        "batch_read",
 		Description: fmt.Sprintf("Read up to %d text files in one call. Per-path errors are reported alongside successful contents.", MaxBatchFiles),
 		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
@@ -153,7 +167,7 @@ func (s *Server) registerTools() {
 		},
 	}, s.batchRead)
 
-	s.mcp.AddTool(&mcp.Tool{
+	s.add(&mcp.Tool{
 		Name:        "stat_file",
 		Description: "Metadata for one path: size, mtime, line count, sha256, permission bits (r/x stripped means the content is off-limits).",
 		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
@@ -163,7 +177,7 @@ func (s *Server) registerTools() {
 		},
 	}, s.statFile)
 
-	s.mcp.AddTool(&mcp.Tool{
+	s.add(&mcp.Tool{
 		Name:        "list_dir",
 		Description: "List a directory's immediate children with permission bits, sizes, and mtimes.",
 		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
@@ -172,7 +186,7 @@ func (s *Server) registerTools() {
 		},
 	}, s.listDir)
 
-	s.mcp.AddTool(&mcp.Tool{
+	s.add(&mcp.Tool{
 		Name:        "tree",
 		Description: fmt.Sprintf("Recursive listing under a directory, depth-limited (default 3, max %d), capped at %d entries.", MaxTreeDepth, MaxListEntries),
 		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
@@ -184,7 +198,7 @@ func (s *Server) registerTools() {
 		},
 	}, s.tree)
 
-	s.mcp.AddTool(&mcp.Tool{
+	s.add(&mcp.Tool{
 		Name:        "glob",
 		Description: "Paths matching an anchored glob: path.Match per segment, '**' spans directories ('*.go' is root-only — use '**/*.go' for any depth).",
 		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
@@ -194,7 +208,7 @@ func (s *Server) registerTools() {
 		},
 	}, s.glob)
 
-	s.mcp.AddTool(&mcp.Tool{
+	s.add(&mcp.Tool{
 		Name:        "search",
 		Description: fmt.Sprintf("RE2 search over readable text files. mode: 'context' (matching lines with surrounding context, default), 'files' (paths only), 'count' (per-file match counts), 'total' (one number). Optional glob and path-prefix filters. Matches cap at %d with truncation reported.", MaxSearchMatches),
 		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
@@ -211,7 +225,7 @@ func (s *Server) registerTools() {
 		},
 	}, s.search)
 
-	s.mcp.AddTool(&mcp.Tool{
+	s.add(&mcp.Tool{
 		Name:        "recently_modified",
 		Description: "Files ordered by modification time, newest first (default 20).",
 		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
