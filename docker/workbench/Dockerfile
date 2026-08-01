@@ -198,6 +198,33 @@ exec tmux new-session -s "$SESSION" -n main "$cmd"
 EOF
 RUN chmod 0755 /usr/local/bin/workbench
 
+# The how-do-I-drive-this banner.  /etc/motd alone only greets PAM
+# LOGIN shells, and a `docker exec -it ... bash` is not one — so the
+# same banner is also shown by /etc/bash.bashrc, which Debian's bash
+# reads for every interactive shell (guarded to once per shell, TTY
+# only, and skipped inside tmux — the operator already found the door).
+COPY <<'EOF' /etc/motd
+
+cloister workbench — jailed agent cell
+  workbench    attach the live agent session, or pick one to start.
+               Sessions survive disconnects: close this shell freely,
+               the agent keeps working.  tmux prefix is Ctrl-Z
+               (press it twice to send a literal Ctrl-Z through).
+  workspace    /grange/tree — absent until the archivist provisions;
+               the agent's own rules are in ~/.qwen/QWEN.md.
+  offline      no internet by design; package registries refuse.
+               Missing dependencies go through the operator airlock.
+
+EOF
+RUN cat <<'EOF' >> /etc/bash.bashrc
+
+# cloister: the workbench banner, once per interactive shell.
+if [ -n "$PS1" ] && [ -t 1 ] && [ -z "${TMUX:-}" ] && [ -z "${CLOISTER_BANNER:-}" ]; then
+    export CLOISTER_BANNER=1
+    cat /etc/motd
+fi
+EOF
+
 USER agent
 ENV HOME=/home/agent
 WORKDIR /home/agent
