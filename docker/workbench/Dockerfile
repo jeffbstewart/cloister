@@ -1,0 +1,165 @@
+# Copyright 2026 Jeffrey B. Stewart
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# cloister-workbench — the fat, identity-free agent workbench
+# (docs/grange.md, milestone M4): every toolchain the cells serve — Go,
+# Rust, and the JVM (Java, with Kotlin riding the Gradle wrapper) —
+# under the coding-agent CLIs, in ONE image, layered stable-to-volatile
+# so a CLI bump rebuilds only the thin top layers.  Deliberately ABSENT:
+# Python (excluded by decision) and C++ (cross-platform complexity,
+# deferred until unavoidable) — the gcc below is Rust's native linker,
+# not C/C++ support.  No identity, no credential, no worker binary: the
+# archivist owns VCS and the forge; the agent runs these tools freely
+# against the grange mounted rw, and its builds are untrusted scratch
+# work (CI is the build of record).
+#
+# Toolchains arrive as multi-stage COPIES from pinned donor images, each
+# glibc-compatible with the bookworm base (bookworm-family donors, plus
+# corretto's AL2023 whose glibc 2.34 predates bookworm's 2.36), so the
+# binaries run without repackaging and each donor tag is the version pin.
+ARG GO_IMAGE=golang:1.25-bookworm
+ARG RUST_IMAGE=rust:1-slim-bookworm
+ARG JDK_IMAGE=amazoncorretto:25
+ARG NODE_IMAGE=node:22-bookworm-slim
+
+FROM ${GO_IMAGE} AS go-donor
+FROM ${RUST_IMAGE} AS rust-donor
+FROM ${JDK_IMAGE} AS jdk-donor
+FROM ${NODE_IMAGE} AS node-donor
+
+FROM debian:bookworm-slim
+
+# git is the agent's own (grange.md "Local git is the agent's": hooks and
+# config inside the agent's container execute as the agent, already the
+# agent's privilege; the credential and every remote verb stay
+# archivist-only).  gcc + libc headers are the native linker every Rust
+# build needs — not C++ support.  zip/unzip serve Gradle distributions.
+#
+# Build systems, by decision: Gradle rides each repo's WRAPPER (gradlew
+# pins the version; no system Gradle to skew against it); Go and Cargo
+# are their toolchains' own; make is here for shell-glue repos.  Absent
+# until a repo demands them: Maven (mvnw would ride the wrapper pattern),
+# Bazel (its external-repo fetching fights the offline cell — vendored
+# caches are real work, priced when needed), CMake/ninja (out with C++).
+# npm builds RUN (node is the CLI runtime) but offline npm-cache warming
+# is unwired — close that gap before granting a node project a grange.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates git gcc libc6-dev make zip unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# UTF-8 locale: Kotlin emits .class files whose NAMES carry backtick
+# test-name Unicode; under the C/POSIX locale the JVM cannot walk or
+# delete them (breaks `clean`).  Same lesson the builder-jvm image
+# learned; the JDK's UTF-8 file.encoding does not cover filenames.
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+
+# --- toolchains, most stable first ---
+
+# JVM: Java 25, and Kotlin via each project's Gradle wrapper (the
+# toolkits are wrapper-built; no standalone kotlinc to version-skew
+# against the plugin the wrapper resolves).
+COPY --from=jdk-donor /usr/lib/jvm/java-25-amazon-corretto /usr/lib/jvm/java-25-amazon-corretto
+ENV JAVA_HOME=/usr/lib/jvm/java-25-amazon-corretto
+
+# Go.  GOTOOLCHAIN=local: never fetch a different toolchain mid-build
+# (the cell is offline); GOPROXY=off: a module missing from the warmed
+# cache fails immediately and clearly instead of dialing a proxy no
+# route serves.
+COPY --from=go-donor /usr/local/go /usr/local/go
+ENV GOTOOLCHAIN=local GOPROXY=off
+
+# Rust.  The toolchain is system-wide and effectively read-only
+# (RUSTUP_HOME pins it); the agent's own cargo state — registry cache,
+# the warmed dependency store — rides $HOME.  CARGO_NET_OFFLINE makes
+# cache misses a clear refusal, like GOPROXY=off.
+COPY --from=rust-donor /usr/local/rustup /usr/local/rustup
+COPY --from=rust-donor /usr/local/cargo /usr/local/cargo
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/home/agent/.cargo \
+    CARGO_NET_OFFLINE=true
+
+ENV PATH=${JAVA_HOME}/bin:/usr/local/go/bin:/usr/local/cargo/bin:${PATH}
+
+# Node — the runtime under both agent CLIs, not a served toolchain.
+# Selective copies so the donor's /usr/local never shadows the
+# toolchain trees above; npm/npx are relative symlinks into
+# lib/node_modules and survive the copy.
+COPY --from=node-donor /usr/local/bin /usr/local/bin
+COPY --from=node-donor /usr/local/lib/node_modules /usr/local/lib/node_modules
+
+# The warming handshake: the airlock's JVM dependency-warmer init script
+# (world-readable, not agent-writable) and the toolchain id the warming
+# marker is keyed on.  The id scheme — and the airlock's post-builder
+# rework — are settled in the cutover; "workbench1" is the placeholder
+# the first warmed marker will carry.
+COPY warm-deps.gradle /usr/local/share/cloister/warm-deps.gradle
+RUN mkdir -p /etc/cloister-worker && echo "workbench1" > /etc/cloister-worker/toolchain
+
+# --- the volatile top: the agent CLIs ---
+
+# Version pins ride the build pipeline (images.yml).  The Dockerfile
+# defaults exist so a bare local `docker build` produces something
+# sensible, but the pipeline's values are the pins of record.
+ARG QWEN_CLI_VERSION=0.19.4
+ARG CLAUDE_CLI_VERSION=2
+RUN npm install -g \
+      @qwen-code/qwen-code@${QWEN_CLI_VERSION} \
+      @anthropic-ai/claude-code@${CLAUDE_CLI_VERSION} \
+    && npm cache clean --force
+
+# Trim qwen's bundled skills: batch / extension-creator / loop are the
+# skill-level form of capabilities the jail denies (sub-agent
+# orchestration, capability-scaffolding extensions, self-scheduling
+# loops).  qwen-code has no settings-level skill allowlist (skills are
+# controlled by presence on disk), so enforce it here — located by the
+# KEPT qc-helper skill and self-verifying: the build FAILS if qc-helper
+# isn't found, so a package-layout change can't silently no-op.
+RUN set -eux; \
+    found=0; \
+    for marker in $(find /usr/local/lib/node_modules -type d -name qc-helper 2>/dev/null); do \
+      found=1; \
+      dir="$(dirname "$marker")"; \
+      for skill in batch extension-creator loop; do \
+        rm -rf "$dir/$skill"; \
+      done; \
+      echo "kept in $dir ->"; ls "$dir"; \
+    done; \
+    test "$found" = 1
+
+# The stock environment prompt: how the grange, the archivist, and the
+# structurally-offline cell work — one canonical file both CLIs read.
+# The entrypoint materializes it into the HOME config locations
+# (~/.qwen/QWEN.md, ~/.claude/CLAUDE.md) at every start, never into the
+# working tree: the cwd is the CHECKOUT now, and a context file dropped
+# there would pollute the tree the agent commits from.  Home-dir volumes
+# would shadow a baked copy, hence materialize-at-start, refreshed each
+# start so an image upgrade updates the prompt.
+COPY AGENTS.md /usr/local/share/cloister/AGENTS.md
+
+# The identity-free non-root user, uid 1000 to match the image-owned
+# grange volume.  Remaining cell wiring — the grange mount, the working
+# dir, the MCP registrations for archivist/scholar — lives in compose
+# and lands with the cutover; this image stays pure capability.
+RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin agent \
+    && mkdir -p /home/agent/.qwen /home/agent/.claude \
+    && chown -R 1000:1000 /home/agent
+USER agent
+ENV HOME=/home/agent
+WORKDIR /home/agent
+
+# Inline exec-form entrypoint (no shell script -> no CRLF-shebang hazard
+# from a Windows checkout), best-effort like the agent image's: a copy
+# failure must not stop the CLI from starting.
+ENTRYPOINT ["/bin/sh", "-c", "mkdir -p \"$HOME/.qwen\" \"$HOME/.claude\" 2>/dev/null || true; cp /usr/local/share/cloister/AGENTS.md \"$HOME/.qwen/QWEN.md\" 2>/dev/null || true; cp /usr/local/share/cloister/AGENTS.md \"$HOME/.claude/CLAUDE.md\" 2>/dev/null || true; exec \"$@\"", "sh"]
+CMD ["qwen"]
