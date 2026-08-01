@@ -280,11 +280,8 @@ func Check(data []byte) ([]string, error) {
 	if sch.hasNet("archivistnet") {
 		v = append(v, "scholar holds `archivistnet` — it must have no route to the agent or the archivist")
 	}
-	for _, vol := range sch.Volumes {
-		if strings.Contains(vol, ":/grange") {
-			v = append(v, "scholar mounts the grange — it must never see project source")
-		}
-	}
+	// (The scholar's no-grange rule rides the global agent+archivist-only
+	// grange check below.)
 	// Every LOCAL network the scholar is on must be internal — a non-internal net
 	// is an internet path that would bypass the relay. (External nets like
 	// infernet are the infra stack's to guarantee; see its compose.)
@@ -325,6 +322,32 @@ func Check(data []byte) ([]string, error) {
 		for _, vol := range c.Services[name].Volumes {
 			if strings.Contains(vol, "${WORKSPACE") || strings.Contains(vol, ":/workspace") {
 				v = append(v, fmt.Sprintf("%s mounts a host workspace (%q) — the operator's tree never enters a cell; the grange volume is the only workspace", name, vol))
+			}
+			// The grange is agent + archivist ONLY — a mediator reborn
+			// under a fresh name must not evade the by-name refusal by
+			// mounting the workspace volume.
+			if strings.Contains(vol, ":/grange") && name != "agent" && name != "archivist" {
+				v = append(v, fmt.Sprintf("%s mounts the grange — only the agent and the archivist hold the workspace", name))
+			}
+		}
+	}
+
+	// Internal-network membership is pinned, like gitegress/gitforward
+	// below: a service quietly joining a sanctioned wire is the same
+	// drift as a new egress holder.  Subset check (a fixture or a future
+	// cell may omit a member); the exact-list checks on the agent and
+	// archivist bound their sides.
+	for net, allowed := range map[string][]string{
+		"archivistnet": {"agent", "archivist"},
+		"statenet":     {"archivist", "state"},
+		"researchnet":  {"agent", "scholar"},
+		"scholarstate": {"scholar", "state"},
+		"kagiegress":   {"kagi-relay", "scholar"},
+		"statepub":     {"state", "status"},
+	} {
+		for _, holder := range holdersOf(c, net) {
+			if !slices.Contains(allowed, holder) {
+				v = append(v, fmt.Sprintf("%s holds %q — membership is pinned to %v", holder, net, allowed))
 			}
 		}
 	}

@@ -23,7 +23,7 @@
 // built-in web tools stay excluded, because web access routes through the
 // scholar and the cell has no route for anything else.  Best-effort: any
 // failure leaves existing config untouched and the agent still starts.
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 const path = process.env.QWEN_SETTINGS_PATH || '/home/agent/.qwen/settings.json';
@@ -102,7 +102,10 @@ try {
   delete cfg.allowedSkills;
 
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(cfg, null, 2) + '\n');
+  // Atomic: a crash mid-write must not leave invalid JSON that the next
+  // start's never-clobber guard would then refuse to repair.
+  writeFileSync(path + '.tmp', JSON.stringify(cfg, null, 2) + '\n');
+  renameSync(path + '.tmp', path);
   console.error(
     `qwen-mcp-init: registered archivist -> ${archivistUrl} (prompts unless YOLO), ` +
       `scholar -> ${scholarUrl} (trusted); native tools enabled, excluded = ${excludeTools.join(', ')}; ` +

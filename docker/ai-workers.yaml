@@ -27,11 +27,17 @@
 #                  cloister-workbench:0.19.4-sha-<commit>, or track :latest.
 #                  There is NO host workspace: the agent works in the
 #                  grange volume the archivist provisions (docs/grange.md).
-#   AGENT_HOME     host dir for the agent's PERSISTENT home: toolchain
-#                  dependency caches (gradle/go/cargo, warmed via the
-#                  airlock).  Per USER, shared across that user's projects;
-#                  pre-create it owned by uid 1000.  e.g.
-#                  /srv/home/alice/.cloister-cache
+#   AGENT_CACHES   host dir for the agent's warmed dependency caches
+#                  (gradle/go/cargo, via the airlock).  Per USER, shared
+#                  across that user's projects; pre-create it owned by
+#                  uid 1000.  Mounted at a CACHES subdir, never the whole
+#                  home — a shared writable home would carry dotfiles
+#                  (.bashrc, gradle init scripts) across cells, a
+#                  cross-project persistence channel.  Interim-accepted
+#                  as rw, like the builder's BUILD_HOME before it: the
+#                  read-only content-addressed stores (grange.md "Stores,
+#                  warming, and the airlock") are the planned successor.
+#                  e.g. /srv/home/alice/.cloister-cache
 #   WORKERS_IMAGE  e.g. cloister-workers:latest — the SLIM toolchain-free
 #                  multi-call worker image (scratch + the static binary);
 #                  every worker except the agent runs it
@@ -57,8 +63,9 @@
 # The native file tools and shell are the agent's own now — it edits and
 # builds directly in the grange (docs/grange.md M3/M4):
 #   { "mcpServers": {
-#       "archivist": { "httpUrl": "http://archivist:9600/mcp", "timeout": 2400000 },
+#       "archivist": { "httpUrl": "http://archivist:9600/mcp", "timeout": 5400000 },
 #       "scholar":   { "httpUrl": "http://scholar:9500/mcp",   "timeout": 2400000 } } }
+# (the archivist's 90 min exceeds await_review's 1 h maxWait cap.)
 #
 # Least-privilege network map (every edge is a network hop or token-gated API):
 #   agent   ── infernet ────> agency        agent   ── archivistnet ─> archivist (MCP)
@@ -118,6 +125,12 @@ services:
       # The agency engine class the agent's session rides; the routing
       # policy (agency side) picks the node and model tag.
       - OPENAI_MODEL=${OPENAI_MODEL:-interactive-code}
+      # The toolchains' caches ride the shared per-user AGENT_CACHES
+      # bind below — cache content only; HOME itself is per-project.
+      - GRADLE_USER_HOME=/home/agent/caches/gradle
+      - GOMODCACHE=/home/agent/caches/go-mod
+      - GOCACHE=/home/agent/caches/go-build
+      - CARGO_HOME=/home/agent/caches/cargo
     volumes:
       # THE workspace: the grange ROOT, shared with the archivist that
       # provisions it.  tree/ (the checkout) appears at provision and
@@ -127,12 +140,16 @@ services:
       # disk-derived state machine reads as CORRUPT; `workbench` drops
       # sessions into tree/ when it exists.
       - grange:/grange
-      # The agent's persistent HOME: warmed dependency caches
-      # (gradle/go/cargo) — per user, shared across that user's
-      # projects, pre-created uid-1000-owned on /srv.
-      - ${AGENT_HOME:?set AGENT_HOME, the agent's persistent cache home on /srv (pre-create it uid-1000-owned), e.g. /srv/home/alice/.cloister-cache}:/home/agent
-      # qwen settings/history: per PROJECT (a named volume over the
-      # per-user home bind), so cells don't share conversation state.
+      # The agent's HOME: a per-PROJECT volume, so dotfiles and shell
+      # state never cross cells.  Only the caches subdir below is the
+      # per-user shared surface.
+      - agent_home:/home/agent
+      # Warmed dependency caches, per user, shared across projects —
+      # cache content only (the env below points the toolchains here),
+      # never the home itself.
+      - ${AGENT_CACHES:?set AGENT_CACHES, the agent's warmed dependency-cache dir on /srv (pre-create it uid-1000-owned), e.g. /srv/home/alice/.cloister-cache}:/home/agent/caches
+      # qwen settings/history: its own per-project volume (predates
+      # agent_home; kept separate so an agent_home reset preserves it).
       - qwen_home:/home/agent/.qwen
     working_dir: /grange
     read_only: true
@@ -370,6 +387,8 @@ networks:
 
 volumes:
   qwen_home:
+  agent_home:
+    name: ${PROJECT}_agent_home          # per-project HOME: dotfiles never cross cells
   # The agent's dependency caches (AGENT_HOME) are a USER-OWNED /srv
   # bind, not a named volume — per user, shared across that user's
   # projects.  The fixed-uid state service and the agent/scholar keep

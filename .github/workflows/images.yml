@@ -16,11 +16,11 @@ name: images
 
 # The authoritative image pipeline: on every push to main and on version
 # tags, cross-compile the static cloister-worker binary, then build and
-# push the slim workers image, the per-ecosystem builder toolchain images
-# (docs/toolchains.md — jvm today), and the agent image to GHCR.  Tags
-# carry the binary as a GitHub Release asset.
+# push the slim workers image and the fat agent workbench (toolchains +
+# the agent CLI; docker/workbench) to GHCR.  Tags carry the binary as a
+# GitHub Release asset.
 #
-# Distribution note: the jvm toolchain image redistributes Amazon Corretto
+# Distribution note: the workbench image redistributes Amazon Corretto
 # (GPLv2 with the Classpath Exception); see THIRD_PARTY_NOTICES for the
 # corresponding-source pointer that obligation rides on.
 
@@ -35,15 +35,14 @@ permissions:
 
 env:
   WORKERS_IMAGE: ghcr.io/jeffbstewart/cloister-workers
-  JVM_IMAGE: ghcr.io/jeffbstewart/cloister-builder-jvm
-  AGENT_IMAGE: ghcr.io/jeffbstewart/cloister-agent
-  # The toolchain version leading the jvm image tag (the corretto:25 pin in
-  # its Dockerfile).  Bump both together.
-  JVM_VERSION: "25"
-  # Pins the qwen-code base (and therefore the CLI version inside the agent
-  # image).  Bump deliberately; the Dockerfile default matches.
+  # Pins the qwen-code CLI inside the workbench image.  Bump
+  # deliberately; the Dockerfile default matches.
   QWEN_VERSION: "0.19.4"
   WORKBENCH_IMAGE: ghcr.io/jeffbstewart/cloister-workbench
+  # The retired cloister-agent and cloister-builder-jvm images are no
+  # longer published (the grange cutover, docs/grange.md): the workbench
+  # replaced both.  Their contexts leave the tree with the corpse
+  # removal.
 
 jobs:
   publish:
@@ -72,9 +71,6 @@ jobs:
             go build -trimpath \
             -ldflags "-s -w -X main.version=${{ steps.ver.outputs.version }}" \
             -o docker/workers/cloister-worker ./cmd/cloister-worker
-          # Each image builds from its own context; the toolchain images
-          # layer the same binary.
-          cp docker/workers/cloister-worker docker/toolchains/jvm/cloister-worker
 
       # Buildx now so the platform list below is the only thing to touch
       # when arm64 joins (a Mac-hosted scholar, a D20 cell).
@@ -86,9 +82,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # The agent tag leads with the qwen-code version it jails
-      # (0.19.4-sha-abc… / 0.19.4-1.0.0), the successor of the retired
-      # qwen-agent:<version>-r<rev> scheme: the commit part plays the old
+      # The workbench tag leads with the qwen-code version it jails
+      # (0.19.4-sha-abc… / 0.19.4-1.0.0): the commit part plays a
       # recipe-revision role, so any recipe change yields a fresh tag and a
       # pinned pull can never go stale.  Deliberately NO bare :0.19.4
       # rolling tag — that would reintroduce the ambiguity the rev killed.
@@ -97,18 +92,12 @@ jobs:
         run: |
           V="${{ steps.ver.outputs.version }}"
           WORKERS="${WORKERS_IMAGE}:${V}"
-          JVM="${JVM_IMAGE}:${JVM_VERSION}-${V}"
-          AGENT="${AGENT_IMAGE}:${QWEN_VERSION}-${V}"
           WORKBENCH="${WORKBENCH_IMAGE}:${QWEN_VERSION}-${V}"
           if [ "${GITHUB_REF_TYPE}" = "tag" ] || [ "${GITHUB_REF_NAME}" = "main" ]; then
             WORKERS="${WORKERS},${WORKERS_IMAGE}:latest"
-            JVM="${JVM},${JVM_IMAGE}:latest"
-            AGENT="${AGENT},${AGENT_IMAGE}:latest"
             WORKBENCH="${WORKBENCH},${WORKBENCH_IMAGE}:latest"
           fi
           echo "workers=${WORKERS}" >> "$GITHUB_OUTPUT"
-          echo "jvm=${JVM}" >> "$GITHUB_OUTPUT"
-          echo "agent=${AGENT}" >> "$GITHUB_OUTPUT"
           echo "workbench=${WORKBENCH}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push the workers image
@@ -119,28 +108,8 @@ jobs:
           platforms: linux/amd64 # add linux/arm64 here when needed
           tags: ${{ steps.tags.outputs.workers }}
 
-      - name: Build and push the jvm toolchain image
-        uses: docker/build-push-action@v6
-        with:
-          context: docker/toolchains/jvm
-          push: true
-          platforms: linux/amd64 # add linux/arm64 here when needed
-          tags: ${{ steps.tags.outputs.jvm }}
-
-      - name: Build and push the agent image
-        uses: docker/build-push-action@v6
-        with:
-          context: docker/agent
-          push: true
-          platforms: linux/amd64 # add linux/arm64 here when needed
-          build-args: |
-            QWEN_VERSION=${{ env.QWEN_VERSION }}
-          tags: ${{ steps.tags.outputs.agent }}
-
       # The fat agent workbench (docs/grange.md M4): toolchains + the
-      # agent CLIs in one image.  Built alongside the images it will
-      # replace (agent, builder-jvm) until the grange cutover retires
-      # them; the tag leads with the qwen CLI version, like the agent's.
+      # agent CLI in one image; the tag leads with the qwen CLI version.
       - name: Build and push the workbench image
         uses: docker/build-push-action@v6
         with:

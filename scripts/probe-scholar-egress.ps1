@@ -40,11 +40,11 @@ $relay = "$Project-kagi-relay"
 $state = docker inspect --format '{{.State.Health.Status}}' $scholar 2>$null
 if ($state -ne 'healthy') { $fail += "scholar is not healthy (state='$state') — self-check may have refused to start" }
 
-# 2. Topology: scholar off egress/statenet/buildnet, on kagiegress.
+# 2. Topology: scholar off egress/statenet/archivistnet, on kagiegress.
 $snets = Nets $scholar
 if ($snets -match '_egress$') { $fail += "scholar is ON an egress network: $($snets -match '_egress$')" }
 if ($snets -match '_statenet$') { $fail += "scholar is ON statenet (route to builder/scribe)" }
-if ($snets -match '_buildnet$') { $fail += "scholar is ON buildnet (route to builder/scribe/agent)" }
+if ($snets -match '_archivistnet$') { $fail += "scholar is ON archivistnet (route to the agent/archivist)" }
 if (-not ($snets -match '_kagiegress$')) { $fail += "scholar is NOT on kagiegress (cannot reach the relay)" }
 
 # 3. Only the relay holds egress.

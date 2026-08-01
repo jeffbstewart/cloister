@@ -210,6 +210,31 @@ services:
     dns: "127.0.0.1"
     networks: [gitegress]
 `),
+		// The rename-evasion gaps: a mediator reborn under a fresh name
+		// must not reach the grange or the pinned wires.
+		"renamed mediator mounts the grange": base(clean, noVols, kagiCmd, agentClean, `  helper:
+    dns: "127.0.0.1"
+    networks: [archivistnet]
+    volumes: ["grange:/grange"]
+`),
+		"outsider on archivistnet": base(clean, noVols, kagiCmd, agentClean, `  sneaky:
+    dns: "127.0.0.1"
+    networks: [archivistnet]
+`),
+		"outsider on statenet": base(clean, noVols, kagiCmd, agentClean, `  sneaky:
+    dns: "127.0.0.1"
+    networks: [statenet]
+`),
+		"archivist grange read-only": strings.Replace(cleanCompose(),
+			`volumes: ["grange:/grange"]
+  github-relay:`, `volumes: ["grange:/grange:ro"]
+  github-relay:`, 1),
+		"outsider on gitforward": base(clean, noVols, kagiCmd, agentClean, `  sneaky:
+    dns: "127.0.0.1"
+    networks: [gitforward]
+`),
+		"consumer dials infer directly": strings.Replace(cleanCompose(),
+			"  agent:\n    user: \"1000:1000\"", "  agent:\n    environment: [\"OPENAI_BASE_URL=http://infer:11434/v1\"]\n    user: \"1000:1000\"", 1),
 	}
 	for name, yaml := range cases {
 		t.Run(name, func(t *testing.T) {
