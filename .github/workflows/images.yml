@@ -43,6 +43,11 @@ env:
   # Pins the qwen-code base (and therefore the CLI version inside the agent
   # image).  Bump deliberately; the Dockerfile default matches.
   QWEN_VERSION: "0.19.4"
+  WORKBENCH_IMAGE: ghcr.io/jeffbstewart/cloister-workbench
+  # The Claude Code CLI npm pin for the workbench.  "2" floats within the
+  # major at BUILD time — pin it exactly before the cutover deploy and
+  # treat bumps like the qwen pin: deliberate.
+  CLAUDE_VERSION: "2"
 
 jobs:
   publish:
@@ -98,14 +103,17 @@ jobs:
           WORKERS="${WORKERS_IMAGE}:${V}"
           JVM="${JVM_IMAGE}:${JVM_VERSION}-${V}"
           AGENT="${AGENT_IMAGE}:${QWEN_VERSION}-${V}"
+          WORKBENCH="${WORKBENCH_IMAGE}:${QWEN_VERSION}-${V}"
           if [ "${GITHUB_REF_TYPE}" = "tag" ] || [ "${GITHUB_REF_NAME}" = "main" ]; then
             WORKERS="${WORKERS},${WORKERS_IMAGE}:latest"
             JVM="${JVM},${JVM_IMAGE}:latest"
             AGENT="${AGENT},${AGENT_IMAGE}:latest"
+            WORKBENCH="${WORKBENCH},${WORKBENCH_IMAGE}:latest"
           fi
           echo "workers=${WORKERS}" >> "$GITHUB_OUTPUT"
           echo "jvm=${JVM}" >> "$GITHUB_OUTPUT"
           echo "agent=${AGENT}" >> "$GITHUB_OUTPUT"
+          echo "workbench=${WORKBENCH}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push the workers image
         uses: docker/build-push-action@v6
@@ -132,6 +140,21 @@ jobs:
           build-args: |
             QWEN_VERSION=${{ env.QWEN_VERSION }}
           tags: ${{ steps.tags.outputs.agent }}
+
+      # The fat agent workbench (docs/grange.md M4): toolchains + the
+      # agent CLIs in one image.  Built alongside the images it will
+      # replace (agent, builder-jvm) until the grange cutover retires
+      # them; the tag leads with the qwen CLI version, like the agent's.
+      - name: Build and push the workbench image
+        uses: docker/build-push-action@v6
+        with:
+          context: docker/workbench
+          push: true
+          platforms: linux/amd64 # add linux/arm64 here when needed
+          build-args: |
+            QWEN_CLI_VERSION=${{ env.QWEN_VERSION }}
+            CLAUDE_CLI_VERSION=${{ env.CLAUDE_VERSION }}
+          tags: ${{ steps.tags.outputs.workbench }}
 
       # Tags get a GitHub Release carrying the static binary, so a cell can
       # run the sidecar without pulling an image at all.
