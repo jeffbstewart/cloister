@@ -172,6 +172,10 @@ COPY AGENTS.md /usr/local/share/cloister/AGENTS.md
 # the entrypoint because the qwen_home volume shadows any baked file.
 COPY qwen-mcp-init.mjs /usr/local/bin/qwen-mcp-init.mjs
 
+# The fail-closed boot self-check (the scholar's pattern): the network
+# jail is effective, or the container refuses to start.
+COPY jail-probe.mjs /usr/local/bin/jail-probe.mjs
+
 # The identity-free non-root user, uid 1000 to match the image-owned
 # grange volume.  The grange mount itself lives in compose
 # (docker/ai-workers.yaml); this image stays pure capability.
@@ -259,9 +263,11 @@ ENV HOME=/home/agent
 WORKDIR /home/agent
 
 # Inline exec-form entrypoint (no shell script -> no CRLF-shebang hazard
-# from a Windows checkout), best-effort like the agent image's: a copy
-# failure must not stop the CLI from starting.
-ENTRYPOINT ["/bin/sh", "-c", "mkdir -p \"$HOME/.qwen\" 2>/dev/null || true; cp /usr/local/share/cloister/AGENTS.md \"$HOME/.qwen/QWEN.md\" 2>/dev/null || true; node /usr/local/bin/qwen-mcp-init.mjs || true; exec \"$@\"", "sh"]
+# from a Windows checkout).  The jail probe runs FIRST and is
+# fail-CLOSED — a reachable internet or live external DNS refuses the
+# boot outright; everything after it (prompt copy, MCP registration) is
+# best-effort, because a config hiccup must not stop the CLI.
+ENTRYPOINT ["/bin/sh", "-c", "node /usr/local/bin/jail-probe.mjs || exit 1; mkdir -p \"$HOME/.qwen\" 2>/dev/null || true; cp /usr/local/share/cloister/AGENTS.md \"$HOME/.qwen/QWEN.md\" 2>/dev/null || true; node /usr/local/bin/qwen-mcp-init.mjs || true; exec \"$@\"", "sh"]
 # The container idles; agents start when the operator runs `workbench`
 # in an exec shell ("pick your agent"), living in a tmux session that
 # outlives the shell that started it.
