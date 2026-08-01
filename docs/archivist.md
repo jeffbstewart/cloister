@@ -108,7 +108,7 @@ waits for approval):
 | `check_progress(pr?)` | PR state + CI check results — defaults to the current branch's PR, takes an explicit PR number |
 | `read_reviews(pr?)` | review comments and threads — same explicit-target rule; includes the PR's diff for a caller that wasn't its author |
 | `reply_to_review(thread, body)` | respond on a review thread |
-| `await_review(maxWait)` | block until review activity on the agent's PR: new comments, approval, changes-requested, or merge/close |
+| `await_review(maxWait?)` | block until review activity on the agent's PR: new comments, approval, changes-requested, or merge/close |
 
 The PR-read verbs take an explicit target rather than assuming "the
 agent's PR" because the corrector ([corrector.md](corrector.md)) reviews
@@ -395,8 +395,8 @@ those are realization details of the git adapter.
    one verb that does not hold the serialization lock for its whole run:
    it resolves its target under the lock, then waits on the captured
    forge client with the lock released, so a minutes-long wait never
-   wedges the rest of the surface.  One audit record per call, at the
-   wait's end.
+   wedges the rest of the surface.  One audit record per call that
+   reaches the endpoint, at the wait's end.
 6. **Record cutover** — this doc's status, ARCHITECTURE.md's PLANNED
    sections, grange.md's M1 milestone.  (The CLAUDE.md invariant
    rewrite stays at grange M5.)

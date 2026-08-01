@@ -407,13 +407,42 @@ func TestAwaitReviewDeadEndpointFails(t *testing.T) {
 	}
 }
 
+// TestAwaitReviewExpiredUnverified: a wait that runs out WHILE the
+// endpoint is failing must not claim a verified-quiet timeout — the
+// final window went unchecked, and the answer says so as an error.
+func TestAwaitReviewExpiredUnverified(t *testing.T) {
+	ff := &fakeForge{pr: openPR()}
+	f, wait, aud := newAwaitFixture(t, ff)
+	wait.onTick = func(tick int) {
+		if tick == 1 {
+			ff.setErr(errors.New("endpoint down"))
+		}
+	}
+	// 45s = 3 polls, all failing — under the 4-consecutive cutoff, so
+	// only the deadline check can end this wait.
+	text, isErr := f.call(t, "await_review", map[string]any{"maxWait": "45s"})
+	if !isErr || !strings.Contains(text, "unverified") {
+		t.Fatalf("expired-while-failing wait = %q (err=%v), want the unverified-window error", text, isErr)
+	}
+	recs := aud.records()
+	if len(recs) != 1 || recs[0].Decision != audit.DecisionRemoteError {
+		t.Errorf("audit = %+v, want one remote_error record", recs)
+	}
+}
+
 // TestAwaitReviewNoOpenPR: with nothing proposed there is nothing to
-// await, and the refusal names the next step.
+// await, the refusal names a next step this verb's caller can actually
+// take (not resolvePR's "pass pr explicitly" — await_review has no pr
+// argument), and it audits as the archivist's own refusal.
 func TestAwaitReviewNoOpenPR(t *testing.T) {
-	f, _, _ := newAwaitFixture(t, &fakeForge{})
+	f, _, aud := newAwaitFixture(t, &fakeForge{})
 	text, isErr := f.call(t, "await_review", nil)
-	if !isErr || !strings.Contains(text, "no open PR") {
-		t.Errorf("await without a PR = %q (err=%v), want the no-open-PR refusal", text, isErr)
+	if !isErr || !strings.Contains(text, "no open PR") || !strings.Contains(text, "publish and propose first") {
+		t.Errorf("await without a PR = %q (err=%v), want the no-open-PR refusal naming publish and propose", text, isErr)
+	}
+	recs := aud.records()
+	if len(recs) != 1 || recs[0].Decision != audit.DecisionRemoteRefused {
+		t.Errorf("audit = %+v, want one remote_refused record", recs)
 	}
 }
 

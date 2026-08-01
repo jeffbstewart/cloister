@@ -128,9 +128,20 @@ func (s *Server) awaitReview(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	start := s.now()
 	deadline := start.Add(maxWait)
 	failures := 0
+	var lastErr error // the most recent failed poll, pending exoneration
 	for {
 		remaining := deadline.Sub(s.now())
 		if remaining <= 0 {
+			if failures > 0 {
+				// The wait ran out while the endpoint was failing: "no
+				// activity" was never verified for the final window, and
+				// claiming a quiet timeout would be a lie under a success
+				// status.
+				s.auditRemote("await_review", d, audit.DecisionRemoteError)
+				return mcpserve.ErrResult(fmt.Sprintf(
+					"await_review: the wait expired with its last %d poll(s) failing (last: %v) — activity in the final window is unverified; call again to retry",
+					failures, lastErr)), nil
+			}
 			// A quiet wait is a completed operation, not a failure: the
 			// answer is "no activity yet", and the agent decides whether
 			// to keep waiting.
@@ -138,7 +149,7 @@ func (s *Server) awaitReview(ctx context.Context, req *mcp.CallToolRequest) (*mc
 			return mcpserve.JSONResult(map[string]any{
 				"pr": pr.Number, "url": pr.URL, "state": pr.State,
 				"outcome": "timeout", "waited": maxWait.String(),
-				"note": "no review activity within maxWait — call again to keep waiting",
+				"note": "no review activity within maxWait — read_reviews shows the full current state; activity landing between calls joins the next baseline and will not retrigger",
 			}), nil
 		}
 		if err := s.sleep(ctx, min(awaitPollInterval, remaining)); err != nil {
@@ -159,9 +170,12 @@ func (s *Server) awaitReview(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		}
 		if err != nil {
 			failures++
+			lastErr = err
 			if failures >= awaitMaxPollErrors {
 				s.auditRemote("await_review", d, audit.DecisionRemoteError)
-				return mcpserve.ErrResult(fmt.Sprintf("await_review: %d consecutive polls failed, last: %v", failures, err)), nil
+				return mcpserve.ErrResult(fmt.Sprintf(
+					"await_review: %d consecutive polls failed (last: %v) — the endpoint may be unreachable; call again to retry",
+					failures, err)), nil
 			}
 			log.Printf("archivist: await_review poll failed (%d/%d): %v", failures, awaitMaxPollErrors, err)
 			continue
@@ -185,7 +199,7 @@ func (s *Server) awaitReview(ctx context.Context, req *mcp.CallToolRequest) (*mc
 				"outcome":      outcome,
 				"new_reviews":  reviewsOut(newReviews),
 				"new_comments": commentsOut(newComments),
-				"waited":       s.now().Sub(start).String(),
+				"waited":       s.now().Sub(start).Round(time.Second).String(),
 			}), nil
 		}
 		if notify != nil {
@@ -215,9 +229,29 @@ func (s *Server) awaitTarget(ctx context.Context) (ep endpoint.Endpoint, repo st
 		s.auditRemote("await_review", audit.RemoteDetail{}, remoteDecision(err))
 		return ep, "", pr, nil, mcpserve.ErrResult(err.Error())
 	}
-	pr, err = s.resolvePR(ctx, arc, fc, repo, 0)
+	// The current branch's open PR, resolved inline rather than through
+	// resolvePR: this verb takes no pr argument (it waits on the agent's
+	// own authorship loop), so resolvePR's "pass pr explicitly" advice
+	// would send the caller into a wall.  These refusals name the next
+	// step that actually exists here.
+	st, err := arc.CurrentState(ctx)
 	if err != nil {
 		s.auditRemote("await_review", audit.RemoteDetail{Endpoint: ep.Name}, remoteDecision(err))
+		return ep, "", pr, nil, mcpserve.ErrResult(err.Error())
+	}
+	if st.Branch == "" || st.Branch == st.Default {
+		err := fmt.Errorf("archivist: await_review: %q is not a line of work — start_work, publish, and propose first", st.Branch)
+		s.auditRemote("await_review", audit.RemoteDetail{Endpoint: ep.Name}, audit.DecisionRemoteRefused)
+		return ep, "", pr, nil, mcpserve.ErrResult(err.Error())
+	}
+	pr, found, err := fc.FindPR(ctx, repo, st.Branch)
+	if err != nil {
+		s.auditRemote("await_review", audit.RemoteDetail{Endpoint: ep.Name, Branch: st.Branch}, remoteDecision(err))
+		return ep, "", pr, nil, mcpserve.ErrResult(err.Error())
+	}
+	if !found {
+		err := fmt.Errorf("archivist: await_review: %s has no open PR — publish and propose first", st.Branch)
+		s.auditRemote("await_review", audit.RemoteDetail{Endpoint: ep.Name, Branch: st.Branch}, audit.DecisionRemoteRefused)
 		return ep, "", pr, nil, mcpserve.ErrResult(err.Error())
 	}
 	return ep, repo, pr, fc, nil
