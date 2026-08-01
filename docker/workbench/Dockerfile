@@ -54,8 +54,24 @@ FROM debian:bookworm-slim
 # caches are real work, priced when needed), CMake/ninja (out with C++).
 # npm builds RUN (node is the CLI runtime) but offline npm-cache warming
 # is unwired — close that gap before granting a node project a grange.
+# The unix toolbox rides along with the toolchains.  bookworm-slim's
+# required set already carries bash, coreutils, sed, grep, findutils
+# (find/xargs), tar, gzip, and diffutils; the installs below fill the
+# gaps a working shell (and a working agent) actually hits: gawk (slim
+# ships at best mawk), procps (ps — tmux triage), less, file, patch,
+# xz, and the two tools coding agents reach for constantly, ripgrep
+# and jq.  curl is the operator's diagnostic probe (healthz endpoints,
+# the agency door) — inside the cell it can only reach what the
+# topology already grants, and during the airlock's egress window no
+# agent session is running (the airlock's own gate).
+# protoc is the protobuf compiler alone — the per-language
+# codegen plugins (protoc-gen-go, grpc) are repo-level tools an agent
+# builds offline from the warmed module cache, not image freight.
+# emacs-nox by operator decree (no X stack rides in with -nox).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates git gcc libc6-dev make zip unzip tmux \
+      gawk procps less file patch tree xz-utils ripgrep jq curl \
+      protobuf-compiler emacs-nox \
     && rm -rf /var/lib/apt/lists/*
 
 # UTF-8 locale: Kotlin emits .class files whose NAMES carry backtick
@@ -156,6 +172,10 @@ COPY AGENTS.md /usr/local/share/cloister/AGENTS.md
 # the entrypoint because the qwen_home volume shadows any baked file.
 COPY qwen-mcp-init.mjs /usr/local/bin/qwen-mcp-init.mjs
 
+# The fail-closed boot self-check (the scholar's pattern): the network
+# jail is effective, or the container refuses to start.
+COPY jail-probe.mjs /usr/local/bin/jail-probe.mjs
+
 # The identity-free non-root user, uid 1000 to match the image-owned
 # grange volume.  The grange mount itself lives in compose
 # (docker/ai-workers.yaml); this image stays pure capability.
@@ -243,9 +263,11 @@ ENV HOME=/home/agent
 WORKDIR /home/agent
 
 # Inline exec-form entrypoint (no shell script -> no CRLF-shebang hazard
-# from a Windows checkout), best-effort like the agent image's: a copy
-# failure must not stop the CLI from starting.
-ENTRYPOINT ["/bin/sh", "-c", "mkdir -p \"$HOME/.qwen\" 2>/dev/null || true; cp /usr/local/share/cloister/AGENTS.md \"$HOME/.qwen/QWEN.md\" 2>/dev/null || true; node /usr/local/bin/qwen-mcp-init.mjs || true; exec \"$@\"", "sh"]
+# from a Windows checkout).  The jail probe runs FIRST and is
+# fail-CLOSED — a reachable internet or live external DNS refuses the
+# boot outright; everything after it (prompt copy, MCP registration) is
+# best-effort, because a config hiccup must not stop the CLI.
+ENTRYPOINT ["/bin/sh", "-c", "node /usr/local/bin/jail-probe.mjs || exit 1; mkdir -p \"$HOME/.qwen\" 2>/dev/null || true; cp /usr/local/share/cloister/AGENTS.md \"$HOME/.qwen/QWEN.md\" 2>/dev/null || true; node /usr/local/bin/qwen-mcp-init.mjs || true; exec \"$@\"", "sh"]
 # The container idles; agents start when the operator runs `workbench`
 # in an exec shell ("pick your agent"), living in a tmux session that
 # outlives the shell that started it.
