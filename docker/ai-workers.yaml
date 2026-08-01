@@ -21,33 +21,24 @@
 # their first use, so a missing one fails the deploy naming the variable —
 # not with docker's bare "invalid reference format".
 #   PROJECT        short project id, e.g. myproject
-#   WORKSPACE      host path of the project repo, e.g. c:/projects/myproject
-#                  ── THE single source of truth for the workspace: defined once
-#                     here, mounted into both agent and builder below.
-#   WORKSPACE_UID  numeric uid that OWNS the workspace on the host; the
-#   WORKSPACE_GID  scribe/builder/librarian all run as it, so writes are owned by
-#                  the real user (no root-owned droppings) and the librarian can
-#                  read a per-user 0700 tree.  e.g. 1000 / 1000.
-#   BUILD_HOME     host dir for the builder's PERSISTENT toolchain caches (its
-#                  HOME): per USER, shared across that user's projects.
-#                  Pre-create it user-owned.  e.g. /srv/home/alice/.cloister-cache
-#   SCRIBE_STATE   host dir for the scribe's durable approval staging: per
-#                  PROJECT, pre-created user-owned.  e.g.
-#                  /srv/home/alice/cells/myproject/scribe
-#   AGENT_IMAGE    the jailed qwen-code image (THE "qwen image" — there is no
-#                  separately named one).  Published by images.yml with the
-#                  qwen version leading the tag: pin e.g.
-#                  cloister-agent:0.19.4-sha-<commit>, or track :latest
+#   WORKBENCH_IMAGE  the fat agent workbench image (toolchains + the agent
+#                  CLIs; docker/workbench).  Published by images.yml with
+#                  the qwen version leading the tag: pin e.g.
+#                  cloister-workbench:0.19.4-sha-<commit>, or track :latest.
+#                  There is NO host workspace: the agent works in the
+#                  grange volume the archivist provisions (docs/grange.md).
+#   AGENT_HOME     host dir for the agent's PERSISTENT home: toolchain
+#                  dependency caches (gradle/go/cargo, warmed via the
+#                  airlock).  Per USER, shared across that user's projects;
+#                  pre-create it owned by uid 1000.  e.g.
+#                  /srv/home/alice/.cloister-cache
 #   WORKERS_IMAGE  e.g. cloister-workers:latest — the SLIM toolchain-free
 #                  multi-call worker image (scratch + the static binary);
-#                  every worker except the builder runs it
-#   TOOLCHAIN_IMAGE  the builder's toolchain image for THIS cell's
-#                  ecosystem, e.g. cloister-builder-jvm:latest (JDK 25 +
-#                  Gradle).  One toolchain per cell; docs/toolchains.md
+#                  every worker except the agent runs it
 #   OPENAI_MODEL   (optional) the agency ENGINE CLASS the agent drives
 #                  (default interactive-code); model tags live in the
 #                  agency's routing policy, not in cells
-#   STATE_TOKEN    shared builder<->state secret; per project, e.g. [guid]::NewGuid().ToString("N")
+#   STATE_TOKEN    shared worker<->state secret; per project, e.g. [guid]::NewGuid().ToString("N")
 #   STATUS_PORT    host localhost port for the status pages (unique per project)
 #   TZ             timezone for log timestamps AND the status pages, e.g.
 #                  America/New_York (default UTC); applied to every container
@@ -60,50 +51,29 @@
 #   GITHUB_TOKEN_FILE host path of the bot-account token file the table's
 #                  credentialFile points at (mounted read-only)
 #
-# The agent registers the builder, scribe, scholar, AND librarian MCP servers
-# in /home/node/.qwen/settings.json (persisted in the qwen_home volume), plus a
-# coreTools allowlist that excludes the built-in file mutators AND readers
-# (source writes MUST go through the scribe; source reads MUST go through the
-# librarian — the agent holds no workspace mount at all) and the built-in web
-# tools (web access MUST go through the scholar). Project-agnostic service URLs:
+# The agent registers the archivist and scholar MCP servers in
+# /home/agent/.qwen/settings.json (persisted in the qwen_home volume) and
+# excludes the built-in web tools (web access MUST go through the scholar).
+# The native file tools and shell are the agent's own now — it edits and
+# builds directly in the grange (docs/grange.md M3/M4):
 #   { "mcpServers": {
-#       "builder":   { "httpUrl": "http://builder:9200/mcp",   "timeout": 2400000 },
-#       "scribe":    { "httpUrl": "http://scribe:9300/mcp",    "timeout": 2400000 },
-#       "scholar":   { "httpUrl": "http://scholar:9500/mcp",   "timeout": 2400000 },
-#       "librarian": { "httpUrl": "http://librarian:9400/mcp", "timeout": 2400000 },
-#       "archivist": { "httpUrl": "http://archivist:9600/mcp", "timeout": 2400000 } } }
+#       "archivist": { "httpUrl": "http://archivist:9600/mcp", "timeout": 2400000 },
+#       "scholar":   { "httpUrl": "http://scholar:9500/mcp",   "timeout": 2400000 } } }
 #
 # Least-privilege network map (every edge is a network hop or token-gated API):
-#   agent   ── infernet ────> agency        agent   ── buildnet ─────> builder + scribe + librarian + archivist (MCP)
-#   librarian ─ statenet ───> state (denial audit); ro workspace — the agent's ONLY source view
+#   agent   ── infernet ────> agency        agent   ── archivistnet ─> archivist (MCP)
 #   agent   ── researchnet ─> scholar (MCP)  scholar ── infernet ────> agency (model)
-#   builder ── statenet ───> state (sink)    scribe  ── statenet ─────> state (audit + diffs)
 #   scholar ── scholarstate > state (audit)  scholar ── kagiegress ──> kagi-relay ── egress ─> kagi.com
-#   archivist ─ statenet ───> state (remote-op audit); grange volume, NEVER the host workspace
+#   archivist ─ statenet ───> state (remote + lifecycle audit); grange volume, NEVER a host tree
 #   archivist ─ gitegress ──> github-relay ─ gitforward ─> github-egress ── egress ─> github.com (git, two-hop)
 #   archivist ─ gitegress ──> github-api-relay ── egress ─> api.github.com (PR verbs, dialed by service name)
 #   state   ── statepub ───> status relay    status  ── frontend ────> host publish
 # So: all inference rides through the agency (raw `infer` sits behind it on the
-# infra stack's private modelnet); infer never shares a net with builder/scribe;
-# the agent cannot reach state;
-# the scholar handles untrusted web content and has NO route to builder/scribe/
-# workspace and NO `egress` net — only the kagi-relay touches the internet, pinned
-# to kagi.com. Neither the state service, scribe, nor scholar holds open egress.
-
-# Single-source workspace mount. The builder and scribe hold it rw (build outputs
-# / audited source writes); the librarian holds it :ro and serves ALL source
-# reads (shield-filtered, docs/librarian.md); the agent holds NO workspace mount
-# at all — its cwd is a tmpfs stub, and both halves of source I/O are mediated:
-# writes via the scribe, reads via the librarian.
-x-workspace: &workspace "${WORKSPACE:?set WORKSPACE to the host path of the project repo}:/workspace"
-x-workspace-ro: &workspace-ro "${WORKSPACE}:/workspace:ro"
-
-# Every workspace-touching worker runs as the uid:gid that OWNS the workspace on
-# the host, so its writes land owned by the real user — no root-owned droppings,
-# and the librarian can read a per-user 0700 tree.  The state service is exempt:
-# it touches no workspace and keeps its ledger in a Docker volume (harder to
-# tamper with than a /srv file), so it stays on a fixed service uid.
-x-workspace-user: &wsuser "${WORKSPACE_UID:?set WORKSPACE_UID to the uid owning the workspace, e.g. 1000}:${WORKSPACE_GID:?set WORKSPACE_GID, e.g. 1000}"
+# infra stack's private modelnet); the agent cannot reach state; the scholar
+# handles untrusted web content and has NO route to the agent's workspace and NO
+# `egress` net — only the pinned relays touch the internet.  The operator's host
+# tree appears NOWHERE in this file: the cell's only workspace is the grange
+# volume, cloned from the forge by the archivist and destroyed after the task.
 
 # Single-source timezone: referenced by every container's environment so log
 # timestamps (and the status pages) read in the operator's local zone.
@@ -128,14 +98,19 @@ x-relay: &relay
 
 services:
   agent:
-    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${AGENT_IMAGE:?set AGENT_IMAGE, e.g. cloister-agent:latest}
+    # The workbench (docker/workbench): every toolchain under the agent
+    # CLIs, working directly in the grange.  The ONLY service on a
+    # toolchain-bearing image — the mediators (scribe, librarian,
+    # builder) are retired (docs/grange.md M3/M4); the PR gate is the
+    # boundary, and builds here are untrusted scratch work.
+    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${WORKBENCH_IMAGE:?set WORKBENCH_IMAGE, e.g. cloister-workbench:latest}
     container_name: ${PROJECT:?set PROJECT, the short project id}-agent
     user: "1000:1000"
     restart: unless-stopped
-    # No entrypoint override: the image entrypoint registers the builder MCP
-    # server, then execs this command. `sleep infinity` keeps the container
-    # alive so you can `docker exec ... qwen` into an interactive session.
-    command: ["sleep", "infinity"]
+    # No entrypoint override: the image entrypoint registers the MCP
+    # servers and materializes the stock prompt, then execs the image's
+    # `sleep infinity` — the container idles; the operator starts agents
+    # with `workbench` in an exec shell (tmux sessions survive it).
     environment:
       - *tz
       - OPENAI_BASE_URL=http://agency:11434/v1
@@ -143,160 +118,42 @@ services:
       # The agency engine class the agent's session rides; the routing
       # policy (agency side) picks the node and model tag.
       - OPENAI_MODEL=${OPENAI_MODEL:-interactive-code}
-      # - BUILDER_MCP_URL=http://builder:9200/mcp   # default; override only for a nonstandard builder
     volumes:
-      # Deliberately NO workspace mount: reads go through the librarian
-      # (shield-filtered), writes through the scribe (audited, gated).
-      - qwen_home:/home/node/.qwen       # persistent settings/history, node-owned
-    working_dir: /workspace
+      # THE workspace: the grange ROOT, shared with the archivist that
+      # provisions it.  tree/ (the checkout) appears at provision and
+      # vanishes at dispose; the operator's host tree never enters.
+      # The working_dir stays the ROOT — naming tree/ here would make
+      # docker CREATE it at container start, which the archivist's
+      # disk-derived state machine reads as CORRUPT; `workbench` drops
+      # sessions into tree/ when it exists.
+      - grange:/grange
+      # The agent's persistent HOME: warmed dependency caches
+      # (gradle/go/cargo) — per user, shared across that user's
+      # projects, pre-created uid-1000-owned on /srv.
+      - ${AGENT_HOME:?set AGENT_HOME, the agent's persistent cache home on /srv (pre-create it uid-1000-owned), e.g. /srv/home/alice/.cloister-cache}:/home/agent
+      # qwen settings/history: per PROJECT (a named volume over the
+      # per-user home bind), so cells don't share conversation state.
+      - qwen_home:/home/agent/.qwen
+    working_dir: /grange
     read_only: true
     tmpfs:
-      - /tmp
-      - /workspace:uid=1000,gid=1000,mode=0700   # cwd stub: holds the image-baked
-                                                 # QWEN.md the entrypoint copies in;
-                                                 # never reaches the project
+      - /tmp:size=2g                     # build scratch (gradle/go/cargo temp)
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
-    pids_limit: 512
-    mem_limit: 2g
+    pids_limit: 1024
+    mem_limit: 8g                        # builds run here now (the builder's old budget)
     # Dead DNS upstream: every network below is internal, and on engines with
     # daemon-side DNS forwarding (CVE-2024-29018) name resolution alone
     # exfiltrates from an internal network.  127.0.0.1 black-holes the
-    # embedded resolver's upstream; container names (agency, builder, ...)
+    # embedded resolver's upstream; container names (agency, archivist, ...)
     # are answered authoritatively and never consult it.  compose-lint
     # requires this pin on every all-internal service; only the relays
     # (egress/frontend holders) keep real DNS.
     dns: 127.0.0.1
     networks:
       - infernet                         # reach the agency (shared infra stack)
-      - buildnet                         # reach the builder MCP; NOT infer's peers
+      - archivistnet                     # reach the archivist MCP; NOT infer's peers
       - researchnet                      # reach the scholar MCP (research)
-
-  builder:
-    # The ONLY service on a toolchain image: the builder executes the
-    # manifest's build/test actions, so the compilers live here and
-    # nowhere else (docs/toolchains.md).
-    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${TOOLCHAIN_IMAGE:?set TOOLCHAIN_IMAGE, the cell's builder toolchain image, e.g. cloister-builder-jvm:latest}
-    container_name: ${PROJECT}-builder
-    user: *wsuser
-    restart: unless-stopped
-    # Role links: each worker execs its own name (multi-call binary), so the
-    # entrypoint SAYS what the container is and the binary parses only that
-    # role's flags.  Defaults (addr, workspace) live with the role.
-    entrypoint: ["/usr/local/bin/builder"]
-    environment:
-      - *tz
-      - STATE_URL=http://state:9201
-      - STATE_TOKEN=${STATE_TOKEN:?set STATE_TOKEN, the shared worker-to-state secret}
-      - HOME=/home/build                 # writable cache home on the BUILD_HOME bind below
-      - GRADLE_USER_HOME=/home/build/.gradle
-      # Deployment identifiers the warming refusal interpolates into its
-      # copy-paste airlock command (internal/warming allowlist).  WORKSPACE
-      # is the HOST path — deliberately agent-visible in that refusal, a
-      # convenience-over-disclosure call.
-      - PROJECT=${PROJECT}
-      - WORKSPACE=${WORKSPACE}
-    volumes:
-      - *workspace                       # rw: SAME host dir as the agent; build outputs
-      # The builder's HOME: persistent toolchain caches (go/gradle/npm/...), on a
-      # USER-OWNED /srv bind so an arbitrary-uid builder can write them and they
-      # survive restarts.  Per user, shared across that user's projects.
-      - ${BUILD_HOME:?set BUILD_HOME, the user's persistent build-cache dir on /srv (pre-create it user-owned), e.g. /srv/home/alice/.cloister-cache}:/home/build
-      # NOTE: deliberately NO /state mount — durable logs/audit are the state service's.
-    working_dir: /workspace
-    read_only: true
-    tmpfs:
-      - /tmp:size=2g
-      # tmpfs ownership comes from the mount option, NOT the image chown (a
-      # tmpfs is mounted fresh, root-owned, shadowing the image dir).  The
-      # workspace uid/gid so the non-root builder can write its log spool.
-      - /spool:size=512m,uid=${WORKSPACE_UID},gid=${WORKSPACE_GID},mode=0700
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    pids_limit: 1024
-    mem_limit: 8g
-    healthcheck:
-      test: ["CMD", "/usr/local/bin/builder", "-healthcheck"]
-      interval: 30s
-    dns: 127.0.0.1                       # dead upstream — see the agent's dns note
-    networks:
-      - buildnet                         # reachable by agent (inbound MCP)
-      - statenet                         # reach state (outbound sink); no egress
-
-  scribe:
-    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${WORKERS_IMAGE:?set WORKERS_IMAGE, the slim worker image, e.g. cloister-workers:latest}
-    container_name: ${PROJECT}-scribe
-    user: *wsuser
-    restart: unless-stopped
-    # The scribe role: the sole audited writer of /workspace, serving
-    # confined write ops as MCP tools on :9300 and auditing to the state service.
-    # -scribe-approvals: build-logic / binary / non-UTF-8 writes are held
-    # PENDING human approval on the status page instead of refused.
-    entrypoint: ["/usr/local/bin/scribe"]
-    command: ["-scribe-approvals"]
-    environment:
-      - *tz
-      - STATE_URL=http://state:9201
-      - STATE_TOKEN=${STATE_TOKEN}
-    volumes:
-      - *workspace                       # rw: the scribe is the SOLE audited writer of source
-      # Durable approval staging, on a USER-OWNED /srv bind (not a named volume)
-      # so the arbitrary-uid scribe can write it; per project.
-      - ${SCRIBE_STATE:?set SCRIBE_STATE, the scribe's durable approval-staging dir on /srv (pre-create it user-owned, per project), e.g. /srv/home/alice/cells/myproject/scribe}:/scribe-state
-      # No /state mount (audits go over statenet); no /spool (diffs upload directly).
-    working_dir: /workspace
-    read_only: true
-    tmpfs:
-      - /tmp                             # atomic writes land in /workspace; /tmp is runtime scratch
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    pids_limit: 512
-    mem_limit: 1g
-    healthcheck:
-      test: ["CMD", "/usr/local/bin/scribe", "-healthcheck"]
-      interval: 30s
-    dns: 127.0.0.1                       # dead upstream — see the agent's dns note
-    networks:
-      - buildnet                         # reachable by the agent (inbound MCP)
-      - statenet                         # reach state (audit + diff store); internal -> no egress
-
-  librarian:
-    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${WORKERS_IMAGE}
-    container_name: ${PROJECT}-librarian
-    user: *wsuser
-    restart: unless-stopped
-    # The librarian role: the read side of the cell — mechanical read
-    # tools AND inference-backed comprehension tools on :9400, served from an
-    # in-memory, shield-filtered model of the workspace (docs/librarian.md).
-    # Comprehension pushes only shield-cleared content to the agency over infernet;
-    # with OPENAI_* unset the librarian still boots mechanical-only.  Read
-    # DENIALS (only) are audited to state.
-    entrypoint: ["/usr/local/bin/librarian"]
-    environment:
-      - *tz
-      - STATE_URL=http://state:9201
-      - STATE_TOKEN=${STATE_TOKEN}
-      # No model name: the librarian asks the agency for its engine
-      # classes (think-fast / deep-think) by name.
-      - OPENAI_BASE_URL=http://agency:11434/v1
-    volumes:
-      - *workspace-ro                    # ro: the sole workspace view on the agent's side of the cell
-    working_dir: /workspace
-    read_only: true
-    tmpfs:
-      - /tmp
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    pids_limit: 256
-    mem_limit: 1g                        # in-memory model budget (256 MiB default) + headroom
-    healthcheck:
-      test: ["CMD", "/usr/local/bin/librarian", "-healthcheck"]
-      interval: 30s
-    dns: 127.0.0.1                       # dead upstream — see the agent's dns note
-    networks:
-      - buildnet                         # reachable by the agent (inbound MCP)
-      - statenet                         # denial audits to state; internal -> no egress
-      - infernet                         # reach the agency for the comprehension ops (shared infra stack)
 
   state:
     image: ${REGISTRY:-ghcr.io/jeffbstewart}/${WORKERS_IMAGE}
@@ -325,7 +182,7 @@ services:
       interval: 30s
     dns: 127.0.0.1                       # dead upstream — see the agent's dns note
     networks:
-      - statenet                         # reachable by builder/scribe; internal -> no egress
+      - statenet                         # reachable by the archivist; internal -> no egress
       - scholarstate                     # reachable by the scholar (audit/approvals/transcripts)
       - statepub                         # reachable by the status relay only
 
@@ -360,7 +217,8 @@ services:
     # tool research(query) on :9500 and internally drives a model (over the
     # agency's OpenAI API) with a FIXED three-tool menu (web_search / extract_url_as_markdown
     # / respond) whose only egress is Kagi via the kagi-relay. It handles UNTRUSTED
-    # web content, so it holds no /workspace mount, no route to builder/scribe, and
+    # web content, so it holds no workspace of any kind, no route to the
+    # agent or the archivist, and
     # no `egress` network — its sole internet path is the relay. On boot it
     # TCP-probes public IPs and refuses to start if any connect (fail-closed
     # self-check).
@@ -397,15 +255,15 @@ services:
       - researchnet                      # reachable by the agent ONLY (inbound MCP)
       - infernet                         # reach the model (via the agency); internal -> no internet
       - scholarstate                     # reach state (audit + approvals + transcripts).
-                                         # NOT statenet: keeps the scholar off builder/scribe
+                                         # NOT statenet: keeps the scholar off the archivist's wire
       - kagiegress                       # to the kagi-relay ONLY (internal; no internet)
 
   archivist:
     image: ${REGISTRY:-ghcr.io/jeffbstewart}/${WORKERS_IMAGE}
     container_name: ${PROJECT}-archivist
-    # Fixed image uid, not *wsuser: the workspace here is the grange
-    # named volume — image-initialized and owned by the image's worker
-    # uid — never the operator's host tree.
+    # Fixed image uid: the workspace here is the grange named volume —
+    # image-initialized and owned by the image's worker uid (1000, the
+    # same uid the agent runs as) — never the operator's host tree.
     user: "1000:1000"
     restart: unless-stopped
     entrypoint: ["/usr/local/bin/archivist"]
@@ -414,7 +272,7 @@ services:
       - STATE_URL=http://state:9201
       - STATE_TOKEN=${STATE_TOKEN}
     volumes:
-      # A dedicated grange volume, NEVER ${WORKSPACE} — the operator's host
+      # A dedicated grange volume, NEVER a host bind — the operator's host
       # tree does not enter the archivist (docs/archivist.md).  The volume
       # is the grange ROOT: the archivist manages tree/ (the exported
       # checkout) and staging/ (the pre-promote clone) under it, so the
@@ -435,7 +293,7 @@ services:
       interval: 30s
     dns: 127.0.0.1                       # dead upstream — the git relays are its only routes out
     networks:
-      - buildnet                         # reachable by the agent (inbound MCP)
+      - archivistnet                     # reachable by the agent (inbound MCP)
       - statenet                         # remote-op audit to state
       - gitegress                        # to the git relays ONLY (internal)
 
@@ -491,12 +349,12 @@ networks:
   infernet:
     external: true                       # shared infra stack's inference net
     name: infernet
-  buildnet:
-    internal: true                       # agent <-> builder
+  archivistnet:
+    internal: true                       # agent <-> archivist (MCP)
   statenet:
-    internal: true                       # builder/scribe <-> state
+    internal: true                       # archivist <-> state
   scholarstate:
-    internal: true                       # scholar <-> state ONLY (not builder/scribe)
+    internal: true                       # scholar <-> state ONLY (not the archivist's wire)
   statepub:
     internal: true                       # state <-> relay
   researchnet:
@@ -512,11 +370,13 @@ networks:
 
 volumes:
   qwen_home:
-  # The builder's caches (BUILD_HOME) and the scribe's staging (SCRIBE_STATE) are
-  # now USER-OWNED /srv binds, not named volumes — an arbitrary-uid worker can't
-  # write a root-initialized named volume.  Only the fixed-uid state service and
-  # the agent/scholar keep named volumes.
+  # The agent's dependency caches (AGENT_HOME) are a USER-OWNED /srv
+  # bind, not a named volume — per user, shared across that user's
+  # projects.  The fixed-uid state service and the agent/scholar keep
+  # named volumes.
   state:
+    # The volume NAME keeps its historical "builder_state" — renaming a
+    # deployed volume would orphan the cell's durable ledger.
     name: ${PROJECT}_builder_state
   scholar_burn:
     name: ${PROJECT}_scholar_burn

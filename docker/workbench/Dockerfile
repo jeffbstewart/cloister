@@ -150,10 +150,15 @@ RUN set -eux; \
 # refreshed each start so an image upgrade updates the prompt.
 COPY AGENTS.md /usr/local/share/cloister/AGENTS.md
 
+# The MCP registration: archivist (version control + the PR flow) and
+# scholar (grounded research) merged into qwen's settings at every
+# start — and the retired mediators' stale entries scrubbed.  Runs from
+# the entrypoint because the qwen_home volume shadows any baked file.
+COPY qwen-mcp-init.mjs /usr/local/bin/qwen-mcp-init.mjs
+
 # The identity-free non-root user, uid 1000 to match the image-owned
-# grange volume.  Remaining cell wiring — the grange mount, the working
-# dir, the MCP registrations for archivist/scholar — lives in compose
-# and lands with the cutover; this image stays pure capability.
+# grange volume.  The grange mount itself lives in compose
+# (docker/ai-workers.yaml); this image stays pure capability.
 RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin agent \
     && mkdir -p /home/agent/.qwen \
     && chown -R 1000:1000 /home/agent
@@ -197,7 +202,12 @@ case "$choice" in
   2|shell|sh) cmd=bash ;;
   *) echo "workbench: unknown choice \"$choice\"" >&2; exit 1 ;;
 esac
-exec tmux new-session -s "$SESSION" -n main "$cmd"
+# Sessions open in the checkout when one is provisioned; the grange ROOT
+# otherwise.  Never mkdir tree/ — an empty tree reads as CORRUPT to the
+# archivist's disk-derived state machine.
+dir=/grange
+[ -d /grange/tree ] && dir=/grange/tree
+exec tmux new-session -s "$SESSION" -n main -c "$dir" "$cmd"
 EOF
 RUN chmod 0755 /usr/local/bin/workbench
 
@@ -235,7 +245,7 @@ WORKDIR /home/agent
 # Inline exec-form entrypoint (no shell script -> no CRLF-shebang hazard
 # from a Windows checkout), best-effort like the agent image's: a copy
 # failure must not stop the CLI from starting.
-ENTRYPOINT ["/bin/sh", "-c", "mkdir -p \"$HOME/.qwen\" 2>/dev/null || true; cp /usr/local/share/cloister/AGENTS.md \"$HOME/.qwen/QWEN.md\" 2>/dev/null || true; exec \"$@\"", "sh"]
+ENTRYPOINT ["/bin/sh", "-c", "mkdir -p \"$HOME/.qwen\" 2>/dev/null || true; cp /usr/local/share/cloister/AGENTS.md \"$HOME/.qwen/QWEN.md\" 2>/dev/null || true; node /usr/local/bin/qwen-mcp-init.mjs || true; exec \"$@\"", "sh"]
 # The container idles; agents start when the operator runs `workbench`
 # in an exec shell ("pick your agent"), living in a tmux session that
 # outlives the shell that started it.

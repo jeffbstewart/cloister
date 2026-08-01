@@ -22,15 +22,10 @@ import (
 )
 
 // TestCommittedCellStackIsContained runs the lint against the real repo file,
-// so a commit that breaks the scholar's containment fails the test suite.  It
-// skips until the deployment migration lands docker/ai-workers.yaml, then
-// guards it forever after.
+// so a commit that breaks the cell's containment fails the test suite.
 func TestCommittedCellStackIsContained(t *testing.T) {
 	path := filepath.Join("..", "..", "docker", "ai-workers.yaml")
 	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		t.Skipf("%s not yet migrated (arrives with the deployment PR)", path)
-	}
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
@@ -39,13 +34,13 @@ func TestCommittedCellStackIsContained(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(v) != 0 {
-		t.Errorf("committed ai-workers.yaml violates scholar containment:\n  - %s",
+		t.Errorf("committed ai-workers.yaml violates cell containment:\n  - %s",
 			strings.Join(v, "\n  - "))
 	}
 }
 
 func TestCatchesViolations(t *testing.T) {
-	base := func(scholarNets, scholarVols, relayCmd, agentVols, librarianYaml, extra string) string {
+	base := func(scholarNets, scholarVols, relayCmd, agentYaml, extra string) string {
 		return `
 networks:
   researchnet: { internal: true }
@@ -54,7 +49,8 @@ networks:
   gitegress: { internal: true }
   gitforward: { internal: true }
   statenet: { internal: true }
-  buildnet: { internal: true }
+  archivistnet: { internal: true }
+  infernet: { external: true }
   egress: {}
 services:
   scholar:
@@ -71,7 +67,7 @@ services:
     image: ${REGISTRY:-x}/${WORKERS_IMAGE}
     entrypoint: ["/usr/local/bin/archivist"]
     dns: "127.0.0.1"
-    networks: [buildnet, statenet, gitegress]
+    networks: [archivistnet, statenet, gitegress]
     volumes: ["grange:/grange"]
   github-relay:
     command: ["TCP-LISTEN:443,fork,reuseaddr", "TCP:github-egress:443"]
@@ -89,33 +85,29 @@ services:
     networks:
       gitegress: {}
       egress: {}
-  agent:
-    dns: "127.0.0.1"
-    networks: [buildnet]
-    volumes: ` + agentVols + `
-` + librarianYaml + extra
+` + agentYaml + extra
 	}
 	clean := `[researchnet, scholarstate, kagiegress]`
 	noVols := `[]`
-	agentClean := `["qwen_home:/home/node/.qwen"]`
 	kagiCmd := `["TCP-LISTEN:8443,fork,reuseaddr", "TCP:kagi.com:443"]`
-	librarianClean := `  librarian:
+	agentClean := `  agent:
     user: "1000:1000"
-    image: ${REGISTRY:-x}/${WORKERS_IMAGE}
-    entrypoint: ["/usr/local/bin/librarian"]
+    image: ${REGISTRY:-x}/${WORKBENCH_IMAGE}
     dns: "127.0.0.1"
-    networks: [buildnet, statenet]
-    volumes: ["/host:/workspace:ro"]
+    networks: [infernet, archivistnet, researchnet]
+    volumes: ["grange:/grange", "qwen_home:/home/agent/.qwen"]
 `
 	cleanCompose := func() string {
-		return base(clean, noVols, kagiCmd, agentClean, librarianClean, "")
+		return base(clean, noVols, kagiCmd, agentClean, "")
 	}
 
 	cases := map[string]string{
-		"scholar on egress":        base(`[researchnet, kagiegress, egress]`, noVols, kagiCmd, agentClean, librarianClean, ""),
-		"scholar on statenet":      base(`[researchnet, statenet, kagiegress]`, noVols, kagiCmd, agentClean, librarianClean, ""),
-		"scholar mounts workspace": base(clean, `["/host:/workspace:ro"]`, kagiCmd, agentClean, librarianClean, ""),
-		"relay not pinned to kagi": base(clean, noVols, `["TCP-LISTEN:8443", "TCP:evil.example:443"]`, agentClean, librarianClean, ""),
+		"scholar on egress":       base(`[researchnet, kagiegress, egress]`, noVols, kagiCmd, agentClean, ""),
+		"scholar on statenet":     base(`[researchnet, statenet, kagiegress]`, noVols, kagiCmd, agentClean, ""),
+		"scholar on archivistnet": base(`[researchnet, archivistnet, kagiegress]`, noVols, kagiCmd, agentClean, ""),
+		"scholar mounts the grange": strings.Replace(cleanCompose(),
+			"    volumes: []", `    volumes: ["grange:/grange:ro"]`, 1),
+		"relay not pinned to kagi": base(clean, noVols, `["TCP-LISTEN:8443", "TCP:evil.example:443"]`, agentClean, ""),
 		"scholar net not internal": `
 networks:
   researchnet: { internal: true }
@@ -125,58 +117,70 @@ networks:
 services:
   scholar: { networks: [researchnet, scholarstate, kagiegress] }
   kagi-relay: { command: ["TCP:kagi.com:443"], networks: [kagiegress, egress] }`,
-		"second egress holder": base(clean, noVols, kagiCmd, agentClean, librarianClean, `  sneaky:
+		"second egress holder": base(clean, noVols, kagiCmd, agentClean, `  sneaky:
     networks: [egress]`),
-		// The read-path invariants (docs/librarian.md).
-		"no librarian": base(clean, noVols, kagiCmd, agentClean, "", ""),
-		"librarian workspace not ro": base(clean, noVols, kagiCmd, agentClean, `  librarian:
-    networks: [buildnet, statenet]
-    volumes: ["/host:/workspace"]
-`, ""),
-		"librarian holds egress-capable net": base(clean, noVols, kagiCmd, agentClean, `  librarian:
-    networks: [buildnet, statenet, frontend]
-    volumes: ["/host:/workspace:ro"]
-`, ""),
-		"librarian runs as root": base(clean, noVols, kagiCmd, agentClean, `  librarian:
-    user: "0:0"
-    networks: [buildnet, statenet]
-    volumes: ["/host:/workspace:ro"]
-`, ""),
-		"agent mounts workspace": base(clean, noVols, kagiCmd, `["/host:/workspace:ro"]`, librarianClean, ""),
-		// The multi-call cutover: a worker must exec its own role link.
-		"librarian runs another role's link": base(clean, noVols, kagiCmd, agentClean, `  librarian:
-    user: "1000:1000"
-    entrypoint: ["/usr/local/bin/scribe"]
-    networks: [buildnet, statenet]
-    volumes: ["/host:/workspace:ro"]
-`, ""),
-		"scribe missing its role entrypoint": base(clean, noVols, kagiCmd, agentClean, librarianClean, `  scribe:
+		// The grange cutover: the retired mediators must not ride back in,
+		// and the host tree appears nowhere.
+		"scribe rides back in": base(clean, noVols, kagiCmd, agentClean, `  scribe:
     user: "1000:1000"
     image: ${REGISTRY:-x}/${WORKERS_IMAGE}
-    networks: [buildnet, statenet]
+    networks: [statenet]
 `),
-		// The image split: the builder is the only worker on a toolchain
-		// image, and no other worker may share one.
-		"builder on the workers image": base(clean, noVols, kagiCmd, agentClean, librarianClean, `  builder:
+		"librarian rides back in": base(clean, noVols, kagiCmd, agentClean, `  librarian:
     user: "1000:1000"
     image: ${REGISTRY:-x}/${WORKERS_IMAGE}
-    entrypoint: ["/usr/local/bin/builder"]
-    networks: [buildnet, statenet]
+    networks: [statenet]
 `),
-		"scholar on the toolchain image": strings.Replace(cleanCompose(),
+		"builder rides back in": base(clean, noVols, kagiCmd, agentClean, `  builder:
+    user: "1000:1000"
+    image: ${REGISTRY:-x}/${TOOLCHAIN_IMAGE}
+    networks: [statenet]
+`),
+		"agent mounts a host workspace": strings.Replace(cleanCompose(),
+			`volumes: ["grange:/grange", "qwen_home:/home/agent/.qwen"]`,
+			`volumes: ["grange:/grange", "${WORKSPACE}:/workspace"]`, 1),
+		"outsider mounts a host workspace": base(clean, noVols, kagiCmd, agentClean, `  sneaky:
+    dns: "127.0.0.1"
+    networks: [statenet]
+    volumes: ["/host/tree:/workspace"]
+`),
+		// The agent's grange: exactly one mount, the dedicated volume, rw.
+		"agent missing the grange": strings.Replace(cleanCompose(),
+			`volumes: ["grange:/grange", "qwen_home:/home/agent/.qwen"]`,
+			`volumes: ["qwen_home:/home/agent/.qwen"]`, 1),
+		"agent grange read-only": strings.Replace(cleanCompose(),
+			`"grange:/grange"`, `"grange:/grange:ro"`, 1),
+		"agent grange not the dedicated volume": strings.Replace(cleanCompose(),
+			`"grange:/grange"`, `"/host/tree:/grange"`, 1),
+		"agent networks wrong": strings.Replace(cleanCompose(),
+			`networks: [infernet, archivistnet, researchnet]`,
+			`networks: [infernet, archivistnet, researchnet, statenet]`, 1),
+		"agent runs as root": strings.Replace(cleanCompose(),
+			"  agent:\n    user: \"1000:1000\"", "  agent:\n    user: \"0:0\"", 1),
+		// The image split: only the agent carries a toolchain (the
+		// workbench); no worker may share one.
+		"agent on the workers image": strings.Replace(cleanCompose(),
+			"agent:\n    user: \"1000:1000\"\n    image: ${REGISTRY:-x}/${WORKBENCH_IMAGE}",
+			"agent:\n    user: \"1000:1000\"\n    image: ${REGISTRY:-x}/${WORKERS_IMAGE}", 1),
+		"scholar on the workbench image": strings.Replace(cleanCompose(),
 			"scholar:\n    image: ${REGISTRY:-x}/${WORKERS_IMAGE}",
-			"scholar:\n    image: ${REGISTRY:-x}/${TOOLCHAIN_IMAGE}", 1),
+			"scholar:\n    image: ${REGISTRY:-x}/${WORKBENCH_IMAGE}", 1),
+		// The multi-call cutover: a worker must exec its own role link.
+		"archivist runs another role's link": strings.Replace(cleanCompose(),
+			`entrypoint: ["/usr/local/bin/archivist"]`,
+			`entrypoint: ["/usr/local/bin/scholar"]`, 1),
 		// The agency's status volume: in the cell, only the state service
 		// reads it, and only read-only.
-		"agent mounts agency_status": base(clean, noVols, kagiCmd, `["agency_status:/agency-status:ro"]`, librarianClean, ""),
-		"state agency_status mount not ro": base(clean, noVols, kagiCmd, agentClean, librarianClean, `  state:
+		"agent mounts agency_status": strings.Replace(cleanCompose(),
+			`"qwen_home:/home/agent/.qwen"`, `"agency_status:/agency-status:ro"`, 1),
+		"state agency_status mount not ro": base(clean, noVols, kagiCmd, agentClean, `  state:
     user: "1000:1000"
     image: ${REGISTRY:-x}/${WORKERS_IMAGE}
     entrypoint: ["/usr/local/bin/state-service"]
     networks: [statenet]
     volumes: ["state:/state", "agency_status:/agency-status"]
 `),
-		"state missing agency_status mount": base(clean, noVols, kagiCmd, agentClean, librarianClean, `  state:
+		"state missing agency_status mount": base(clean, noVols, kagiCmd, agentClean, `  state:
     user: "1000:1000"
     image: ${REGISTRY:-x}/${WORKERS_IMAGE}
     entrypoint: ["/usr/local/bin/state-service"]
@@ -185,26 +189,24 @@ services:
 `),
 		// The DNS discipline: an all-internal service must pin the dead
 		// upstream, and pin it to exactly the loopback black hole.
-		"jailed worker missing the dns pin": base(clean, noVols, kagiCmd, agentClean, `  librarian:
-    user: "1000:1000"
-    image: ${REGISTRY:-x}/${WORKERS_IMAGE}
-    entrypoint: ["/usr/local/bin/librarian"]
-    networks: [buildnet, statenet]
-    volumes: ["/host:/workspace:ro"]
-`, ""),
+		"jailed worker missing the dns pin": strings.Replace(cleanCompose(),
+			"  archivist:\n    user: \"1000:1000\"\n    image: ${REGISTRY:-x}/${WORKERS_IMAGE}\n    entrypoint: [\"/usr/local/bin/archivist\"]\n    dns: \"127.0.0.1\"",
+			"  archivist:\n    user: \"1000:1000\"\n    image: ${REGISTRY:-x}/${WORKERS_IMAGE}\n    entrypoint: [\"/usr/local/bin/archivist\"]", 1),
 		"jailed worker dns not the dead loopback": strings.Replace(cleanCompose(),
 			`dns: "127.0.0.1"`, `dns: "8.8.8.8"`, 1),
 		// The git jail (docs/archivist.md): grange volume only, exact
 		// network membership, literal relay pins, hostname aliases.
 		"archivist mounts the host workspace": strings.Replace(cleanCompose(),
-			`volumes: ["grange:/grange"]`, `volumes: ["${WORKSPACE}:/workspace"]`, 1),
+			`volumes: ["grange:/grange"]
+  github-relay:`, `volumes: ["${WORKSPACE}:/workspace"]
+  github-relay:`, 1),
 		"archivist holds egress": strings.Replace(cleanCompose(),
-			`networks: [buildnet, statenet, gitegress]`, `networks: [buildnet, statenet, gitegress, egress]`, 1),
+			`networks: [archivistnet, statenet, gitegress]`, `networks: [archivistnet, statenet, gitegress, egress]`, 1),
 		"git relay destination not literal": strings.Replace(cleanCompose(),
 			`"TCP:github.com:443"`, `"TCP:${GH_HOST}:443"`, 1),
 		"git relay missing the hostname alias": strings.Replace(cleanCompose(),
 			`gitegress: { aliases: [github.com] }`, `gitegress: {}`, 1),
-		"outsider on gitegress": base(clean, noVols, kagiCmd, agentClean, librarianClean, `  sneaky:
+		"outsider on gitegress": base(clean, noVols, kagiCmd, agentClean, `  sneaky:
     dns: "127.0.0.1"
     networks: [gitegress]
 `),
@@ -226,7 +228,7 @@ services:
 	if v, err := Check([]byte(cleanCompose())); err != nil || len(v) != 0 {
 		t.Errorf("clean compose flagged: %v (err %v)", v, err)
 	}
-	withState := base(clean, noVols, kagiCmd, agentClean, librarianClean, `  state:
+	withState := base(clean, noVols, kagiCmd, agentClean, `  state:
     user: "1000:1000"
     image: ${REGISTRY:-x}/${WORKERS_IMAGE}
     entrypoint: ["/usr/local/bin/state-service"]
