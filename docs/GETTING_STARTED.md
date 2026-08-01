@@ -1,4 +1,14 @@
-# Getting started — Portainer, straight from this repo
+# Getting started
+
+> **STALE — being refreshed for the grange era** (2026-07-31).  This
+> walkthrough describes the retired mediator topology (builder/scribe/
+> librarian, host workspace mounts, `WORKSPACE`/`BUILD_HOME`/
+> `SCRIBE_STATE` variables).  Until the refresh lands, the current
+> deploy reference is the variable header of
+> [docker/ai-workers.yaml](../docker/ai-workers.yaml) plus
+> [grange.md](grange.md)'s "Locking down a project for grange service"
+> runbook; the Portainer mechanics (git-backed stacks, model staging)
+> below remain accurate. — Portainer, straight from this repo
 
 How to stand up a working Cloister installation with **git-backed Portainer
 stacks**: Portainer pulls the compose files from this repository, everything

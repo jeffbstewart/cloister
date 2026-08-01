@@ -21,19 +21,17 @@ flowchart LR
   subgraph host["Host (localhost only)"]
     op["operator browser<br/>127.0.0.1:STATUS_PORT"]
     dbg["host tools<br/>127.0.0.1:11434"]
-    ws[("project workspace<br/>host directory")]
+    caches[("dependency caches<br/>host directory, per user")]
     models[("model weights<br/>host directory")]
   end
 
   subgraph cell["Project cell (one per project)"]
-    agent["agent<br/>cloister-agent"]
-    builder["builder<br/>cloister-builder-jvm :9200"]
-    scribe["scribe<br/>cloister-workers :9300"]
+    agent["agent<br/>cloister-workbench"]
+    grange[("grange volume<br/>tree/ + staging/")]
     scholar["scholar<br/>cloister-workers :9500"]
     state["state<br/>cloister-workers :9201"]
     status["status<br/>alpine/socat"]
     krelay["kagi-relay<br/>alpine/socat :8443"]
-    librarian["librarian<br/>cloister-workers :9400"]
     archivist["archivist<br/>cloister-workers :9600"]
     ghrelay["github-relay<br/>alpine/socat :443"]
     ghegress["github-egress<br/>alpine/socat"]
@@ -52,14 +50,10 @@ flowchart LR
   gh["github.com / api.github.com<br/>git + PR APIs"]
   mac["deep-think node<br/>jailed macOS ollama, LAN"]
 
-  agent -- "buildnet · MCP" --> builder
-  agent -- "buildnet · MCP" --> scribe
   agent -- "researchnet · MCP" --> scholar
   agent -- "infernet · OpenAI API" --> agency
   scholar -- "infernet · model loop" --> agency
   agency -- "modelnet · pass-through" --> infer
-  builder -- "statenet · logs + audit" --> state
-  scribe -- "statenet · audit + diffs" --> state
   scholar -- "scholarstate · audit + approvals" --> state
   scholar -- "kagiegress" --> krelay
   krelay -- "egress · TLS passthrough" --> kagi
@@ -68,14 +62,12 @@ flowchart LR
   dbg -- "frontend" --> iproxy
   iproxy -- "infernet" --> agency
 
-  ws -. "ro" .-> librarian
-  ws -. "rw" .-> builder
-  ws -. "rw" .-> scribe
-  agent -- "buildnet · MCP" --> librarian
-  librarian -- "statenet · denial audits" --> state
+  grange -. "rw" .-> agent
+  grange -. "rw" .-> archivist
+  caches -. "rw (cache content only)" .-> agent
   models -. "ro" .-> infer
 
-  agent -- "buildnet · MCP" --> archivist
+  agent -- "archivistnet · MCP" --> archivist
   archivist -- "statenet · remote + lifecycle audit" --> state
   archivist -- "gitegress · git dials the github.com alias" --> ghrelay
   archivist -- "gitegress · PR verbs, by service name" --> ghapi
@@ -83,9 +75,7 @@ flowchart LR
   ghegress -- "egress · TLS passthrough" --> gh
   ghapi -- "egress · TLS passthrough" --> gh
 
-  librarian -. "infernet (planned: comprehension ops)" .-> agency
-  corrector -. "buildnet · reads (planned)" .-> librarian
-  corrector -. "buildnet · diffs + comments (planned)" .-> archivist
+  corrector -. "diffs + file_at (planned)" .-> archivist
   corrector -. "infernet (planned)" .-> agency
   corrector -. "statenet (planned)" .-> state
   agency -- "infernet_big" --> dtrelay
@@ -97,20 +87,20 @@ flowchart LR
 
 Solid arrows are network edges (labeled with the compose network that
 carries them); dotted arrows are filesystem mounts or planned components.
-The agent holds **no workspace mount at all**: reads go through the
-librarian (shield-filtered per [librarian.md](librarian.md)), writes
-through the scribe, and the agent's working directory is a tmpfs stub.
+**The operator's host tree appears nowhere**: the cell's only workspace
+is the **grange** ([grange.md](grange.md)) — a per-task volume the
+archivist clones from the forge at `provision` and empties at `dispose`.
+The agent works in it directly with native tools and local git; the
+boundary that keeps `main` clean is the forge's human-reviewed PR gate,
+not per-write mediation.
 
 ## The cell, container by container
 
 | Container | Worker role | Image | Listens | Mounts | Networks |
 |---|---|---|---|---|---|
-| `agent` | the coding agent: interactive qwen-code CLI (this IS the qwen image) | `cloister-agent:<qwen>-<ver>` | — (nothing inbound) | NO workspace (tmpfs cwd stub); `qwen_home` vol rw | infernet, buildnet, researchnet |
-| `builder` | `builder` role — executes manifest actions (build/test), streams logs | `cloister-builder-jvm:<jdk>-<ver>` (the cell's ONE toolchain image, [toolchains.md](toolchains.md)) | `:9200` MCP | workspace **rw**; `gradle` vol rw | buildnet, statenet |
-| `scribe` | `scribe` role — the sole audited writer of workspace source | `cloister-workers:<ver>` | `:9300` MCP | workspace **rw**; `scribe_state` vol rw | buildnet, statenet |
-| `librarian` | `librarian` role — the read side: shield-filtered mechanical read tools from an in-memory model; denials audited | `cloister-workers:<ver>` | `:9400` MCP | workspace **ro** | buildnet, statenet |
+| `agent` | the coding agent: the qwen-code CLI over every served toolchain (Go, Rust, JVM), driven through tmux sessions (`workbench` in an exec shell) | `cloister-workbench:<qwen>-<ver>` ([docker/workbench](../docker/workbench)) | — (nothing inbound) | `grange` vol **rw** (the workspace); `agent_home` vol rw (per-project HOME); `AGENT_CACHES` bind rw at `~/caches` (per-user warmed deps); `qwen_home` vol rw | infernet, archivistnet, researchnet |
 | `scholar` | `scholar` role — quarantined web research, one `research` tool | `cloister-workers:<ver>` | `:9500` MCP | policy yaml **ro**; `scholar_burn` vol rw | researchnet, infernet, scholarstate, kagiegress |
-| `archivist` | `archivist` role — the cell's sole VCS authority: grange lifecycle (`provision`/`dispose`), the local checkpoint verbs, audited-ungated PR authorship as the bot ([archivist.md](archivist.md)) | `cloister-workers:<ver>` | `:9600` MCP | `grange` vol rw (the grange ROOT — NEVER the host workspace); endpoint table + bot token **ro** | buildnet, statenet, gitegress |
+| `archivist` | `archivist` role — the cell's sole VCS authority: grange lifecycle (`provision`/`dispose`), the local checkpoint verbs, audited-ungated PR authorship as the bot ([archivist.md](archivist.md)) | `cloister-workers:<ver>` | `:9600` MCP | `grange` vol rw (the grange ROOT — NEVER a host tree); endpoint table + bot token **ro** | archivistnet, statenet, gitegress |
 | `state` | `state-service` role — sole owner of durable logs/audit/status | `cloister-workers:<ver>` | `:9201` token-gated API + pages | `state` vol rw | statenet, scholarstate, statepub |
 | `status` | blind relay publishing the status pages to the host | `alpine/socat` | `127.0.0.1:STATUS_PORT` | — | statepub, frontend |
 | `kagi-relay` | blind egress pipe hard-wired to `kagi.com:443` | `alpine/socat` | `:8443` (cell-internal) | — | kagiegress, egress |
@@ -119,18 +109,20 @@ through the scribe, and the agent's working directory is a tmpfs stub.
 | `github-api-relay` | blind pipe to `api.github.com` for the PR verbs; dialed by service name with SNI verifying the real host, so one relay suffices | `alpine/socat` | `:443` (cell-internal) | — | gitegress, egress |
 
 All the cell's Go workers — and the infra stack's agency below — are the
-same multi-call binary (`cloister-worker`): each image bakes role links,
-each compose service execs its own link, and the program name selects the
-role and its flag set (a flag from the wrong role is a startup error).
-Under the generic name — including the images' `agent-builder` compat
-link — a leading `-worker-mode <role>` selects instead.
+same multi-call binary (`cloister-worker`): each image bakes role links
+(scholar, archivist, state-service, agency), each compose service execs
+its own link, and the program name selects the role and its flag set (a
+flag from the wrong role is a startup error).  Under the generic name —
+including the images' `agent-builder` compat link — a leading
+`-worker-mode <role>` selects instead.  The mediator roles (builder,
+scribe, librarian) retired with the grange cutover
+([grange.md](grange.md) M3/M4) and their names now fail as unknown.
 
-Images split along the capability line ([toolchains.md](toolchains.md)):
-`cloister-workers` is slim and toolchain-free (scratch + the static
-binary + CA roots), and only the **builder** runs a per-ecosystem
-toolchain image (`cloister-builder-jvm` today: JDK 25 + Gradle-wrapper
-support) — the compilers live where the manifest actions execute and
-nowhere else.
+Images split along the capability line: `cloister-workers` is slim and
+toolchain-free (alpine + the static binary + git for the archivist's
+hardened runner + CA roots), and only the **agent** runs the
+toolchain-bearing workbench image — the compilers live where the agent
+works and nowhere else.
 
 ## The shared inference stack
 
@@ -147,10 +139,10 @@ nowhere else.
 |---|---|---|
 | `infernet` | consumer → agency model API traffic (internal: no internet; shared across stacks by name) | agency, agency-proxy, agent, scholar |
 | `modelnet` | agency → infer (internal; the model server's ONLY edge) | agency, infer |
-| `buildnet` | agent → builder/scribe/librarian/archivist MCP | agent, builder, scribe, librarian, archivist |
+| `archivistnet` | agent → archivist MCP | agent, archivist |
 | `researchnet` | agent → scholar MCP | agent, scholar |
-| `statenet` | builder/scribe/librarian/archivist → state (token-gated) | builder, scribe, librarian, archivist, state |
-| `scholarstate` | scholar → state, kept off `statenet` so the scholar never shares a wire with builder/scribe | scholar, state |
+| `statenet` | archivist → state (token-gated) | archivist, state |
+| `scholarstate` | scholar → state, kept off `statenet` so the scholar never shares the archivist's wire | scholar, state |
 | `statepub` | state → status relay | state, status |
 | `kagiegress` | scholar → kagi-relay (internal; no internet) | scholar, kagi-relay |
 | `gitegress` | archivist → the git relays (internal; no internet).  Carries the `github.com` alias on the front relay | archivist, github-relay, github-api-relay |
@@ -161,10 +153,13 @@ nowhere else.
 | `frontend` | host publishing | status, agency-proxy |
 
 Every network except `egress`, `lanegress`, and `frontend` is
-`internal: true` — no route out.  Notable absences are the architecture: the agent has no route
-to `state` (it cannot touch the record of its own actions), `infer` shares
-a network with nothing but the agency, and the scholar has no route to
-builder, scribe, or the workspace.
+`internal: true` — no route out.  Notable absences are the architecture:
+the agent has no route to `state` (it cannot touch the record of its own
+actions) and no route to any registry or the internet, `infer` shares a
+network with nothing but the agency, and the scholar has no route to the
+agent, the archivist, or the workspace.  compose-lint pins every
+internal network's membership, so a service quietly joining a sanctioned
+wire fails CI like a new egress holder would.
 
 ## Host surface
 
@@ -193,26 +188,23 @@ cell fetches images or code.
 
 | Volume | Mounted by | Holds |
 |---|---|---|
-| `qwen_home` | agent | qwen-code settings/history (`/home/node/.qwen`); survives image swaps |
-| `gradle` | builder | dependency + build caches (`/gradle-home`), warmed via the airlock |
+| `grange` | agent (rw), archivist (rw) | the workspace: the grange ROOT — `tree/` (the exported checkout) and `staging/` (the pre-promote clone).  `provision` fills it, `dispose` empties it; NEVER the operator's host tree ([grange.md](grange.md)) |
+| `agent_home` | agent | the agent's per-project HOME, so dotfiles and shell state never cross cells; the per-user shared surface is only the `AGENT_CACHES` bind at `~/caches` |
+| `qwen_home` | agent | qwen-code settings/history (`/home/agent/.qwen`); survives image swaps and `agent_home` resets |
 | `state` | state | the durable record: logs, audit, status, approvals |
-| `scribe_state` | scribe | staged approval-gated changes; survives restarts so a pending approval is never lost |
 | `scholar_burn` | scholar | restart-surviving spend ledger (bare timestamps), so a crash loop cannot reset daily caps |
-| `grange` | archivist | the grange ROOT: `tree/` (the exported checkout) and `staging/` (the pre-promote clone).  `provision` fills it, `dispose` empties it; NEVER the operator's host tree ([grange.md](grange.md)) |
 
 ## Planned components
 
-Dashed in the diagram; designed, not yet built (see
-[librarian.md](librarian.md)):
+Dashed in the diagram; designed, not yet built:
 
-- **librarian comprehension ops** (phase 5 of [librarian.md](librarian.md))
-  — the inference-backed tools (summarize, ask-about) atop the now-live
-  mechanical read path; brings the librarian its `infernet` edge and the
-  engine-routed client the agency design absorbs.
 - **corrector** (`:9700`, see [corrector.md](corrector.md)) — the
-  reviewer: no mounts, no credential; composes librarian reads, archivist
-  diffs/comments, and engine-routed inference into a ten-lens, grounded,
-  advice-never-gate review of any PR or the agent's pending work.
+  reviewer: no mounts, no credential; composes archivist reads
+  (`file_at`, diffs, review threads) and engine-routed inference into a
+  ten-lens, grounded, advice-never-gate review of any PR.  (Its design
+  predates the grange cutover and named the librarian as its read path;
+  the librarian retired, so the archivist's read verbs take that role —
+  revisit at build time.)
 - **agency, phases 2+** (see [agency.md](agency.md)) — phase 1 (the
   pass-through door, live above) proved the topology: `infer` sits behind
   the agency on `modelnet` and the localhost `11434` relay fronts the
@@ -228,21 +220,21 @@ Every container in both stacks runs the same jail unless noted: read-only
 root filesystem with tmpfs scratch, `cap_drop: [ALL]`,
 `no-new-privileges`, pids and memory limits, non-root (uid 1000; the socat
 relays run as `nobody`), `restart: unless-stopped`.  Per-container
-particulars: the builder gets a 2 GiB `/tmp` and a private log spool; the
-agent gets 512 pids for the CLI's node runtime; `infer` gets the GPU
-device reservation.
+particulars: the agent gets a 2 GiB `/tmp`, 1024 pids, and 8 GiB memory
+(builds run there now); `infer` gets the GPU device reservation.
 
 ## Invariants and what enforces them
 
 | Invariant | Enforced by |
 |---|---|
+| The operator's host tree never enters a cell; the grange volume — provisioned from the forge, disposed after the task — is the only workspace, held by agent + archivist alone | `compose-lint` (CI, every PR): no `${WORKSPACE}`/`/workspace` mount anywhere, grange mounts pinned to agent + archivist, the retired mediators refused by name |
+| Agent-authored bytes reach the canonical tree only through a human-reviewed PR; the default branch is untouchable by the bot | the forge ruleset (verified by `forge-lint` and re-verified live at every provision by the archivist's gate) · the archivist's client-side refusals (default-branch push, force-push; audited) · the bot credential exists only in the archivist |
 | The scholar holds no `egress` network; its only route out is the kagi-relay, pinned to `kagi.com` | `compose-lint` (CI, every PR) · the scholar's fail-closed boot self-check · `scripts/probe-scholar-egress.ps1` against a live cell |
 | All inference rides through the agency: `infer` sits on `modelnet` alone, consumers dial the door, the localhost relay fronts it | `compose-lint` on both compose files (CI, every PR) |
-| Only the builder carries a toolchain; every other worker runs the slim toolchain-free image | `compose-lint` image-variable pinning (builder ↔ `TOOLCHAIN_IMAGE`, others ↔ `WORKERS_IMAGE`) |
-| The agent cannot write source; every edit routes through the scribe's confined, audited ops | the `:ro` mount flag · the scribe's path confinement, gates, and approval holds |
-| The archivist is jailed: exactly buildnet + statenet + gitegress, the grange volume (never the host tree), forges reached only through pinned relays with literal socat destinations, the `github.com` alias and its resolution split across the two-hop pair, and only the egress-holding relays on `egress` | `compose-lint` (CI, every PR) · the endpoint table as remote allowlist · the archivist's client-side refusals (audited) |
+| Only the agent carries toolchains (the workbench); every worker runs the slim toolchain-free image | `compose-lint` image-variable pinning (agent ↔ `WORKBENCH_IMAGE`, workers ↔ `WORKERS_IMAGE`) |
+| The archivist is jailed: exactly archivistnet + statenet + gitegress, the grange volume (never a host tree), forges reached only through pinned relays with literal socat destinations, the `github.com` alias and its resolution split across the two-hop pair, and only the egress-holding relays on `egress` | `compose-lint` (CI, every PR) · the endpoint table as remote allowlist · the archivist's client-side refusals (audited) |
 | The audit trail is one-way glass: subsystems append, never read; timestamps come from the state service's clock | token-gated append-only state API · no state mounts anywhere else · network absences above |
-| Web content and workspace content never share a mediator | topology: the scholar has no workspace mount and no route to builder/scribe |
+| Web content and the workspace never meet: the scholar holds no workspace and no route to the agent or the archivist | topology + compose-lint's pinned network memberships |
 | A jailed worker cannot resolve external names — DNS is not an exfiltration channel (CVE-2024-29018) | `dns: 127.0.0.1` (dead upstream) on every all-internal service in both compose files · `compose-lint`'s DNS-pin rule (CI, every PR) · the scholar's fail-closed boot DNS probe |
-| Builds run offline; dependency refresh is a deliberate human act | no builder egress · the dependency airlock refuses to open over uncommitted build logic |
+| Builds run offline; no package-registry route exists in a cell, and dependency refresh is a deliberate human act | no agent egress (topology) · `GOPROXY=off` / `CARGO_NET_OFFLINE` / cache-only Gradle in the workbench · the airlock refuses over uncommitted build logic AND while an agent session is live |
 | No secrets, keys, or LAN addresses in the repo | presubmit hook + the same scan server-side in CI |

@@ -1,6 +1,13 @@
 # Worker roles — the multi-call wiring pattern
 
 How a worker role is wired end-to-end, and the checklist for adding one.
+
+> Note (2026-07-31): the mediator roles this doc uses as examples —
+> builder, scribe, librarian — retired with the grange cutover
+> ([grange.md](grange.md)); the live roles are scholar, archivist,
+> state-service, and agency.  The wiring PATTERN is unchanged and this
+> doc remains the checklist for new roles; read the retired names as
+> historical examples.
 `cmd/cloister-worker` is the one binary of Cloister; every worker is a
 role of it.  This page is descriptive of the code as it stands — when
 the two disagree, the code wins and this page gets fixed.

@@ -1,9 +1,9 @@
 # Grange — the ephemeral-workspace transformation
 
-Status: **direction decision, design sketch**.  Decisions from the
-2026-07-18 design discussion, recorded as the target for a phased
-migration.  Rationale style follows [DESIGN.md](DESIGN.md); the current
-runtime picture this transforms is [ARCHITECTURE.md](ARCHITECTURE.md).
+Status: **COMPLETE** (2026-07-31, milestones below record the PRs).
+Decisions from the 2026-07-18 design discussion, executed as a phased
+migration; [ARCHITECTURE.md](ARCHITECTURE.md) now describes the
+transformed runtime.  Rationale style follows [DESIGN.md](DESIGN.md).
 
 A **grange** was a Cistercian abbey's outlying farm: worked directly by
 the monks rather than through tenants, with the harvest returned to the
@@ -354,22 +354,35 @@ the linted topology never lags the real one.
   librarian, and builder keep operating against it unchanged.  A
   deliberately boring swap — but the host tree stops being exposed to
   the cell here, which is the transformation's first security win,
-  banked before any mediator is touched.
+  banked before any mediator is touched.  *Done 2026-07-31, collapsed
+  into M3's cutover* (PR #104 made the mediators tolerate the absent
+  tree; then the operator granted permission to break things and the
+  intermediate mediators-on-the-grange state was skipped).
 - **M3 — open the tree.**  Mount the grange read-write into the agent;
   the agent uses native file tools and local read-only git.  The
   scribe and librarian go idle and are then removed from the compose
   topology.  This is the milestone that resolves the qwen friction.
+  *Done 2026-07-31* (PR #108 the cutover: agent onto the workbench
+  with the grange rw, mediators deleted, buildnet renamed
+  archivistnet, compose-lint rewritten in the same PR; PR #109 removed
+  the mediator code — ~12k lines — and reworked the airlock).
 - **M4 — the workbench image.**  One fat, identity-free image: the
   toolchain bases as the stable lower layers, the agent CLIs on top
   (so vendor bumps don't rebuild the world), offline caches
   pre-warmed; retire the builder.  Derive CI images from the same
-  base to limit works-in-my-cell drift.
+  base to limit works-in-my-cell drift.  *Done 2026-07-31* (PRs
+  #105/#106/#107: Go + Rust + JVM under the qwen CLI, tmux sessions
+  with the `workbench` launcher, Claude Code kept out of the public
+  image on license grounds; the builder — and its action manifest,
+  never load-bearing — retired with #108/#109).  The read-only
+  content-addressed stores remain future work: the per-user caches
+  bind is rw, interim-accepted like BUILD_HOME before it.
 - **M5 — cutover of the record.**  Rewrite the security invariants in
   CLAUDE.md and [ARCHITECTURE.md](ARCHITECTURE.md); honesty pass on
   COMPETITION.md (the "no workspace mount at all" and "cannot even
   read freely" claims are traded away deliberately — the
   structural-absence story moves from the filesystem to the network,
-  the credential, and the merge path).
+  the credential, and the merge path).  *Done 2026-07-31* (this PR).
 
 Parallel and optional tracks: cell consolidation and the Gitea-local
 forge, sketched below.

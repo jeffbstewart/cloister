@@ -1,6 +1,13 @@
 # The librarian — reader-mode design
 
-Status: **phases 0–5 implemented** — the spike, internal/shield,
+Status: **RETIRED** (2026-07-31, the grange cutover — [grange.md](grange.md)
+M3, "the librarian retires outright — no out-of-tree read role survives
+it").  The agent now reads its workspace directly: the grange is a clean
+clone with clean provenance, so the shield's job shrank to nothing, and
+internal/{librarian,repo,shield,watch} left the tree with PR #109.  This
+document is the historical design record of the read-mediation era.
+
+Status at retirement: **phases 0–5 implemented** — the spike, internal/shield,
 internal/repo, internal/watch, the worker + mechanical tools, the cell
 cutover (the agent holds no workspace mount), AND the comprehension ops
 (`ask_about_file`, `summarize_file`, `summarize_directory`,
