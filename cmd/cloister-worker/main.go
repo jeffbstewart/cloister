@@ -56,10 +56,11 @@
 // the selector must say what this process is.
 //
 // This file is only the front door: role resolution and dispatch.  Each
-// role's flag set and bootstrap live in its own file (builder.go,
-// scribe.go, scholar.go, statesvc.go, librarian.go, archivist.go,
-// agency.go); shared serving plumbing in serve.go.  The wiring pattern
-// and the new-role checklist are docs/worker-roles.md.
+// role's flag set and bootstrap live in its own file (scholar.go,
+// statesvc.go, archivist.go, agency.go); shared serving plumbing in
+// serve.go.  The wiring pattern and the new-role checklist are
+// docs/worker-roles.md.  The mediator roles (builder, scribe,
+// librarian) retired with the grange cutover (docs/grange.md M3/M4).
 package main
 
 import (
@@ -85,16 +86,13 @@ type roleParser func(args []string) (run func(), err error)
 // to its parser.  The same names are the values `-worker-mode` accepts
 // under the generic binary name.
 var roles = map[string]roleParser{
-	"builder":       builderRole,
 	"state-service": stateServiceRole,
-	"scribe":        scribeRole,
 	"scholar":       scholarRole,
-	"librarian":     librarianRole,
 	"archivist":     archivistRole,
 	"agency":        agencyRole,
 }
 
-const workerModes = "builder | state-service | scribe | scholar | librarian | archivist | agency"
+const workerModes = "state-service | scholar | archivist | agency"
 
 // healthcheckName is the pseudo-role behind the generic `-healthcheck`
 // form.  It is resolved only from that leading flag — `-worker-mode

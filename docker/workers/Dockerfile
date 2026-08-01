@@ -13,11 +13,10 @@
 # limitations under the License.
 
 # cloister-workers — the slim, toolchain-free multi-call worker image: the
-# static cloister-worker binary and its role links on a scratch base
-# (docs/toolchains.md).  Toolchains live in per-ecosystem builder images
-# (docker/toolchains/); this image deliberately ships NO
-# /etc/cloister-worker/toolchain id, so running the builder role on it
-# fails loudly at startup instead of at first build.
+# static cloister-worker binary and its role links on a scratch base.
+# Toolchains live in the agent's workbench image (docker/workbench) and
+# nowhere else; the mediator roles (builder, scribe, librarian) retired
+# with the grange cutover (docs/grange.md M3/M4).
 #
 # The build pipeline (images.yml) cross-compiles the static binary into
 # this directory before `docker build`; the binary itself is never
@@ -38,19 +37,19 @@ RUN apk add --no-cache ca-certificates
 COPY cloister-worker /out/usr/local/bin/cloister-worker
 RUN set -eux; \
     cd /out/usr/local/bin; \
-    for role in builder scribe scholar librarian archivist state-service agency agent-builder; do \
+    for role in scholar archivist state-service agency agent-builder; do \
       ln -s cloister-worker "$role"; \
     done; \
-    mkdir -p /out/etc/ssl/certs /out/tmp /out/spool /out/state /out/scribe-state /out/burn /out/workspace /out/home/worker /out/status /out/agency-status; \
+    mkdir -p /out/etc/ssl/certs /out/tmp /out/state /out/burn /out/grange /out/home/worker /out/status /out/agency-status; \
     cp /etc/ssl/certs/ca-certificates.crt /out/etc/ssl/certs/; \
     echo "worker:x:1000:1000::/home/worker:/sbin/nologin" > /out/etc/passwd; \
     echo "worker:x:1000:" > /out/etc/group; \
-    chown -R 1000:1000 /out/spool /out/state /out/scribe-state /out/burn /out/home/worker /out/status /out/agency-status /out/workspace
+    chown -R 1000:1000 /out/state /out/burn /out/grange /out/home/worker /out/status /out/agency-status
 
 FROM scratch
 COPY --from=prep /out/ /
 USER 1000:1000
 # The generic entrypoint: compose overrides it per service with a role
-# link (entrypoint: ["/usr/local/bin/scribe"]); under this default, a
+# link (entrypoint: ["/usr/local/bin/archivist"]); under this default, a
 # leading -worker-mode selects the role.
 ENTRYPOINT ["/usr/local/bin/cloister-worker"]

@@ -17,41 +17,47 @@ setlocal enabledelayedexpansion
 
 REM ---------------------------------------------------------------
 REM Dependency airlock (docs/DESIGN.md, "The dependency airlock").
-REM Temporarily gives a project's builder container egress, refreshes its
-REM Gradle dependency cache, and ALWAYS closes the airlock afterwards.
+REM Temporarily gives the cell's AGENT container egress, refreshes the
+REM Gradle dependency cache in its warmed caches dir (AGENT_CACHES), and
+REM ALWAYS closes the airlock afterwards.  Post-grange-cutover shape:
+REM the builder is retired; the agent's workbench holds the toolchains,
+REM and the checkout lives in the grange at /grange/tree.
 REM
 REM Egress + arbitrary build code is the one dangerous combination:
-REM `gradlew` executes settings.gradle.kts and every build.gradle.kts during
-REM configuration. So before opening the airlock this script REFUSES if the
-REM build-affecting set has uncommitted changes — the Gradle build logic AND
-REM agent-harness.yaml (the action manifest) — i.e. anything the agent could
-REM have edited that a human has not reviewed and committed. This is the
-REM same set the scribe's build-logic write gate governs. Override only when
-REM you know why, with -force.
+REM `gradlew` executes settings.gradle.kts and every build.gradle.kts at
+REM configuration time.  Two gates before the airlock opens:
 REM
-REM NOTE: the refresh runs `gradlew` directly via `docker exec`, deliberately
-REM bypassing the builder worker. So it does NOT stream to the state
-REM service's audit/logs; the airlock is a manual human act and THIS script is
-REM its record. The builder holds no /state mount either way.
+REM   1. NO LIVE AGENT SESSION.  The old airlock opened the builder's
+REM      network — a container the model never ran code in directly.
+REM      This one opens the agent's own container, so a live session
+REM      would hand the model an internet window.  The script refuses
+REM      while the workbench tmux session exists; close it first
+REM      (`workbench`, then exit the agent).
+REM   2. CLEAN BUILD LOGIC.  The grange tree's build-affecting set must
+REM      have no uncommitted changes — anything the agent edited that a
+REM      human has not reviewed.  Checked via git INSIDE the container
+REM      against the checkout's committed state.  Override with -force
+REM      only when you know why.
+REM
+REM The refresh does NOT stream to the state service; the airlock is a
+REM manual human act and THIS script is its record.
 REM
 REM Usage:
-REM   update-gradle-deps.bat <project> <workspace-path> [egress-network] [-force]
-REM   update-gradle-deps.bat myproject c:\projects\myproject
+REM   update-gradle-deps.bat <project> [egress-network] [-force]
+REM   update-gradle-deps.bat myproject
 REM ---------------------------------------------------------------
 
 if "%~1"=="" goto :usage
-if "%~2"=="" goto :usage
 
 set PROJECT=%~1
-set WORKSPACE=%~2
-set CONTAINER=%PROJECT%-builder
+set CONTAINER=%PROJECT%-agent
 REM Docker's default `bridge` network always exists and has egress, so it is a
-REM reliable temporary airlock without guessing the cell stack's frontend name.
+REM reliable temporary airlock without guessing the cell stack's names.
 set NETWORK=bridge
 set FORCE=0
 
 REM Optional positional [egress-network] and/or -force in any order.
-for %%A in (%3 %4) do (
+for %%A in (%2 %3) do (
     if /I "%%~A"=="-force" (set FORCE=1) else if not "%%~A"=="" (set NETWORK=%%~A)
 )
 
@@ -61,24 +67,32 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM ---- Airlock gate: build logic must be clean against committed git state ----
+REM ---- Gate 0: a provisioned grange (the tree is the gradle project) ----
+docker exec %CONTAINER% test -d /grange/tree >nul 2>&1
+if errorlevel 1 (
+    echo REFUSING: no provisioned workspace at /grange/tree.
+    echo Provision the repository first (the archivist's provision verb).
+    exit /b 3
+)
+
+REM ---- Gate 1: no live agent session while the airlock is open ----
+docker exec %CONTAINER% tmux has-session -t agent >nul 2>&1
+if not errorlevel 1 (
+    echo REFUSING: a live agent session exists in %CONTAINER%.
+    echo The airlock gives THIS container internet egress; a running model
+    echo must never hold that window.  End the session first:
+    echo   docker exec -it %CONTAINER% tmux kill-session -t agent
+    exit /b 3
+)
+
+REM ---- Gate 2: build logic clean against the checkout's committed state ----
 if "%FORCE%"=="1" (
     echo -force: skipping the build-logic review gate.
     goto :open
 )
 
-git -C "%WORKSPACE%" rev-parse --is-inside-work-tree >nul 2>&1
-if errorlevel 1 (
-    echo REFUSING: "%WORKSPACE%" is not a git work tree, so build-logic changes
-    echo cannot be reviewed. Re-run with -force only if you trust the tree.
-    exit /b 3
-)
-
-REM Build-affecting set: the manifest plus all Gradle build logic. `*.gradle.kts`
-REM matches root and nested module scripts (settings/build) since a plain git
-REM pathspec glob spans directory separators.
 set DIRTY=
-for /f "delims=" %%L in ('git -C "%WORKSPACE%" status --porcelain -- "agent-harness.yaml" "*.gradle.kts" "gradle/" "buildSrc/" "gradle.properties" "gradlew" "gradlew.bat" 2^>nul') do (
+for /f "delims=" %%L in ('docker exec -w /grange/tree %CONTAINER% git status --porcelain -- "*.gradle.kts" "gradle/" "buildSrc/" "gradle.properties" "gradlew" "gradlew.bat" 2^>nul') do (
     set DIRTY=1
     echo   changed: %%L
 )
@@ -100,18 +114,16 @@ if errorlevel 1 (
 
 REM Warm ALL offline deps in one pass: compile main (build -x test), then the
 REM platform init script resolves every resolvable configuration - test
-REM compile/runtime (JUnit engine + launcher), the JaCoCo agent + report libs
-REM for `coverage`, annotation processors, etc. Pure resolution: downloads the
-REM JARs, runs no test task and loads no test classes - safer than
-REM --test-dry-run and it also reaches coverage's JaCoCo tooling, which a test
-REM run alone would miss.
+REM compile/runtime, the JaCoCo tooling, annotation processors, etc.  Pure
+REM resolution: downloads the JARs, runs no test task.
 REM
-REM The init script is BAKED into the published workers image at
-REM /etc/cloister-worker/warm-deps.gradle (a platform artifact, not
-REM agent-writable). The read-only rootfs deliberately blocks runtime
-REM injection (docker cp / writes), so changing it means rebuilding the image.
+REM The init script is BAKED into the workbench image at
+REM /usr/local/share/cloister/warm-deps.gradle (a platform artifact, not
+REM agent-writable; the read-only rootfs blocks runtime injection).  The
+REM cache lands in GRADLE_USER_HOME on the AGENT_CACHES bind, shared
+REM across the user's projects.
 echo Warming offline dependencies in %CONTAINER% ...
-docker exec %CONTAINER% ./gradlew --refresh-dependencies --no-daemon --init-script /etc/cloister-worker/warm-deps.gradle build -x test warmAllDeps
+docker exec -w /grange/tree %CONTAINER% ./gradlew --refresh-dependencies --no-daemon --init-script /usr/local/share/cloister/warm-deps.gradle build -x test warmAllDeps
 set WARMUP_RC=%ERRORLEVEL%
 
 echo Closing airlock: disconnecting %CONTAINER% from %NETWORK% ...
@@ -127,19 +139,10 @@ if not "%WARMUP_RC%"=="0" (
     exit /b %WARMUP_RC%
 )
 
-REM Record the warm (internal/warming): the builder refuses actions with
-REM warming instructions until this marker exists in its cache home.
-docker exec %CONTAINER% /usr/local/bin/builder -mark-warmed
-if errorlevel 1 (
-    echo WARNING: warm succeeded but recording it FAILED; builds stay refused.
-    echo Retry:  docker exec %CONTAINER% /usr/local/bin/builder -mark-warmed
-    exit /b 3
-)
-
 echo.
 echo Done: %PROJECT% gradle cache refreshed; airlock closed.
 exit /b 0
 
 :usage
-echo Usage: %~nx0 ^<project^> ^<workspace-path^> [egress-network] [-force]
+echo Usage: %~nx0 ^<project^> [egress-network] [-force]
 exit /b 1
