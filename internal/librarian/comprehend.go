@@ -100,7 +100,7 @@ const (
 var errDirBudget = errors.New("summarize_directory: budget exceeded")
 
 func (s *Server) registerComprehensionTools() {
-	s.mcp.AddTool(&mcp.Tool{
+	s.add(&mcp.Tool{
 		Name:        "ask_about_file",
 		Description: "Answer a question about one workspace file, grounded only in the file's content.  Optionally restrict to a line range (start, end) — the answer stays distilled either way, so this is how you comprehend part of a file too large for the whole-file cap.  effort 'quick' (default) or 'thorough' buys engine-side depth at the cost of latency; the answer returns with a provenance footer.",
 		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
@@ -116,7 +116,7 @@ func (s *Server) registerComprehensionTools() {
 		},
 	}, s.askAboutFile)
 
-	s.mcp.AddTool(&mcp.Tool{
+	s.add(&mcp.Tool{
 		Name:        "summarize_file",
 		Description: "Summarize one workspace file, grounded only in its content.  Optionally restrict to a line range (start, end) — this is how you summarize part of a file too large for the whole-file cap.  effort 'quick' (default) or 'thorough' buys engine-side depth at the cost of latency; the summary returns with a provenance footer.",
 		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
@@ -131,7 +131,7 @@ func (s *Server) registerComprehensionTools() {
 		},
 	}, s.summarizeFile)
 
-	s.mcp.AddTool(&mcp.Tool{
+	s.add(&mcp.Tool{
 		Name:        "summarize_directory",
 		Description: "Summarize a directory by digesting each resident file (map) then synthesizing one overview (reduce), grounded only in that content.  A context-saving alternative to reading a whole tree.  Over a file-count / total-size guard it refuses and asks for a narrower subdirectory rather than launching thousands of engine calls.  effort 'quick' (default) or 'thorough' deepens the synthesis; the overview returns with an aggregate provenance footer.",
 		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),
@@ -144,7 +144,7 @@ func (s *Server) registerComprehensionTools() {
 		},
 	}, s.summarizeDirectory)
 
-	s.mcp.AddTool(&mcp.Tool{
+	s.add(&mcp.Tool{
 		Name:        "find_relevant_files",
 		Description: "Locate the workspace files most relevant to a natural-language question (\"where is retry handled?\").  Runs an internal keyword-expand -> grep -> rerank loop over resident files and returns a ranked list of paths, each with a one-line reason — never the intermediate candidate lists.  Optional path (directory prefix) and glob narrow the search; effort 'quick' (default) or 'thorough' deepens the final ranking (keyword expansion is always quick).  Embedding-based semantic recall is a later phase.",
 		InputSchema: &jsonschema.Schema{AdditionalProperties: mcpserve.NoExtras(),

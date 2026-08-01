@@ -33,6 +33,11 @@ var (
 	ErrEscapes   = errors.New("workspace: path is outside the workspace root")
 	ErrSymlink   = errors.New("workspace: path contains a symlink or reparse-point component (rejected, not resolved)")
 	ErrRepoMeta  = errors.New("workspace: .git is repository metadata, off-limits to workspace ops (hooks and config execute code)")
+	// ErrNotProvisioned marks an absent root: no tree exists at the
+	// configured location.  For a grange workspace that is a lifecycle
+	// state, not a failure — the archivist's provision creates the tree
+	// and dispose removes it (docs/grange.md).
+	ErrNotProvisioned = errors.New("workspace: no workspace is provisioned at the configured root")
 )
 
 // Path is a workspace-confined absolute path.  It can only be produced by
@@ -64,21 +69,48 @@ type Root struct {
 // confinement boundary must be a fixed filesystem location, not a redirection
 // someone can repoint.
 func Open(dir string) (*Root, error) {
+	r, err := At(dir)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.Ready(); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// At returns a Root for an absolute directory path WITHOUT requiring the
+// directory to exist yet — the grange pattern: the tree appears when the
+// archivist provisions and vanishes on dispose, so existence is a
+// per-operation question (Ready), not a construction-time one.  Open
+// remains the constructor for a root that must already exist.
+func At(dir string) (*Root, error) {
 	if !filepath.IsAbs(dir) {
 		return nil, fmt.Errorf("workspace: root %q must be absolute", dir)
 	}
-	dir = filepath.Clean(dir)
-	fi, err := os.Lstat(dir)
+	return &Root{dir: filepath.Clean(dir)}, nil
+}
+
+// Ready runs Open's root validation on demand: the root must currently
+// exist as a real directory.  An absent root answers ErrNotProvisioned
+// (a lifecycle state the caller turns into a clean refusal); a symlinked
+// or non-directory root stays its own loud error, because a confinement
+// boundary that is a redirection is never acceptable, provisioned or not.
+func (r *Root) Ready() error {
+	fi, err := os.Lstat(r.dir)
 	if err != nil {
-		return nil, fmt.Errorf("workspace: root %q: %w", dir, err)
+		if os.IsNotExist(err) {
+			return fmt.Errorf("%w (%s)", ErrNotProvisioned, r.dir)
+		}
+		return fmt.Errorf("workspace: root %q: %w", r.dir, err)
 	}
 	if fi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
-		return nil, fmt.Errorf("workspace: root %q is a symlink or reparse point", dir)
+		return fmt.Errorf("workspace: root %q is a symlink or reparse point", r.dir)
 	}
 	if !fi.IsDir() {
-		return nil, fmt.Errorf("workspace: root %q is not a directory", dir)
+		return fmt.Errorf("workspace: root %q is not a directory", r.dir)
 	}
-	return &Root{dir: dir}, nil
+	return nil
 }
 
 // Dir returns the workspace root.

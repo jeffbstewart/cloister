@@ -71,6 +71,13 @@ type Shield struct {
 	ai  *matcher
 }
 
+// Empty is the shield of an absent tree: no ignore files, the zero
+// ruleset.  The grange's between-lives state needs a well-formed shield
+// without a filesystem to load one from.
+func Empty() *Shield {
+	return &Shield{git: newMatcher(nil), ai: newMatcher(nil)}
+}
+
 // Load walks fsys (the workspace root) collecting every .gitignore and
 // .aiignore, and parses them into a Shield.  Directories named .git are
 // not descended into (workspace confinement rejects them everywhere

@@ -800,3 +800,55 @@ func TestHealthz(t *testing.T) {
 		t.Errorf("healthz = %d, want 200", resp.StatusCode)
 	}
 }
+
+// TestUnprovisionedWorkspaceRefusals: with the root absent (a grange
+// before provision, or after dispose) every op refuses by name and
+// audits rejected_unprovisioned — and the same server starts applying
+// the moment the tree appears, because readiness is a per-op question,
+// never boot state.
+func TestUnprovisionedWorkspaceRefusals(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "tree") // not created yet
+	root, err := workspace.At(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aud := &fakeAuditor{}
+	srv := New(Config{Version: "test", Root: root, Audit: aud, Diffs: aud})
+
+	clientT, serverT := mcp.NewInMemoryTransports()
+	ctx := context.Background()
+	if _, err := srv.mcp.Connect(ctx, serverT, nil); err != nil {
+		t.Fatal(err)
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, nil)
+	session, err := client.Connect(ctx, clientT, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { session.Close() })
+	f := &fixture{srv: srv, dir: dir, aud: aud, session: session}
+
+	text, isErr := f.call(t, "create_text_file", map[string]any{"path": "a.txt", "content": "hi\n"})
+	if !isErr || !strings.Contains(text, "no workspace is provisioned") || !strings.Contains(text, "provision") {
+		t.Fatalf("create on an absent root = %q (err=%v), want the unprovisioned refusal naming provision", text, isErr)
+	}
+	if !aud.hasDecision(decUnprovisioned) {
+		t.Error("the unprovisioned refusal did not audit rejected_unprovisioned")
+	}
+	// The refusal must not have materialized the root (a bare tree in a
+	// grange root reads as CORRUPT to the archivist).
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("refused create materialized the root: stat = %v", err)
+	}
+
+	// The tree appears (provision) — the same op now applies.
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if text, isErr := f.call(t, "create_text_file", map[string]any{"path": "a.txt", "content": "hi\n"}); isErr {
+		t.Fatalf("create after the tree appeared failed: %s", text)
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "a.txt")); err != nil || string(b) != "hi\n" {
+		t.Errorf("a.txt = %q, %v after the provisioned create", b, err)
+	}
+}

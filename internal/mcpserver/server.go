@@ -31,6 +31,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -42,6 +43,7 @@ import (
 	"github.com/jeffbstewart/cloister/internal/mcpserve"
 	"github.com/jeffbstewart/cloister/internal/runid"
 	"github.com/jeffbstewart/cloister/internal/runner"
+	"github.com/jeffbstewart/cloister/internal/workspace"
 )
 
 const (
@@ -82,32 +84,65 @@ type Config struct {
 
 // Server owns the MCP tool surface and the HTTP handler around it.
 type Server struct {
-	cfg      Config
-	mcp      *mcp.Server
-	degraded string // startup manifest problem; "" when the full menu is served
+	cfg Config
+	mcp *mcp.Server
+
+	mu       sync.Mutex
+	degraded string // manifest problem keeping the menu unregistered; "" once served
 }
 
-// New builds the tool surface from the manifest at startup.  A missing or
-// invalid manifest is not fatal: the server comes up serving only
-// harness_info, reporting the precise reason.
+// New builds the tool surface from the manifest.  A missing or invalid
+// manifest is not fatal: the server comes up serving only harness_info,
+// reporting the precise reason — and under a grange that is the NORMAL
+// boot, because the tree (and its manifest) appears when the archivist
+// provisions.  The menu registers via a later TryManifest, never a
+// container restart.
 func New(cfg Config) *Server {
 	s := &Server{cfg: cfg}
 	s.mcp = mcp.NewServer(&mcp.Implementation{Name: "cloister-worker", Version: cfg.Version}, nil)
 	s.addHarnessInfo()
+	s.degraded = "manifest not yet loaded"
+	if !s.TryManifest() {
+		log.Printf("degraded mode (harness_info only): %v", s.Degraded())
+	}
+	return s
+}
 
+// TryManifest attempts to load the manifest and register the action menu,
+// reporting whether the menu is being served afterwards.  Safe to call
+// repeatedly — the first success registers, later calls are no-ops — so
+// the builder polls it while degraded and a manifest that appears after
+// boot (a grange provision, a first commit adding one) exposes its
+// actions without a restart.  A manifest that CHANGES after the menu
+// exists still takes effect per call (runAction re-reads it); only the
+// menu itself is built once.
+func (s *Server) TryManifest() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.degraded == "" {
+		return true
+	}
 	m, err := s.loadManifest()
 	if err != nil {
 		s.degraded = err.Error()
-		log.Printf("degraded mode (harness_info only): %v", err)
-		return s
+		return false
 	}
 	s.addGetLog()
 	names := sortedKeys(m.Actions)
 	for _, name := range names {
 		s.addAction(name, m.Actions[name])
 	}
+	s.degraded = ""
 	log.Printf("serving %d actions: %s", len(names), strings.Join(names, ", "))
-	return s
+	return true
+}
+
+// Degraded reports the manifest problem keeping the menu unregistered,
+// "" when the full menu is served.
+func (s *Server) Degraded() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.degraded
 }
 
 // Handler serves MCP at /mcp and a liveness probe at /healthz.
@@ -118,6 +153,12 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) loadManifest() (*manifest.Manifest, error) {
 	m, err := manifest.Load(s.cfg.ManifestPath, s.cfg.ToolchainID)
 	if errors.Is(err, fs.ErrNotExist) {
+		// Distinguish "the tree has no manifest" from "there is no tree":
+		// under a grange the workspace itself exists only between
+		// provision and dispose, and the refusal should name that state.
+		if _, serr := os.Stat(s.cfg.Workspace); os.IsNotExist(serr) {
+			return nil, fmt.Errorf("%w (%s) — the archivist's provision brings it into being", workspace.ErrNotProvisioned, s.cfg.Workspace)
+		}
 		return nil, fmt.Errorf("no manifest at %s; no actions available", s.cfg.ManifestPath)
 	}
 	return m, err
@@ -377,8 +418,14 @@ func (s *Server) harnessInfo(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	if err != nil {
 		info["manifest"] = "unavailable: " + err.Error()
 		info["actions"] = []any{}
-		if s.degraded == "" {
-			info["note"] = "the manifest was valid at startup but is broken now; action calls will be rejected until it is fixed"
+		switch {
+		case errors.Is(err, workspace.ErrNotProvisioned):
+			// Nothing is broken — the tree is between lives (a dispose,
+			// or before the first provision); the next provision
+			// restores the actions.
+			info["note"] = "no workspace is provisioned; actions return when the archivist provisions one"
+		case s.Degraded() == "":
+			info["note"] = "the manifest was valid when the menu registered but is broken now; action calls will be rejected until it is fixed"
 		}
 		return mcpserve.JSONResult(info), nil
 	}
@@ -407,8 +454,8 @@ func (s *Server) harnessInfo(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		actions = append(actions, entry)
 	}
 	info["actions"] = actions
-	if s.degraded != "" {
-		info["note"] = "manifest is valid now but the tool menu was fixed at startup in degraded mode; restart the builder container to expose these actions"
+	if s.Degraded() != "" {
+		info["note"] = "manifest is valid now but the action menu is not yet registered; the builder retries and will expose these actions shortly"
 	}
 	return mcpserve.JSONResult(info), nil
 }

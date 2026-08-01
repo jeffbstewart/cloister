@@ -61,9 +61,15 @@ func runScribe(o scribeOptions) {
 	if o.StateURL == "" || token == "" {
 		log.Fatalf("scribe needs STATE_URL and STATE_TOKEN: it audits every mutation to the state service")
 	}
-	root, err := workspace.Open(o.Workspace)
+	// At, not Open: under a grange the tree exists only between provision
+	// and dispose, so the scribe boots against the configured path and
+	// refuses per-op until the tree appears (workspace.Root.Ready).
+	root, err := workspace.At(o.Workspace)
 	if err != nil {
 		log.Fatalf("scribe: %v", err)
+	}
+	if err := root.Ready(); err != nil {
+		log.Printf("scribe: %v — serving refusals until the workspace is provisioned", err)
 	}
 	// One client satisfies Auditor, DiffStore, and ApprovalClient.
 	client := sink.NewClient(o.StateURL, token)

@@ -59,10 +59,14 @@ const (
 	decDryRun   audit.Decision = "dry_run"
 	decNoChange audit.Decision = "no_change"
 	decConfine  audit.Decision = "rejected_confinement"
-	decOverflow audit.Decision = "rejected_overflow"
-	decGate     audit.Decision = "rejected_gate"
-	decPattern  audit.Decision = "rejected_pattern"
-	decError    audit.Decision = "error"
+	// decUnprovisioned: the workspace tree does not exist (yet) — a grange
+	// lifecycle state, refused by name rather than surfaced as a raw
+	// filesystem error.
+	decUnprovisioned audit.Decision = "rejected_unprovisioned"
+	decOverflow      audit.Decision = "rejected_overflow"
+	decGate          audit.Decision = "rejected_gate"
+	decPattern       audit.Decision = "rejected_pattern"
+	decError         audit.Decision = "error"
 	// Approval lifecycle.
 	decPending  audit.Decision = "pending_approval"
 	decRejected audit.Decision = "rejected"
@@ -726,7 +730,9 @@ func (s *Server) moveFile(_ context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 		return mcpserve.ErrResult("internal: mint op id: " + err.Error()), nil
 	}
 	rec.Detail = &audit.MutationDetail{From: a.From, To: a.To}
-
+	if res := s.unready(rec); res != nil {
+		return res, nil
+	}
 	from, err := s.root.Resolve(a.From)
 	if err != nil {
 		return s.rejected(rec, decConfine, err), nil
@@ -829,7 +835,9 @@ func (s *Server) copyFile(_ context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 		return mcpserve.ErrResult("internal: mint op id: " + err.Error()), nil
 	}
 	rec.Detail = &audit.MutationDetail{From: a.From, To: a.To}
-
+	if res := s.unready(rec); res != nil {
+		return res, nil
+	}
 	from, err := s.root.Resolve(a.From)
 	if err != nil {
 		return s.rejected(rec, decConfine, err), nil
@@ -1038,10 +1046,47 @@ func (s *Server) resolveForWrite(rec audit.Record, input string) (workspace.Path
 }
 
 // resolveConfined resolves a target with confinement only (no build-logic gate).
+// The readiness check runs first: under a grange the tree exists only between
+// provision and dispose, and an op against an absent tree must refuse by name —
+// never fall through to a path error, and never let a create materialize
+// parents under a root that is not there (a bare tree/ in a grange root reads
+// as CORRUPT to the archivist).
 func (s *Server) resolveConfined(rec audit.Record, input string) (workspace.Path, *mcp.CallToolResult) {
+	if res := s.unready(rec); res != nil {
+		return workspace.Path{}, res
+	}
 	p, err := s.root.Resolve(input)
 	if err != nil {
 		return workspace.Path{}, s.rejected(rec, decConfine, err)
 	}
 	return p, nil
+}
+
+// unready refuses an op whose workspace root is not ready, or returns nil
+// to proceed.  The two-path ops (move/copy) call it before their direct
+// Resolves; resolveConfined calls it for everything else — Resolve alone
+// would let an absent-root op fall through to a misleading path error.
+func (s *Server) unready(rec audit.Record) *mcp.CallToolResult {
+	if err := s.root.Ready(); err != nil {
+		return s.rejected(rec, unprovisionedDecision(err), unprovisionedAdvice(err))
+	}
+	return nil
+}
+
+// unprovisionedDecision maps a readiness failure to its audit decision: the
+// absent-tree lifecycle state gets its own name; anything else (a symlinked
+// root, a permission failure) is an error.
+func unprovisionedDecision(err error) audit.Decision {
+	if errors.Is(err, workspace.ErrNotProvisioned) {
+		return decUnprovisioned
+	}
+	return decError
+}
+
+// unprovisionedAdvice names the next step for the absent-tree refusal.
+func unprovisionedAdvice(err error) error {
+	if errors.Is(err, workspace.ErrNotProvisioned) {
+		return fmt.Errorf("%w — the archivist's provision brings it into being", err)
+	}
+	return err
 }
