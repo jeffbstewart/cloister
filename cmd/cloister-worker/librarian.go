@@ -181,6 +181,10 @@ func superviseFreshness(o librarianOptions, rep *repo.Repo) {
 				}
 			case <-time.After(appearPollInterval):
 				// Just re-check Ready: dispose is noticed within one poll.
+				// Accepted hole: a dispose+reprovision completing INSIDE
+				// one poll window is invisible here, leaving this life's
+				// watcher blind (its descriptors died with the old tree) —
+				// the periodic rescan is the backstop that bounds it.
 			}
 		}
 		tick.Stop()

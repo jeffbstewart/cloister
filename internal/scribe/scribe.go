@@ -730,7 +730,9 @@ func (s *Server) moveFile(_ context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 		return mcpserve.ErrResult("internal: mint op id: " + err.Error()), nil
 	}
 	rec.Detail = &audit.MutationDetail{From: a.From, To: a.To}
-
+	if res := s.unready(rec); res != nil {
+		return res, nil
+	}
 	from, err := s.root.Resolve(a.From)
 	if err != nil {
 		return s.rejected(rec, decConfine, err), nil
@@ -833,7 +835,9 @@ func (s *Server) copyFile(_ context.Context, req *mcp.CallToolRequest) (*mcp.Cal
 		return mcpserve.ErrResult("internal: mint op id: " + err.Error()), nil
 	}
 	rec.Detail = &audit.MutationDetail{From: a.From, To: a.To}
-
+	if res := s.unready(rec); res != nil {
+		return res, nil
+	}
 	from, err := s.root.Resolve(a.From)
 	if err != nil {
 		return s.rejected(rec, decConfine, err), nil
@@ -1048,14 +1052,25 @@ func (s *Server) resolveForWrite(rec audit.Record, input string) (workspace.Path
 // parents under a root that is not there (a bare tree/ in a grange root reads
 // as CORRUPT to the archivist).
 func (s *Server) resolveConfined(rec audit.Record, input string) (workspace.Path, *mcp.CallToolResult) {
-	if err := s.root.Ready(); err != nil {
-		return workspace.Path{}, s.rejected(rec, unprovisionedDecision(err), unprovisionedAdvice(err))
+	if res := s.unready(rec); res != nil {
+		return workspace.Path{}, res
 	}
 	p, err := s.root.Resolve(input)
 	if err != nil {
 		return workspace.Path{}, s.rejected(rec, decConfine, err)
 	}
 	return p, nil
+}
+
+// unready refuses an op whose workspace root is not ready, or returns nil
+// to proceed.  The two-path ops (move/copy) call it before their direct
+// Resolves; resolveConfined calls it for everything else — Resolve alone
+// would let an absent-root op fall through to a misleading path error.
+func (s *Server) unready(rec audit.Record) *mcp.CallToolResult {
+	if err := s.root.Ready(); err != nil {
+		return s.rejected(rec, unprovisionedDecision(err), unprovisionedAdvice(err))
+	}
+	return nil
 }
 
 // unprovisionedDecision maps a readiness failure to its audit decision: the

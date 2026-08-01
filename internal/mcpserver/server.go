@@ -43,6 +43,7 @@ import (
 	"github.com/jeffbstewart/cloister/internal/mcpserve"
 	"github.com/jeffbstewart/cloister/internal/runid"
 	"github.com/jeffbstewart/cloister/internal/runner"
+	"github.com/jeffbstewart/cloister/internal/workspace"
 )
 
 const (
@@ -156,7 +157,7 @@ func (s *Server) loadManifest() (*manifest.Manifest, error) {
 		// under a grange the workspace itself exists only between
 		// provision and dispose, and the refusal should name that state.
 		if _, serr := os.Stat(s.cfg.Workspace); os.IsNotExist(serr) {
-			return nil, fmt.Errorf("no workspace is provisioned at %s — the archivist's provision brings it into being", s.cfg.Workspace)
+			return nil, fmt.Errorf("%w (%s) — the archivist's provision brings it into being", workspace.ErrNotProvisioned, s.cfg.Workspace)
 		}
 		return nil, fmt.Errorf("no manifest at %s; no actions available", s.cfg.ManifestPath)
 	}
@@ -417,7 +418,13 @@ func (s *Server) harnessInfo(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	if err != nil {
 		info["manifest"] = "unavailable: " + err.Error()
 		info["actions"] = []any{}
-		if s.Degraded() == "" {
+		switch {
+		case errors.Is(err, workspace.ErrNotProvisioned):
+			// Nothing is broken — the tree is between lives (a dispose,
+			// or before the first provision); the next provision
+			// restores the actions.
+			info["note"] = "no workspace is provisioned; actions return when the archivist provisions one"
+		case s.Degraded() == "":
 			info["note"] = "the manifest was valid when the menu registered but is broken now; action calls will be rejected until it is fixed"
 		}
 		return mcpserve.JSONResult(info), nil

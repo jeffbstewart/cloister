@@ -190,7 +190,9 @@ func (r *Repo) Rescan() error {
 	// the difference between this and a genuinely empty repository.
 	if err := r.Ready(); errors.Is(err, workspace.ErrNotProvisioned) {
 		r.mu.Lock()
-		r.sh, r.files, r.sorted, r.spent = shield.Empty(), nil, nil, 0
+		// A live empty MAP, not nil: admitLocked writes into it when a
+		// read races the post-provision rescan (nil would panic).
+		r.sh, r.files, r.sorted, r.spent = shield.Empty(), map[string]*file{}, nil, 0
 		r.lastScan = ScanStats{Walk: now().Sub(walkStart)}
 		r.mu.Unlock()
 		return nil
