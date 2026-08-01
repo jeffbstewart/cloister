@@ -28,19 +28,24 @@ func TestResolveRole(t *testing.T) {
 		wantArgs []string
 		wantErr  bool
 	}{
-		{"role link", "scribe", []string{"-scribe-approvals"}, "scribe", []string{"-scribe-approvals"}, false},
+		{"role link", "archivist", []string{"-grange", "/grange"}, "archivist", []string{"-grange", "/grange"}, false},
 		{"role link with .exe", "agency.exe", []string{"-status-dir", "/status"}, "agency", []string{"-status-dir", "/status"}, false},
 		{"every role name resolves", "state-service", nil, "state-service", nil, false},
-		{"generic with selector pair", "cloister-worker", []string{"-worker-mode", "builder", "-spool", "/s"}, "builder", []string{"-spool", "/s"}, false},
-		{"generic with = form", "cloister-worker", []string{"-worker-mode=librarian"}, "librarian", []string{}, false},
+		{"generic with selector pair", "cloister-worker", []string{"-worker-mode", "archivist", "-grange", "/g"}, "archivist", []string{"-grange", "/g"}, false},
+		{"generic with = form", "cloister-worker", []string{"-worker-mode=state-service"}, "state-service", []string{}, false},
 		{"generic with double-dash = form", "cloister-worker", []string{"--worker-mode=scholar", "-answer-gate=false"}, "scholar", []string{"-answer-gate=false"}, false},
 		{"compat name still selects", "agent-builder", []string{"-worker-mode", "agency"}, "agency", []string{}, false},
 		{"compat healthcheck form", "agent-builder", []string{"-healthcheck", "-addr", ":9300"}, healthcheckName, []string{"-healthcheck", "-addr", ":9300"}, false},
 		{"generic bare is an error", "cloister-worker", nil, "", nil, true},
 		{"selector without value", "cloister-worker", []string{"-worker-mode"}, "", nil, true},
 		{"unknown role", "cloister-worker", []string{"-worker-mode", "corrector"}, "", nil, true},
+		// The retired mediator roles must stay retired — a stale deploy
+		// naming one gets a loud unknown-role error, not a zombie worker.
+		{"retired role: builder", "cloister-worker", []string{"-worker-mode", "builder"}, "", nil, true},
+		{"retired role: scribe", "cloister-worker", []string{"-worker-mode", "scribe"}, "", nil, true},
+		{"retired role: librarian", "cloister-worker", []string{"-worker-mode", "librarian"}, "", nil, true},
 		{"healthcheck is not a mode", "cloister-worker", []string{"-worker-mode", "healthcheck"}, "", nil, true},
-		{"selector must lead", "cloister-worker", []string{"-addr", ":9300", "-worker-mode", "scribe"}, "", nil, true},
+		{"selector must lead", "cloister-worker", []string{"-addr", ":9300", "-worker-mode", "scholar"}, "", nil, true},
 		{"unrecognized name gets no implied role", "cloister-worker-v2", []string{"-spool", "/s"}, "", nil, true},
 	}
 	for _, tc := range cases {
@@ -62,9 +67,15 @@ func TestResolveRole(t *testing.T) {
 // TestEveryRoleHasAParser: the table drives both argv[0] dispatch and
 // -worker-mode, so a role missing from it is unreachable.
 func TestEveryRoleHasAParser(t *testing.T) {
-	for _, name := range []string{"builder", "state-service", "scribe", "scholar", "librarian", "archivist", "agency"} {
+	for _, name := range []string{"state-service", "scholar", "archivist", "agency"} {
 		if roles[name] == nil {
 			t.Errorf("role %q has no parser", name)
+		}
+	}
+	// The mediators retired with the grange cutover.
+	for _, name := range []string{"builder", "scribe", "librarian"} {
+		if roles[name] != nil {
+			t.Errorf("retired role %q still has a parser", name)
 		}
 	}
 	if roles[healthcheckName] != nil {
@@ -79,13 +90,14 @@ func TestWrongRoleFlagIsAnError(t *testing.T) {
 		role string
 		args []string
 	}{
-		{"builder", []string{"-status-dir", "/status"}},       // agency flag
-		{"scribe", []string{"-policy", "/p"}},                 // scholar flag
-		{"scholar", []string{"-scribe-approvals"}},            // scribe flag
-		{"librarian", []string{"-state-dir", "/state"}},       // state-service flag
-		{"state-service", []string{"-rescan-interval", "1m"}}, // librarian flag
-		{"archivist", []string{"-repo-budget-mb", "64"}},      // librarian flag
-		{"agency", []string{"-workspace", "/w"}},              // the door holds no workspace
+		{"scholar", []string{"-status-dir", "/status"}},   // agency flag
+		{"state-service", []string{"-policy", "/p"}},      // scholar flag
+		{"archivist", []string{"-answer-gate=false"}},     // scholar flag
+		{"agency", []string{"-grange", "/g"}},             // archivist flag
+		{"agency", []string{"-workspace", "/w"}},          // the door holds no workspace
+		{"scholar", []string{"-default-branch", "main"}},  // archivist flag
+		{"state-service", []string{"-grange", "/grange"}}, // archivist flag
+		{"archivist", []string{"-scribe-approvals"}},      // a retired role's flag stays dead
 	}
 	for _, tc := range cases {
 		t.Run(tc.role, func(t *testing.T) {
@@ -104,15 +116,11 @@ func TestRoleParsersAcceptTheirOwnFlags(t *testing.T) {
 		role string
 		args []string
 	}{
-		{"builder", nil},
-		{"builder", []string{"-mark-warmed"}},
 		{"state-service", nil},
-		{"scribe", []string{"-scribe-approvals"}},
 		{"scholar", nil},
-		{"librarian", nil},
 		{"archivist", []string{"-grange", "/grange", "-default-branch", "main"}},
 		{"agency", []string{"-status-dir", "/status"}},
-		{"scribe", []string{"-healthcheck"}},
+		{"scholar", []string{"-healthcheck"}},
 		{"archivist", []string{"-healthcheck"}},
 		{"agency", []string{"-healthcheck"}},
 	}
