@@ -1,16 +1,17 @@
 # The archivist — source-control sidecar design
 
-Status: **in implementation — M1 steps 0–3 DONE** (PR #34: `.git/**`
-confinement; PR #95: the hardened runner and the local verb set in
-`internal/archive`; PR #96: the worker mode and its MCP surface in
-`internal/archivist`; then the jail: endpoint table, remote verbs,
-relays, topology, and the compose-lint invariants, in one PR).  Decisions from the 2026-07-07 design review,
-amended 2026-07-29 for the grange transformation
-([grange.md](grange.md)): the archivist gains the grange lifecycle
-verbs, a one-instance-one-workspace binding, and per-endpoint egress.
-"Execution sequencing" below is the M1 plan of record.  Rationale style
-follows [DESIGN.md](DESIGN.md); the runtime picture is in
-[ARCHITECTURE.md](ARCHITECTURE.md) (marked PLANNED).
+Status: **M1 COMPLETE** — the archivist is built, jailed, and linted
+(PR #34: `.git/**` confinement; PR #95: the hardened runner and the
+local verb set in `internal/archive`; PR #96: the worker mode and its
+MCP surface in `internal/archivist`; PR #98: the jail — endpoint table,
+remote verbs, relays, topology, compose-lint invariants; PRs #99/#100:
+the provision gate and the grange lifecycle; PR #101: `await_review`).
+Decisions from the 2026-07-07 design review, amended 2026-07-29 for the
+grange transformation ([grange.md](grange.md)): the archivist gains the
+grange lifecycle verbs, a one-instance-one-workspace binding, and
+per-endpoint egress.  "Execution sequencing" below records what landed
+where.  Rationale style follows [DESIGN.md](DESIGN.md); the runtime
+picture is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Problem
 
@@ -25,7 +26,7 @@ from writing there on the agent's behalf.
 
 A new worker mode, the **archivist**: the cell's sole authority over
 version control, the way the scribe is sole writer of source and the
-librarian (planned) is sole reader.
+librarian is sole reader.
 
 - **Sole owner of `.git`.**  Workspace confinement rejects `.git/**`
   outright for every other worker (landed in PR #34), so the archivist can
@@ -349,7 +350,7 @@ Subversion (or others) later means an adapter behind the same verbs:
 contract deliberately never mentions refs, remotes, rebases, or staging —
 those are realization details of the git adapter.
 
-## Execution sequencing (M1 plan of record, 2026-07-29)
+## Execution sequencing (M1 record; planned 2026-07-29, completed 2026-07-31)
 
 0. DONE (PR #34): workspace confinement rejects `.git/**` — the scribe
    can never be the archivist's confused deputy.
@@ -397,9 +398,10 @@ those are realization details of the git adapter.
    forge client with the lock released, so a minutes-long wait never
    wedges the rest of the surface.  One audit record per call that
    reaches the endpoint, at the wait's end.
-6. **Record cutover** — this doc's status, ARCHITECTURE.md's PLANNED
-   sections, grange.md's M1 milestone.  (The CLAUDE.md invariant
-   rewrite stays at grange M5.)
+6. DONE: **Record cutover** — this doc's status, ARCHITECTURE.md's
+   PLANNED sections (the archivist and its relays are now solid parts
+   of the deployed picture), grange.md's M1 milestone.  (The CLAUDE.md
+   invariant rewrite stays at grange M5.)
 
 GitHub is M1's only forge adapter; the endpoint table and the adapter
 seam are shaped for the Gitea backend, which follows once the pilot

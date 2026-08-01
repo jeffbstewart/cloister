@@ -339,7 +339,16 @@ the linted topology never lags the real one.
   checkpoints exist, overridable).  `provision` runs the
   provision-time verification first and refuses on failure, naming
   the failing requirement and pointing at "Locking down a project
-  for grange service".
+  for grange service".  *Done 2026-07-31* (PRs #95–#101;
+  [archivist.md](archivist.md) "Execution sequencing" is the record).
+  The verbs landed as `provision(repo, branch?)` / `dispose(force?)`:
+  the archivist boots empty and lazy-opens on provision, which clones
+  into a staging directory, gates against the repo's own
+  `.github/forge-lint.yaml` under the bot's token, and atomically
+  promotes — a refused gate leaves the workspace EMPTY, never
+  CORRUPT.  `await_review` closes the authorship loop.  GitHub is the
+  only forge adapter until the Gitea pilot answers its
+  protection-read questions.
 - **M2 — the grange replaces the host mount.**  Cells mount the
   per-task volume where the host directory used to be; scribe,
   librarian, and builder keep operating against it unchanged.  A
