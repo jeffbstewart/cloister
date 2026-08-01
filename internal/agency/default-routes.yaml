@@ -45,8 +45,12 @@ nodes:
     # the two-class queue, where interactive must overtake batch.  Keep
     # the queueing at the door.
     maxInFlight: 1
+    # Tags follow the HOUSE naming convention — a dash-formed model id
+    # plus :latest (qwen3-coder-30b:latest, not the ollama library's
+    # qwen3-coder:30b) — matching how models are staged into the
+    # serving stores.  Name new models the same way.
     models:
-      - qwen3-coder:30b
+      - qwen3-coder-30b:latest
   deepthink:
     # The deep-think node (docs/deepthink.md): a jailed macOS ollama on a
     # 128 GiB MacBook, dialed through the inference stack's blind
@@ -80,7 +84,7 @@ classes:
     maxQueueWait: 2m
     chain:
       - node: infer
-        model: qwen3-coder:30b
+        model: qwen3-coder-30b:latest
 
   # The librarian's quick comprehension pass (infer.Quick — its provenance
   # name for this class).  Serves the agent mid-turn: short and interactive.
@@ -96,7 +100,7 @@ classes:
       - node: deepthink
         model: qwen3.6-27b:latest
       - node: infer
-        model: qwen3-coder:30b
+        model: qwen3-coder-30b:latest
 
   # The librarian's effortful chain-of-thought pass (infer.Thorough), led
   # by the heavy-MoE lane on the deep-think node — the work the local GPU
@@ -111,7 +115,7 @@ classes:
       - node: deepthink
         model: qwen3-coder-next:latest
       - node: infer
-        model: qwen3-coder:30b
+        model: qwen3-coder-30b:latest
 
   # The scholar's research loop: search-grounded synthesis while the agent
   # (and usually the human) waits on the answer.  Leads with the heavy
@@ -127,7 +131,7 @@ classes:
       - node: deepthink
         model: qwen3-coder-next:latest
       - node: infer
-        model: qwen3-coder:30b
+        model: qwen3-coder-30b:latest
 
   # Background digestion — summaries, indexing.  Batch: it waits its turn
   # whenever anything interactive is queued.
@@ -139,7 +143,7 @@ classes:
     maxQueueWait: 10m
     chain:
       - node: infer
-        model: qwen3-coder:30b
+        model: qwen3-coder-30b:latest
 
   # The corrector's review lenses (docs/corrector.md): long-running,
   # never blocks a human — advice can wait behind every interactive ask.
@@ -155,4 +159,4 @@ classes:
       - node: deepthink
         model: qwen3-coder-next:latest
       - node: infer
-        model: qwen3-coder:30b
+        model: qwen3-coder-30b:latest

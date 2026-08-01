@@ -96,7 +96,7 @@ func TestForRemoteIsTheAllowlist(t *testing.T) {
 		t.Errorf("ForRemote(github repo) = %v, %v", e, err)
 	}
 	// The wire prefix matches too: a provisioned clone may carry either.
-	if e, err := tab.ForRemote("http://gitea-relay:3000/jeff/vivarium.git"); err != nil || e.Name != "gitea" {
+	if e, err := tab.ForRemote("http://gitea-relay:3000/jeff/upstream.git"); err != nil || e.Name != "gitea" {
 		t.Errorf("ForRemote(gitea wire) = %v, %v", e, err)
 	}
 	for _, bad := range []string{
