@@ -45,7 +45,10 @@
 #                  (default interactive-code); model tags live in the
 #                  agency's routing policy, not in cells
 #   STATE_TOKEN    shared worker<->state secret; per project, e.g. [guid]::NewGuid().ToString("N")
-#   STATUS_PORT    host localhost port for the status pages (unique per project)
+#   STATUS_BIND    (optional) host interface for the status pages; default
+#                  127.0.0.1.  0.0.0.0 = LAN monitoring opt-in — see the
+#                  exposure note on the status service before widening
+#   STATUS_PORT    host port for the status pages (unique per project)
 #   TZ             timezone for log timestamps AND the status pages, e.g.
 #                  America/New_York (default UTC); applied to every container
 #   KAGI_API_KEY   scholar's search/extract API token (Kagi). Set the account's
@@ -215,7 +218,14 @@ services:
       - *tz
     command: ["TCP-LISTEN:9201,fork,reuseaddr", "TCP:state:9201"]
     ports:
-      - "127.0.0.1:${STATUS_PORT:-9201}:9201"
+      # Defaults to localhost-only.  STATUS_BIND=0.0.0.0 publishes the
+      # status pages to the LAN — a deliberate operator opt-in for
+      # monitoring a headless host from a dev machine.  What it exposes
+      # to that network: the audit trail, run logs, stored diffs, and
+      # the APPROVALS page (clickable decisions) — unauthenticated, per
+      # the home-LAN threat model.  Never widen this on a network you
+      # do not fully trust.
+      - "${STATUS_BIND:-127.0.0.1}:${STATUS_PORT:-9201}:9201"
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]

@@ -34,6 +34,9 @@
 #                 below.  Unset, the relay forwards to a dead loopback port,
 #                 the agency's presence probe marks the node absent, and
 #                 every chain serves from the local GPU node.
+#   AGENCY_BIND   (optional) host interface for the agency's smoke-test
+#                 door; default 127.0.0.1.  0.0.0.0 = LAN inference
+#                 opt-in — see the exposure note on the proxy service
 #   TZ            timezone for the agency's log timestamps (default UTC)
 
 services:
@@ -149,7 +152,12 @@ services:
     # host-side ollama store (docs/GETTING_STARTED.md).
     command: ["TCP-LISTEN:11434,fork,reuseaddr", "TCP:agency:11434"]
     ports:
-      - "127.0.0.1:11434:11434"          # host reaches the agency for smoke tests
+      # Defaults to localhost-only.  AGENCY_BIND=0.0.0.0 publishes the
+      # inference door to the LAN — an operator opt-in that lets any
+      # LAN device consume the GPU through the agency's classes.  Same
+      # trust bar as the cell's STATUS_BIND: only on a network you
+      # fully trust.
+      - "${AGENCY_BIND:-127.0.0.1}:11434:11434" # host reaches the agency for smoke tests
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     read_only: true
