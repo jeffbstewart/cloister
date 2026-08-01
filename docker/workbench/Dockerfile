@@ -55,7 +55,7 @@ FROM debian:bookworm-slim
 # npm builds RUN (node is the CLI runtime) but offline npm-cache warming
 # is unwired — close that gap before granting a node project a grange.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates git gcc libc6-dev make zip unzip \
+      ca-certificates git gcc libc6-dev make zip unzip tmux \
     && rm -rf /var/lib/apt/lists/*
 
 # UTF-8 locale: Kotlin emits .class files whose NAMES carry backtick
@@ -154,6 +154,77 @@ COPY AGENTS.md /usr/local/share/cloister/AGENTS.md
 RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin agent \
     && mkdir -p /home/agent/.qwen /home/agent/.claude \
     && chown -R 1000:1000 /home/agent
+# The operator's session door: agents run under tmux so their lifetime
+# is decoupled from the attachment — a dropped Portainer tab or SSH hop
+# no longer kills the agent mid-task.  `workbench` attaches to the live
+# session when one exists, else asks which agent to start.  Heredocs
+# (BuildKit), not COPY: build-time generation writes LF bytes no matter
+# how a Windows checkout mangled line endings — the same CRLF-shebang
+# hazard the agent image dodged by having no scripts at all.
+COPY <<'EOF' /etc/tmux.conf
+# The operator's prefix is Ctrl-Z (not tmux's default C-b).  Ctrl-Z
+# collides with shell job control by design of the preference: press
+# the prefix TWICE to pass a literal suspend through to the program.
+unbind C-b
+set -g prefix C-z
+bind C-z send-prefix
+# Agent sessions are long and scrollback is the operator's audit trail
+# of the conversation; keep plenty.
+set -g history-limit 50000
+EOF
+
+COPY <<'EOF' /usr/local/bin/workbench
+#!/bin/sh
+# workbench — attach to the cell's live agent session, or start one.
+# The session survives detachment (that is the point); a second
+# workbench from another terminal attaches to the SAME session.
+set -eu
+SESSION=agent
+if tmux has-session -t "$SESSION" 2>/dev/null; then
+  exec tmux attach -t "$SESSION"
+fi
+echo "cloister workbench — no live session.  start:"
+echo "  1) qwen   (default)"
+echo "  2) shell"
+# claude joins this menu when its image-variant question settles.
+printf "> "
+read -r choice || choice=1
+case "$choice" in
+  ""|1|qwen)  cmd=qwen ;;
+  2|shell|sh) cmd=bash ;;
+  *) echo "workbench: unknown choice \"$choice\"" >&2; exit 1 ;;
+esac
+exec tmux new-session -s "$SESSION" -n main "$cmd"
+EOF
+RUN chmod 0755 /usr/local/bin/workbench
+
+# The how-do-I-drive-this banner.  /etc/motd alone only greets PAM
+# LOGIN shells, and a `docker exec -it ... bash` is not one — so the
+# same banner is also shown by /etc/bash.bashrc, which Debian's bash
+# reads for every interactive shell (guarded to once per shell, TTY
+# only, and skipped inside tmux — the operator already found the door).
+COPY <<'EOF' /etc/motd
+
+cloister workbench — jailed agent cell
+  workbench    attach the live agent session, or pick one to start.
+               Sessions survive disconnects: close this shell freely,
+               the agent keeps working.  tmux prefix is Ctrl-Z
+               (press it twice to send a literal Ctrl-Z through).
+  workspace    /grange/tree — absent until the archivist provisions;
+               the agent's own rules are in ~/.qwen/QWEN.md.
+  offline      no internet by design; package registries refuse.
+               Missing dependencies go through the operator airlock.
+
+EOF
+RUN cat <<'EOF' >> /etc/bash.bashrc
+
+# cloister: the workbench banner, once per interactive shell.
+if [ -n "$PS1" ] && [ -t 1 ] && [ -z "${TMUX:-}" ] && [ -z "${CLOISTER_BANNER:-}" ]; then
+    export CLOISTER_BANNER=1
+    cat /etc/motd
+fi
+EOF
+
 USER agent
 ENV HOME=/home/agent
 WORKDIR /home/agent
@@ -162,4 +233,7 @@ WORKDIR /home/agent
 # from a Windows checkout), best-effort like the agent image's: a copy
 # failure must not stop the CLI from starting.
 ENTRYPOINT ["/bin/sh", "-c", "mkdir -p \"$HOME/.qwen\" \"$HOME/.claude\" 2>/dev/null || true; cp /usr/local/share/cloister/AGENTS.md \"$HOME/.qwen/QWEN.md\" 2>/dev/null || true; cp /usr/local/share/cloister/AGENTS.md \"$HOME/.claude/CLAUDE.md\" 2>/dev/null || true; exec \"$@\"", "sh"]
-CMD ["qwen"]
+# The container idles; agents start when the operator runs `workbench`
+# in an exec shell ("pick your agent"), living in a tmux session that
+# outlives the shell that started it.
+CMD ["sleep", "infinity"]
