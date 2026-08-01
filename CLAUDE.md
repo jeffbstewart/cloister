@@ -1,16 +1,20 @@
 # Cloister
 
-Containment-first local AI coding environment: a jailed coding agent that
-builds/tests through a **builder**, writes source only through an audited
-**scribe**, and reaches the web only through a quarantined **scholar** — each a
-mode of one Go binary, wired into per-project "cells" (docker/ai-workers.yaml).
+Containment-first local AI coding environment: a jailed coding agent works
+directly — native tools, local git, on-board toolchains — in a **grange**, a
+per-task workspace volume the **archivist** clones from the forge and destroys
+after the task.  Version control and every remote touch are the archivist's
+alone; the web is reachable only through a quarantined **scholar**; the
+boundary that keeps `main` clean is the forge's human-reviewed PR gate
+(docs/grange.md).  Workers are modes of one Go binary, wired into per-project
+"cells" (docker/ai-workers.yaml).
 
 ## Layout
 - `cmd/cloister-worker` — the one multi-call binary; the program name (a role
-  link: builder | scribe | scholar | librarian | archivist | state-service |
-  agency) picks the role and its flag set, with a `-worker-mode` fallback under
-  the generic name.  Adding or changing a role: follow docs/worker-roles.md
-  (dispatch, flags, MCP surface, healthcheck, tests, image links).
+  link: scholar | archivist | state-service | agency) picks the role and its
+  flag set, with a `-worker-mode` fallback under the generic name.  Adding or
+  changing a role: follow docs/worker-roles.md (dispatch, flags, MCP surface,
+  healthcheck, tests, image links).
 - `internal/*` — the packages. `cmd/compose-lint` — topology drift guard.
 - `docker/` — Dockerfiles + compose. `etc/` — config templates. `docs/` — design.
   `bin/` — operator tools. `scripts/` — repo plumbing invoked by tooling (git
@@ -44,6 +48,19 @@ sequence 3+ times, add it to `lifecycle/`.
 - Tests for foo.go live in foo_test.go; never give a source file a test-sounding name.
 
 ## Security invariants (topology + tests, NOT prompt text)
+- The operator's host tree never enters a cell: the grange volume is the only
+  workspace, held by agent + archivist alone.  compose-lint refuses host
+  workspace mounts, pins grange mounts and every internal network's
+  membership, and refuses the retired mediators (builder/scribe/librarian) by
+  name.
+- Agent-authored bytes reach the canonical tree only through a human-reviewed
+  PR; the bot cannot touch the default branch.  Enforced by the forge ruleset
+  (forge-lint verifies it; the archivist's provision gate re-verifies live) and
+  the archivist's audited client-side refusals — the bot credential exists only
+  in the archivist.
+- Builds run offline: no package-registry route exists in a cell (GOPROXY=off,
+  CARGO_NET_OFFLINE, cache-only Gradle).  Dependency refresh is the human
+  airlock, which refuses over uncommitted build logic or a live agent session.
 - The scholar holds no `egress` network; its only route out is the kagi-relay,
   pinned to kagi.com. compose-lint + the boot self-check enforce this.
 - All inference rides through the agency (the sole inference door): `infer` sits

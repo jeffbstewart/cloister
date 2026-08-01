@@ -85,9 +85,9 @@ escalation fatigue is real; a compromised host is out of scope.
 | Policy failure mode | compiler misinterprets intent → unintended permission (mitigated by default-deny + invariants) | a human misdesigns the topology → caught in PR review; no runtime interpreter to fool |
 | Inference | cloud LLMs (Anthropic/Google/OpenAI) via credential-swapping MITM | local only (ollama on `infernet`; planned agency + deep-think node); no API keys exist |
 | Web egress | domain allowlist, TLS-*terminating* proxy, runtime domain additions via escalation | single pinned host (`kagi.com`) through a blind socat relay, TLS end-to-end, no MITM, no runtime expansion |
-| Source writes | filesystem MCP server + policy rules | scribe is the sole audited writer; the agent holds **no workspace mount at all**; reads shield-filtered via librarian |
-| Supply chain | registry proxy: allow/deny lists + 2-day age quarantine, in-session installs allowed | builds run offline; dependency refresh is a deliberate human airlock, never agent-reachable |
-| Escalation UX | first-class: mux/web approval flows, approval whitelisting to fight fatigue | scribe approval gates + status-page approvals; deliberately fewer prompts because fewer capabilities exist |
+| Source writes | filesystem MCP server + policy rules | the agent writes freely — but only into a disposable per-task clone (the grange); its work reaches the canonical tree solely through a human-reviewed PR on the forge, whose ruleset forge-lint verifies |
+| Supply chain | registry proxy: allow/deny lists + 2-day age quarantine, in-session installs allowed | builds run offline (no registry route exists; GOPROXY=off, CARGO_NET_OFFLINE, cache-only Gradle); dependency refresh is a deliberate human airlock, never agent-reachable |
+| Escalation UX | first-class: mux/web approval flows, approval whitelisting to fight fatigue | the PR review IS the approval flow (plus the scholar's research gates); deliberately fewer prompts because fewer capabilities exist |
 | Audit | append-only JSONL, budgets | append-only state service, one-way glass (subsystems can never read it), token-gated |
 | Agent's own credentials | fake sentinel key swapped at proxy; real key never in container | none to protect (local inference) |
 | Isolation tech | V8 isolate; Docker `--network=none`; Apple `container` per-VM on macOS 26+; srt (bubblewrap/Seatbelt) around MCP servers | Docker compose, `internal: true` networks, ro-rootfs/cap-drop/non-root everywhere; planned macOS seatbelt+PF jail for deep-think |
@@ -113,7 +113,8 @@ escalation fatigue is real; a compromised host is out of scope.
 - **Escalation ergonomics.**  Approval whitelisting (an approval mints a
   scoped auto-approve pattern that can upgrade escalate→allow but never
   override deny) is a thoughtful anti-fatigue design worth remembering
-  if the scribe's approval holds ever grow noisy.
+  if any of our human gates (the scholar's, the forge review) ever grow
+  noisy.
 - **Breadth.**  Gmail/Calendar/Drive, GitHub, memory, workflows, web UI,
   Signal transport.  Cloister intentionally does none of this.
 
@@ -127,13 +128,22 @@ escalation fatigue is real; a compromised host is out of scope.
 - **Absences instead of filters.**  IronCurtain's scholar-equivalent
   (fetch server) shares a trusted process with everything else, and an
   approved passthrough domain carries uninspected traffic.  Cloister's
-  scholar has *no route* to the builder, scribe, workspace, or any host
-  but `kagi.com` — exfiltration requires a topology change, not a
-  policy miss.  Notable absences are the architecture.
-- **The agent cannot even read freely.**  IronCurtain mediates writes
-  and sensitive reads via policy; cloister's agent has no workspace
-  mount at all, with shield-filtered reads (librarian) and audited
-  writes (scribe) as separate workers on separate wires.
+  scholar has *no route* to the agent, the archivist, the workspace, or
+  any host but `kagi.com` — exfiltration requires a topology change,
+  not a policy miss.  Notable absences are the architecture.
+- **The structural absences moved, deliberately.**  Cloister once
+  boasted "the agent holds no workspace mount at all" and "cannot even
+  read freely" — per-write and per-read mediation.  The grange
+  transformation ([docs/grange.md](docs/grange.md)) traded those away
+  on purpose: agents fight mediated file access, and the mediation
+  defended a line the threat model no longer relied on once the forge's
+  PR review became the declared boundary.  What the agent writes now is
+  a disposable clone; what it CANNOT touch is the load-bearing set —
+  the canonical tree (bot-untouchable default branch, forge-lint-
+  verified ruleset), the credential (archivist-only), the network (no
+  registry, no internet, pinned relays), and the audit trail.  The
+  structural-absence story lives in the network, the credential, and
+  the merge path — not the filesystem.
 - **No cloud credential, no key-theft surface.**  The entire Layer-2
   apparatus (CA cert, MITM, sentinel keys) exists to protect secrets
   cloister simply doesn't have.
@@ -158,7 +168,7 @@ relays are blind, TLS is end-to-end, egress is pinned at build time.
 The cost is expressiveness; the benefit is that the security argument is
 a graph-reachability proof instead of a rules audit.  These compose —
 nothing stops a topology-first system from adding semantic gates *inside*
-a worker (the scribe's approval holds already are one) — and that is
+a worker (the scholar's query and answer gates already are one) — and that is
 exactly the sane hybrid: structure for the outer walls, semantics only
 where a human is in the loop.
 
@@ -222,7 +232,7 @@ Now map to cloister's macOS need, the deep-think node
   artifacts are suspect" logic as his package proxy.  Low cost, real
   supply-chain value for the one moment the Mac is unjailed.
 - **Future option — cell workers on the Mac.**  If we ever want
-  non-GPU cloister workers (a scholar, a librarian, relays) running
+  non-GPU cloister workers (a scholar, an archivist, relays) running
   *on* the deep-think node, Apple `container` on macOS 26+ gives
   per-VM isolation stronger than Docker Desktop's shared VM, with the
   same compose-like ergonomics.  His docs flag the residual: the

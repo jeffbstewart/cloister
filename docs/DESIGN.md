@@ -1,5 +1,17 @@
 # Cloister — Design
 
+> Note (2026-07-31): the **grange transformation**
+> ([grange.md](grange.md)) superseded this document's write/read/build
+> mediation story — the scribe, librarian, and builder retired; the
+> agent works directly in a per-task cloned workspace, and the
+> human-reviewed PR gate on the forge is the boundary that keeps `main`
+> clean.  The containment philosophy below (structural absence over
+> policy, narrow contracts, one-way audit) is unchanged and still
+> governs; read the mediator-specific passages as the historical record
+> of the previous realization.  The dependency-airlock section's shape
+> survives with the AGENT in the builder's place
+> (bin/update-gradle-deps.bat).
+
 Why the system is shaped the way it is.  The README says what Cloister does;
 [ARCHITECTURE.md](ARCHITECTURE.md) shows the runtime itself — every
 container, network, mount, and port; this records the reasoning and the

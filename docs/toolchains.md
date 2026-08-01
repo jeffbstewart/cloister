@@ -1,6 +1,14 @@
 # Toolchains — multi-ecosystem builder packaging
 
-Status: **decision record (2026-07-18); the split and the JVM toolchain
+> **Superseded** (2026-07-31, the grange cutover): the per-ecosystem
+> BUILDER images this doc designs retired with the builder itself.  The
+> capability line it drew — toolchains live only where build code runs —
+> survives inverted: the **agent's workbench image**
+> ([docker/workbench](../docker/workbench), [grange.md](grange.md) M4)
+> is now the one toolchain-bearing image, and compose-lint pins it.
+> Historical design record below.
+
+Status at retirement: **decision record (2026-07-18); the split and the JVM toolchain
 are implemented** — slim `cloister-workers` (scratch) + `cloister-builder-jvm`,
 selected per cell via `TOOLCHAIN_IMAGE`, compose-lint pinning the image
 variables.  Go, C++, Rust, and Node remain design; the `toolchain.yaml`
