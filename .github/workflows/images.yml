@@ -44,10 +44,6 @@ env:
   # image).  Bump deliberately; the Dockerfile default matches.
   QWEN_VERSION: "0.19.4"
   WORKBENCH_IMAGE: ghcr.io/jeffbstewart/cloister-workbench
-  # The Claude Code CLI npm pin for the workbench.  "2" floats within the
-  # major at BUILD time — pin it exactly before the cutover deploy and
-  # treat bumps like the qwen pin: deliberate.
-  CLAUDE_VERSION: "2"
 
 jobs:
   publish:
@@ -153,7 +149,6 @@ jobs:
           platforms: linux/amd64 # add linux/arm64 here when needed
           build-args: |
             QWEN_CLI_VERSION=${{ env.QWEN_VERSION }}
-            CLAUDE_CLI_VERSION=${{ env.CLAUDE_VERSION }}
           tags: ${{ steps.tags.outputs.workbench }}
 
       # Tags get a GitHub Release carrying the static binary, so a cell can
