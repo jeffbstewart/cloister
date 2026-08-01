@@ -111,11 +111,14 @@ RUN mkdir -p /etc/cloister-worker && echo "workbench1" > /etc/cloister-worker/to
 # Version pins ride the build pipeline (images.yml).  The Dockerfile
 # defaults exist so a bare local `docker build` produces something
 # sensible, but the pipeline's values are the pins of record.
+# Claude Code is deliberately ABSENT: it is proprietary (Anthropic's
+# commercial terms, not open source), and this image's GHCR package is
+# public — baking it in would be public redistribution.  It returns as
+# its own PRIVATE image variant when that work is picked up; qwen-code
+# and the toolchains are all Apache-2.0/permissive and publish freely.
 ARG QWEN_CLI_VERSION=0.19.4
-ARG CLAUDE_CLI_VERSION=2
 RUN npm install -g \
       @qwen-code/qwen-code@${QWEN_CLI_VERSION} \
-      @anthropic-ai/claude-code@${CLAUDE_CLI_VERSION} \
     && npm cache clean --force
 
 # Trim qwen's bundled skills: batch / extension-creator / loop are the
@@ -138,13 +141,13 @@ RUN set -eux; \
     test "$found" = 1
 
 # The stock environment prompt: how the grange, the archivist, and the
-# structurally-offline cell work — one canonical file both CLIs read.
-# The entrypoint materializes it into the HOME config locations
-# (~/.qwen/QWEN.md, ~/.claude/CLAUDE.md) at every start, never into the
-# working tree: the cwd is the CHECKOUT now, and a context file dropped
-# there would pollute the tree the agent commits from.  Home-dir volumes
-# would shadow a baked copy, hence materialize-at-start, refreshed each
-# start so an image upgrade updates the prompt.
+# structurally-offline cell work — one canonical file, materialized by
+# the entrypoint into each CLI's HOME config location (~/.qwen/QWEN.md
+# today; future agent variants add theirs) at every start, never into
+# the working tree: the cwd is the CHECKOUT now, and a context file
+# dropped there would pollute the tree the agent commits from.  Home-dir
+# volumes would shadow a baked copy, hence materialize-at-start,
+# refreshed each start so an image upgrade updates the prompt.
 COPY AGENTS.md /usr/local/share/cloister/AGENTS.md
 
 # The identity-free non-root user, uid 1000 to match the image-owned
@@ -152,7 +155,7 @@ COPY AGENTS.md /usr/local/share/cloister/AGENTS.md
 # dir, the MCP registrations for archivist/scholar — lives in compose
 # and lands with the cutover; this image stays pure capability.
 RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin agent \
-    && mkdir -p /home/agent/.qwen /home/agent/.claude \
+    && mkdir -p /home/agent/.qwen \
     && chown -R 1000:1000 /home/agent
 # The operator's session door: agents run under tmux so their lifetime
 # is decoupled from the attachment — a dropped Portainer tab or SSH hop
@@ -232,7 +235,7 @@ WORKDIR /home/agent
 # Inline exec-form entrypoint (no shell script -> no CRLF-shebang hazard
 # from a Windows checkout), best-effort like the agent image's: a copy
 # failure must not stop the CLI from starting.
-ENTRYPOINT ["/bin/sh", "-c", "mkdir -p \"$HOME/.qwen\" \"$HOME/.claude\" 2>/dev/null || true; cp /usr/local/share/cloister/AGENTS.md \"$HOME/.qwen/QWEN.md\" 2>/dev/null || true; cp /usr/local/share/cloister/AGENTS.md \"$HOME/.claude/CLAUDE.md\" 2>/dev/null || true; exec \"$@\"", "sh"]
+ENTRYPOINT ["/bin/sh", "-c", "mkdir -p \"$HOME/.qwen\" 2>/dev/null || true; cp /usr/local/share/cloister/AGENTS.md \"$HOME/.qwen/QWEN.md\" 2>/dev/null || true; exec \"$@\"", "sh"]
 # The container idles; agents start when the operator runs `workbench`
 # in an exec shell ("pick your agent"), living in a tmux session that
 # outlives the shell that started it.

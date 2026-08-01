@@ -55,9 +55,8 @@ that need them.  Build systems: each repo's `gradlew`, `go`, `cargo`,
 
 ## Housekeeping
 
-- Never commit agent context files (`QWEN.md`, `CLAUDE.md` from your
-  home directory) or anything under `/grange` that the repository does
-  not track.
+- Never commit agent context files (your home directory's `QWEN.md`)
+  or anything under `/grange` that the repository does not track.
 - Project-specific guidance lives in the repository itself (its own
   `CLAUDE.md`/`AGENTS.md`, if present) and adds to — never replaces —
   the rules here.
