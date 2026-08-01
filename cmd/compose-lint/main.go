@@ -17,9 +17,12 @@
 // checked against the matching invariant set:
 //
 //   - cell stack (docker/ai-workers.yaml): scholar off `egress` and off
-//     builder/scribe nets, its networks internal, only kagi-relay on
-//     `egress`, relay pinned to kagi.com:443, agent mount-free, librarian
-//     read-only, and every consumer dialing the agency — never raw infer.
+//     the archivist's nets, its networks internal, only the egress-holding
+//     relays on `egress`, the kagi-relay pinned to kagi.com:443, no host
+//     workspace anywhere (the grange volume is the only workspace, held by
+//     agent + archivist alone), the retired mediators absent, only the
+//     agent on a toolchain image, and every consumer dialing the agency —
+//     never raw infer.
 //   - inference stack (docker/inference.yaml): the agency is the sole
 //     inference door — infer on `modelnet` alone, modelnet internal and
 //     private to agency+infer, the localhost relay pinned to the agency,
@@ -43,7 +46,7 @@ import (
 
 // okSummary is the one-line clean verdict printed per stack kind.
 var okSummary = map[composelint.Stack]string{
-	composelint.StackCell:  "scholar contained, egress pinned to kagi.com, agent mount-free, librarian read-only, archivist jailed on grange + gitegress, consumers dial the agency",
+	composelint.StackCell:  "scholar contained, egress pinned to the relays, no host tree anywhere, agent on the grange + workbench, mediators absent, archivist jailed on grange + gitegress, consumers dial the agency",
 	composelint.StackInfra: "infer behind the agency on a closed modelnet, relay fronts the door, deep-think path env-pinned, no egress",
 }
 
