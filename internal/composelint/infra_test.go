@@ -263,6 +263,12 @@ services:
 			"scholar:\n    user: \"1000:1000\"\n    image: ${REGISTRY:-x}/${WORKBENCH_IMAGE}", 1),
 		"state runs as root": strings.Replace(cleanCompose,
 			"state:\n    user: \"1000:1000\"", "state:\n    user: \"0:0\"", 1),
+		// The update watcher is the ONE container that holds the control
+		// plane, and it lives in its own host-side stack — never here.
+		"the watcher rides along in the abbey": base(agencyClean, inferClean, proxyClean, modelnetClean, `  watchtower:
+    dns: "127.0.0.1"
+    networks: [statepub]
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]`),
 	}
 	for name, yaml := range cases {
 		t.Run(name, func(t *testing.T) {

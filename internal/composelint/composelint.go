@@ -200,13 +200,33 @@ func (s service) runsAsRoot() bool {
 	return id == "" || id == "0" || id == "root"
 }
 
+// dockerSocketViolations refuses the docker control plane inside either
+// stack.  A socket mount is root-equivalent control of the HOST: with it
+// a container can start a privileged sibling, mount any host path, or
+// read every other container's secrets — every containment claim in this
+// repository would become advisory.  It is why the archivist provisions
+// workspace CONTENTS while volumes are created and destroyed host-side,
+// and why the update watcher (docs/watchtower.md) lives beside the
+// stacks rather than in them, like the Portainer agent.
+func dockerSocketViolations(c compose) []string {
+	var v []string
+	for _, name := range serviceNames(c) {
+		for _, vol := range c.Services[name].Volumes {
+			if strings.Contains(vol, "docker.sock") || strings.Contains(vol, "/var/run/docker") {
+				v = append(v, fmt.Sprintf("%s mounts the docker socket (%q) — that is root-equivalent control of the host; nothing in a cell or the abbey may hold the control plane", name, vol))
+			}
+		}
+	}
+	return v
+}
+
 // dnsPinViolations enforces the DNS discipline: any service whose networks
-// are all internal (or external — the shared infernet, which the infra
-// stack's own lint keeps internal) must pin `dns: 127.0.0.1`, a dead
-// upstream, so the daemon-side embedded resolver can never forward an
-// external lookup.  Name resolution alone is an exfiltration channel from
-// an internal network (CVE-2024-29018); container-name resolution is
-// answered authoritatively by the embedded resolver and never consults the
+// are all internal (or external — the shared infernet, which the abbey's
+// own lint keeps internal) must pin `dns: 127.0.0.1`, a dead upstream, so
+// the daemon-side embedded resolver can never forward an external lookup.
+// Name resolution alone is an exfiltration channel from an internal
+// network (CVE-2024-29018); container-name resolution is answered
+// authoritatively by the embedded resolver and never consults the
 // upstream, so it is unaffected.  A service holding a NAT-routed network
 // (egress, frontend) has legitimate DNS and is exempt by construction.
 func dnsPinViolations(c compose) []string {
@@ -390,6 +410,7 @@ func Check(data []byte) ([]string, error) {
 	}
 
 	v = append(v, directInferDials(c)...)
+	v = append(v, dockerSocketViolations(c)...)
 	v = append(v, dnsPinViolations(c)...)
 	return v, nil
 }

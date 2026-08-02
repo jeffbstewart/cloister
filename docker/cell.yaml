@@ -160,6 +160,12 @@ services:
     # same uid the agent runs as) — never the operator's host tree.
     user: "1000:1000"
     restart: unless-stopped
+    labels:
+      # Watched for image updates (docker/watchtower.yaml).  Safe because
+      # this role drains: the update waits for the clone or poll in
+      # flight.  The AGENT deliberately carries no such label — a human's
+      # session is not a bounded operation.
+      - com.centurylinklabs.watchtower.enable=true
     # Lame duck: a clone runs for minutes and await_review blocks for up
     # to an hour, so the drain gets room.  The role's own drain timeout
     # (4m) sits UNDER this, and await_review winds itself up on the

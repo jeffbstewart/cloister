@@ -97,6 +97,8 @@ services:
     container_name: agency
     user: "1000:1000"
     restart: unless-stopped
+    labels:
+      - com.centurylinklabs.watchtower.enable=true   # watched (docker/watchtower.yaml)
     # The agency role link of the multi-call worker binary; -addr defaults
     # to the role's :11434.  The routing policy is the config embedded in
     # the binary unless AGENCY_ROUTES mounts an override (below).
@@ -250,6 +252,8 @@ services:
     container_name: scholar
     user: "1000:1000"
     restart: unless-stopped
+    labels:
+      - com.centurylinklabs.watchtower.enable=true   # watched; drains (docker/watchtower.yaml)
     # Lame duck: a research call runs a gated multi-hop loop for many
     # minutes, and killing one mid-flight wastes real provider spend
     # against the daily caps.  Drain generously.
@@ -357,6 +361,8 @@ services:
     container_name: state
     user: "1000:1000"                    # fixed service uid: state touches no workspace; its ledger stays in a Docker volume
     restart: unless-stopped
+    labels:
+      - com.centurylinklabs.watchtower.enable=true   # watched (docker/watchtower.yaml)
     # The fleet's memory and its permission desk (docs/abbey.md): ONE audit
     # trail, ONE approvals page, serving every cell.  Both humans are flat
     # superusers for now — each sees the other's records and may approve the

@@ -1,0 +1,88 @@
+# Copyright 2026 Jeffrey B. Stewart
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# ── The update watcher ──────────────────────────────────────────────────────
+# Watches the tags the abbey and the cells run and restarts a container
+# when its image moves, so N developer cells do not have to be updated by
+# hand.  The point is not speed — updates may take minutes — it is that
+# they are not FORGOTTEN.  The operator keeps the re-pull-and-redeploy
+# hammer for anything urgent.
+#
+# HOST INFRASTRUCTURE, NOT A STACK MEMBER.  This is the one container in
+# the whole deployment that holds `/var/run/docker.sock` — root-equivalent
+# control of the host.  It therefore lives in its OWN stack, on no
+# cloister network, reachable by no worker: the same posture as the
+# Portainer agent.  compose-lint refuses a docker socket anywhere in
+# docker/abbey.yaml or docker/cell.yaml, permanently.
+#
+# What it may restart is OPT-IN by label (see the two stacks' services):
+# a hand-run container — a throwaway ollama, a template probe — must
+# never be restarted underneath the operator.
+#
+#   labelled today: the abbey's scholar, state, and agency; a cell's
+#   archivist.  Deliberately NOT the agent: its unit of work is a human's
+#   open-ended session rather than a bounded operation, so only the human
+#   knows when it may end (docs/watchtower.md).  Agent updates are taken
+#   at task boundaries.
+#
+# The labelled workers drain gracefully (docs/abbey.md, the lame duck):
+# SIGTERM stops new admissions, in-flight work finishes, and the process
+# exits before docker's stop_grace_period elapses.  Watchtower honors that
+# grace period, so an archivist mid-clone costs up to five minutes to
+# update — accepted, deliberately.
+#
+# Stack env vars:
+#   WATCHTOWER_IMAGE   pinned release, e.g. containrrr/watchtower:1.7.1.
+#                      NEVER :latest — a self-updating updater is a
+#                      supply-chain hole with no review gate.
+#   WATCHTOWER_POLL    seconds between checks (default 3600: hourly is
+#                      plenty for a tag that moves on merges to main)
+#   TZ                 timezone for log timestamps (default UTC)
+
+services:
+  watchtower:
+    image: ${WATCHTOWER_IMAGE:?set WATCHTOWER_IMAGE to a PINNED release, e.g. containrrr/watchtower:1.7.1}
+    container_name: watchtower
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+      # Opt-in: only containers carrying
+      # com.centurylinklabs.watchtower.enable=true are considered.
+      - WATCHTOWER_LABEL_ENABLE=true
+      - WATCHTOWER_POLL_INTERVAL=${WATCHTOWER_POLL:-3600}
+      # Reap the superseded image after a successful update, so a month of
+      # :latest churn does not silently fill the disk.
+      - WATCHTOWER_CLEANUP=true
+      # Never restart ITSELF: an updater that swaps its own binary
+      # mid-decision has no reviewer.  Its pin moves when a human edits
+      # WATCHTOWER_IMAGE.
+      - WATCHTOWER_NO_RESTART=false
+      - WATCHTOWER_INCLUDE_STOPPED=false
+    volumes:
+      # THE reason this stack is separate.  Read-only is not meaningful
+      # here — the docker API grants control regardless of mount flags —
+      # so the isolation IS the boundary: no cloister network, no worker
+      # route, nothing else in this stack.
+      - /var/run/docker.sock:/var/run/docker.sock
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    mem_limit: 256m
+    # No `networks:` key at all: watchtower talks to the daemon over the
+    # socket and needs no network but the default bridge it lands on for
+    # registry pulls.  It must never join infernet, statenet,
+    # archivistnet, gitegress, or any other cloister wire.
