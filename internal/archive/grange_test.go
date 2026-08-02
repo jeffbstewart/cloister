@@ -19,6 +19,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,13 +36,14 @@ const grangeRepoURL = "https://github.com/op/repo"
 // it records what it was asked about so a test can assert the wiring.
 type stubGate struct {
 	err        error
+	namespace  string // what the repo's forge-lint config declares (R8)
 	sawRepo    string
 	sawStaging string
 }
 
-func (s *stubGate) Verify(_ context.Context, _ endpoint.Endpoint, repo, staging string) error {
+func (s *stubGate) Verify(_ context.Context, _ endpoint.Endpoint, repo, staging string) (string, error) {
 	s.sawRepo, s.sawStaging = repo, staging
-	return s.err
+	return s.namespace, s.err
 }
 
 // grangeRig is a Grange over a local bare origin.  The clone is injected
@@ -187,6 +189,47 @@ func TestGrangeProvisionAndDispose(t *testing.T) {
 	}
 	if _, err := r.g.Archive(); !errors.Is(err, ErrNotProvisioned) {
 		t.Errorf("Archive after dispose = %v, want ErrNotProvisioned", err)
+	}
+}
+
+// TestBranchNamespaceRefusedLocally: the forge restricts branch creation
+// to the repo's agent namespace and rejects anything else at PUSH — by
+// which time the agent has committed work to a branch that can never be
+// published.  The namespace the gate learned at provision is enforced
+// here instead, at creation, where the fix is free; and it survives a
+// restart through the provenance marker.
+func TestBranchNamespaceRefusedLocally(t *testing.T) {
+	r := newGrangeRig(t)
+	r.gate.namespace = "agent/" // what the repo's forge-lint config declares
+	ctx := context.Background()
+
+	branch, _ := ParseBranchName("agent/feature")
+	if _, err := r.g.Provision(ctx, grangeRepoURL, branch); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	arc, err := r.g.Archive()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bad, _ := ParseBranchName("agent-walkthrough") // the shape that bit us on abbot
+	err = arc.StartWork(ctx, bad)
+	if !errors.Is(err, ErrOutsideNamespace) {
+		t.Fatalf("start_work(agent-walkthrough) = %v, want ErrOutsideNamespace", err)
+	}
+	// The refusal must teach the convention, not just deny.
+	if !strings.Contains(err.Error(), "agent/") {
+		t.Errorf("refusal %q does not name the required prefix", err)
+	}
+	good, _ := ParseBranchName("agent/walkthrough")
+	if err := arc.StartWork(ctx, good); err != nil {
+		t.Fatalf("start_work(agent/walkthrough) = %v, want success", err)
+	}
+
+	// The marker carries the namespace, so a restart still refuses.
+	m, err := r.g.readMarker()
+	if err != nil || m.Namespace != "agent/" {
+		t.Fatalf("marker namespace = %q (%v), want it recorded for restart", m.Namespace, err)
 	}
 }
 

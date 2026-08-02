@@ -47,8 +47,9 @@ func (s *Server) registerRemoteTools() {
 	// All refuse cleanly until a workspace is provisioned.
 	s.addArc(&mcp.Tool{
 		Name: "publish",
-		Description: "Push the current line of work to its endpoint and record the upstream, flipping the branch to published " +
-			"(after which restore and sync switch to forward motion).  Refused on the default branch.  Audited.",
+		Description: "Push the line of work the archivist is ALREADY on — start_work creates one; this does not.  Records the " +
+			"upstream and flips the branch to published (after which restore and sync switch to forward motion).  Refused on " +
+			"the default branch, and on any branch outside the repository's agent namespace.  Audited.",
 		InputSchema: &jsonschema.Schema{Type: "object", AdditionalProperties: mcpserve.NoExtras()},
 	}, s.publish)
 
@@ -137,7 +138,8 @@ func remoteDecision(err error) audit.Decision {
 	switch {
 	case err == nil:
 		return audit.DecisionRemoteOK
-	case errors.Is(err, archive.ErrDefaultBranch), errors.Is(err, archive.ErrNoEndpoints):
+	case errors.Is(err, archive.ErrDefaultBranch), errors.Is(err, archive.ErrNoEndpoints),
+		errors.Is(err, archive.ErrOutsideNamespace):
 		return audit.DecisionRemoteRefused
 	}
 	return audit.DecisionRemoteError

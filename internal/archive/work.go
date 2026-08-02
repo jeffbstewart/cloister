@@ -61,12 +61,33 @@ func (a *Archive) identityArgs() []string {
 // Uncommitted changes ride along (git refuses the switch itself if that
 // cannot be done cleanly), so "edit first, branch when it becomes
 // real" works.
+// ErrOutsideNamespace refuses a line of work outside the repository's
+// agent-branch namespace.  The forge refuses these too — but at PUSH,
+// after the agent has committed work to a branch that can never be
+// published.  Refusing at creation is the same rule enforced where the
+// fix costs nothing.
+var ErrOutsideNamespace = errors.New("archive: branch is outside the repository's agent namespace")
+
+// inNamespace enforces the provisioned repo's agent-branch prefix (R8).
+// With no namespace known (a local checkout, a pre-namespace marker) the
+// forge remains the only enforcer.
+func (a *Archive) inNamespace(name BranchName) error {
+	if a.ns == "" || strings.HasPrefix(name.String(), a.ns) {
+		return nil
+	}
+	return fmt.Errorf("%w: %q must start with %q (the forge refuses to create any other branch — e.g. %s%s)",
+		ErrOutsideNamespace, name, a.ns, a.ns, strings.TrimLeft(name.String(), "-/"))
+}
+
 func (a *Archive) StartWork(ctx context.Context, name BranchName) error {
 	if name.IsZero() {
 		return fmt.Errorf("archive: start_work: a branch name is required")
 	}
 	if name.String() == a.def.String() {
 		return fmt.Errorf("%w: start_work(%s)", ErrDefaultBranch, name)
+	}
+	if err := a.inNamespace(name); err != nil {
+		return err
 	}
 	if err := a.guardConfig(ctx); err != nil {
 		return err

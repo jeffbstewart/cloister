@@ -107,7 +107,7 @@ func TestForgeGatePassesCompliantRepo(t *testing.T) {
 	srv := gateServer(t, true)
 	staging := t.TempDir()
 	writeForgeLint(t, staging, srv.URL, "op/repo")
-	if err := forgeGate(srv).Verify(context.Background(), gateEndpoint(t, srv.URL+"/"), "op/repo", staging); err != nil {
+	if _, err := forgeGate(srv).Verify(context.Background(), gateEndpoint(t, srv.URL+"/"), "op/repo", staging); err != nil {
 		t.Fatalf("compliant repo refused: %v", err)
 	}
 }
@@ -116,7 +116,7 @@ func TestForgeGateRefusesOnViolation(t *testing.T) {
 	srv := gateServer(t, false) // stale approvals survive -> R2 violation
 	staging := t.TempDir()
 	writeForgeLint(t, staging, srv.URL, "op/repo")
-	err := forgeGate(srv).Verify(context.Background(), gateEndpoint(t, srv.URL+"/"), "op/repo", staging)
+	_, err := forgeGate(srv).Verify(context.Background(), gateEndpoint(t, srv.URL+"/"), "op/repo", staging)
 	var refused *GateRefusedError
 	if !errors.As(err, &refused) {
 		t.Fatalf("gate error = %v, want *GateRefusedError", err)
@@ -130,7 +130,7 @@ func TestForgeGateRefusesRepoMismatch(t *testing.T) {
 	srv := gateServer(t, true)
 	staging := t.TempDir()
 	writeForgeLint(t, staging, srv.URL, "someone/else") // config governs a different repo
-	err := forgeGate(srv).Verify(context.Background(), gateEndpoint(t, srv.URL+"/"), "op/repo", staging)
+	_, err := forgeGate(srv).Verify(context.Background(), gateEndpoint(t, srv.URL+"/"), "op/repo", staging)
 	if err == nil || !strings.Contains(err.Error(), "pins repo") || !errors.Is(err, ErrNotGrangeReady) {
 		t.Fatalf("mismatched config repo = %v, want a not-grange-ready refusal naming the mismatch", err)
 	}
@@ -139,7 +139,7 @@ func TestForgeGateRefusesRepoMismatch(t *testing.T) {
 func TestForgeGateRefusesMissingConfig(t *testing.T) {
 	srv := gateServer(t, true)
 	staging := t.TempDir() // no .github/forge-lint.yaml
-	err := forgeGate(srv).Verify(context.Background(), gateEndpoint(t, srv.URL+"/"), "op/repo", staging)
+	_, err := forgeGate(srv).Verify(context.Background(), gateEndpoint(t, srv.URL+"/"), "op/repo", staging)
 	if err == nil || !strings.Contains(err.Error(), "Locking down a project") || !errors.Is(err, ErrNotGrangeReady) {
 		t.Fatalf("missing config = %v, want a not-grange-ready refusal pointing at the runbook", err)
 	}
@@ -151,7 +151,7 @@ func TestForgeGateRefusesNonGitHub(t *testing.T) {
 	writeForgeLint(t, staging, srv.URL, "op/repo")
 	ep := gateEndpoint(t, srv.URL+"/")
 	ep.Forge = endpoint.ForgeGitea
-	err := forgeGate(srv).Verify(context.Background(), ep, "op/repo", staging)
+	_, err := forgeGate(srv).Verify(context.Background(), ep, "op/repo", staging)
 	if err == nil || !strings.Contains(err.Error(), "only github") || !errors.Is(err, ErrNotGrangeReady) {
 		t.Fatalf("gitea endpoint = %v, want a fail-closed not-grange-ready refusal", err)
 	}
