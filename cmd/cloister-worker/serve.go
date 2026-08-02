@@ -61,13 +61,26 @@ func (c commonFlags) runOrProbe(run func()) func() {
 // caller can release its resources before exiting — log.Fatalf here
 // would skip the caller's defers (a crash-looping container would leak
 // whatever the role holds on disk, e.g. the archivist's hooks dir).
+// roleName is the resolved role, set by main once dispatch picks one; it
+// is what the startup banner calls this process.
+var roleName string
+
+// bannerName is the role for the banner, falling back to the binary's own
+// name when nothing resolved a role (a direct serveHTTP call in a test).
+func bannerName() string {
+	if roleName != "" {
+		return roleName
+	}
+	return "cloister-worker"
+}
+
 func serveHTTP(httpSrv *http.Server, what string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- httpSrv.ListenAndServe() }()
-	log.Printf("agent-builder %s serving %s at %s", version, what, httpSrv.Addr)
+	log.Printf("%s %s serving %s at %s", bannerName(), version, what, httpSrv.Addr)
 
 	select {
 	case err := <-errCh:

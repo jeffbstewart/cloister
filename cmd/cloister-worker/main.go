@@ -109,6 +109,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// The startup banner says which role this process actually is.  Four
+	// workers now share one host (the abbey), so a banner that named the
+	// binary — or worse, a stale link name — made `docker logs scholar`
+	// and `docker logs state` indistinguishable.
+	roleName = name
 	run, err := parserFor(name)(roleArgs)
 	if errors.Is(err, flag.ErrHelp) {
 		return // -h/-help: the flag set already printed usage
