@@ -240,6 +240,7 @@ func CheckInfra(data []byte) ([]string, error) {
 			v = append(v, fmt.Sprintf("%s must run as a non-root user; user = %q", name, svc.User))
 		}
 	}
+	v = append(v, dockerSocketViolations(c)...)
 	v = append(v, dnsPinViolations(c)...)
 	return v, nil
 }

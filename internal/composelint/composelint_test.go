@@ -185,6 +185,18 @@ func TestCatchesViolations(t *testing.T) {
 			"    networks: [archivistnet, statenet, gitegress]", 1),
 		"dns not the dead loopback": strings.Replace(clean(),
 			`dns: "127.0.0.1"`, `dns: "8.8.8.8"`, 1),
+		// The control plane never enters a stack: a socket mount is
+		// root-equivalent host control, which would make every other
+		// containment claim advisory.  Only the update watcher holds it,
+		// and it lives in its own host-side stack.
+		"a cell service mounts the docker socket": strings.Replace(clean(),
+			`"grange:/grange", "qwen_home:/home/agent/.qwen"`,
+			`"grange:/grange", "/var/run/docker.sock:/var/run/docker.sock"`, 1),
+		"a helper mounts the docker socket read-only": cellBase(cellAgent, cellArchivist, `  updater:
+    dns: "127.0.0.1"
+    networks: [archivistnet]
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock:ro"]
+`),
 		"consumer dials infer directly": strings.Replace(clean(),
 			"  agent:\n    user: \"1000:1000\"",
 			"  agent:\n    environment: [\"OPENAI_BASE_URL=http://infer:11434/v1\"]\n    user: \"1000:1000\"", 1),
