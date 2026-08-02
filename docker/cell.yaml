@@ -165,6 +165,9 @@ services:
       - *tz
       - STATE_URL=http://state:9201
       - STATE_TOKEN=${STATE_TOKEN}
+      # Which cell this record came from: one state service holds the
+      # whole fleet's trail now (docs/abbey.md).
+      - AUDIT_ORIGIN=${PROJECT}
     volumes:
       # A dedicated grange volume, NEVER a host bind — the operator's host
       # tree does not enter the archivist (docs/archivist.md).  The volume

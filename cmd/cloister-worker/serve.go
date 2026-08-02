@@ -65,6 +65,14 @@ func (c commonFlags) runOrProbe(run func()) func() {
 // is what the startup banner calls this process.
 var roleName string
 
+// auditOrigin names where this worker's audit records come from — the
+// cell id for a cell's workers, "abbey" for the shared doors.  One state
+// service holds the whole fleet's trail now, so a record that does not
+// say where it came from cannot be traced to a project (docs/abbey.md).
+// Deployment config, set by compose; unset leaves records unattributed
+// rather than guessing.
+func auditOrigin() string { return envOr("AUDIT_ORIGIN", "") }
+
 // bannerName is the role for the banner, falling back to the binary's own
 // name when nothing resolved a role (a direct serveHTTP call in a test).
 func bannerName() string {
