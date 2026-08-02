@@ -143,6 +143,7 @@ func runScholar(o scholarOptions) {
 		Transcripts: stateClient,
 		AnswerGate:  o.AnswerGate,
 		Caps:        scholar.DefaultCaps(),
+		Draining:    Draining(),
 	})
 	if err := serveHTTP(&http.Server{Addr: o.Addr, Handler: srv.Handler()},
 		fmt.Sprintf("scholar (research → class %s @ %s, engine %s)", agency.ClassResearch, baseURL, sub.Engine())); err != nil {

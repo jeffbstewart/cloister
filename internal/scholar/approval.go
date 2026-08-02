@@ -69,6 +69,18 @@ func (s *Server) gate(ctx context.Context, tool, path string, timeout time.Durat
 			s.withdraw(id) // pull the pending record; nobody is waiting on it
 			return approval.Timeout
 		}
+		select {
+		case <-s.cfg.Draining:
+			// Lame duck: this process will not be here to receive the
+			// decision.  Timeout is already the right terminal — it
+			// withdraws the pending record so the operator is not left
+			// holding a request nobody awaits, and the gate fails
+			// closed, which is what every unresolved gate does.
+			log.Printf("scholar: %s op=%s withdrawn (draining for shutdown)", tool, id)
+			s.withdraw(id)
+			return approval.Timeout
+		default:
+		}
 		rec, err := s.cfg.Approvals.PollDecision(id)
 		if err != nil {
 			log.Printf("scholar: poll approval %s: %v", id, err)
@@ -83,11 +95,13 @@ func (s *Server) gate(ctx context.Context, tool, path string, timeout time.Durat
 	}
 }
 
-// pause waits up to d, returning early if ctx is done (caller cancelled or
-// the gate deadline passed); the loop's top-of-body ctx check acts on it.
+// pause waits up to d, returning early if ctx is done (caller cancelled
+// or the gate deadline passed) or the process began draining; the loop's
+// top-of-body checks act on either.
 func (s *Server) pause(ctx context.Context, d time.Duration) {
 	select {
 	case <-ctx.Done():
+	case <-s.cfg.Draining:
 	case <-time.After(d):
 	}
 }

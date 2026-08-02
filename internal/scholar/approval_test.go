@@ -127,6 +127,40 @@ func TestQueryGateTimeoutWithdraws(t *testing.T) {
 	}
 }
 
+// TestGateDrainsOnShutdown: a lame-duck shutdown ends the wait promptly
+// instead of holding the drain open for the gate's full timeout — this
+// process will not be here to receive the decision.  It withdraws the
+// pending record (no operator left holding a request nobody awaits) and
+// fails closed, exactly as an expired gate does.
+func TestGateDrainsOnShutdown(t *testing.T) {
+	caps := DefaultCaps()
+	caps.QueryApproval = time.Hour // far longer than the test may take
+	appr := &stubApprover{neverResolve: true}
+	drain := make(chan struct{})
+	srv := New(Config{
+		Egress: testEgress(t, &stubSearcher{}, &stubRetriever{}), Model: &flowModel{},
+		Approvals: appr, Caps: caps, Draining: drain,
+	})
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		close(drain)
+	}()
+	done := make(chan bool, 1)
+	go func() { done <- callResearch(t, srv, "q").IsError }()
+	select {
+	case isErr := <-done:
+		if !isErr {
+			t.Error("a drained gate must fail closed, like an expired one")
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the gate ignored the drain — a restart would hold shutdown open until SIGKILL")
+	}
+	if len(appr.withdrawn) != 1 {
+		t.Errorf("drained gate withdrew %d records, want 1 — no operator should be left holding it", len(appr.withdrawn))
+	}
+}
+
 func TestAnswerGateOnAndOff(t *testing.T) {
 	build := func(gate bool, appr *stubApprover) *Server {
 		return New(Config{
