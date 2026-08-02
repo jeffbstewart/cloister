@@ -15,6 +15,10 @@ boundary that keeps `main` clean is the forge's human-reviewed PR gate
   flag set, with a `-worker-mode` fallback under the generic name.  Adding or
   changing a role: follow docs/worker-roles.md (dispatch, flags, MCP surface,
   healthcheck, tests, image links).
+- `cmd/workbench` — the operator's session manager inside the agent
+  image: owns the workspace lifetime (provision → agent → dispose) over
+  the archivist's operator MCP surface, which the agent cannot name
+  (docs/workbench.md).
 - `internal/*` — the packages. `cmd/compose-lint` — topology drift guard.
 - `docker/` — Dockerfiles + compose. `etc/` — config templates. `docs/` — design.
   `bin/` — operator tools. `scripts/` — repo plumbing invoked by tooling (git

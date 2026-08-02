@@ -39,6 +39,7 @@ import (
 type fixture struct {
 	tmp      string             // the rig root; origin.git lives here
 	dir      string             // the workspace clone
+	srv      *Server            // for the tests that need the HTTP handler
 	session  *mcp.ClientSession // the agent surface
 	operator *mcp.ClientSession // the operator surface (provision/dispose)
 }
@@ -76,7 +77,7 @@ func newFixtureWith(t *testing.T, cfg Config) *fixture {
 
 	cfg.Grange = archive.AdoptArchive(a)
 	srv := New(cfg)
-	return &fixture{tmp: tmp, dir: dir, session: dial(t, srv), operator: dialOperator(t, srv)}
+	return &fixture{tmp: tmp, dir: dir, srv: srv, session: dial(t, srv), operator: dialOperator(t, srv)}
 }
 
 // dial connects an in-memory MCP client to the AGENT surface — the

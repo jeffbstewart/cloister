@@ -134,7 +134,7 @@ func newProvisionFixture(t *testing.T) (*fixture, *fakeGate, *fakeAuditor) {
 	}
 	t.Cleanup(func() { g.Close() })
 	srv := New(Config{Version: "test", Grange: g, Audit: aud})
-	f := &fixture{tmp: tmp, dir: filepath.Join(root, "tree"),
+	f := &fixture{tmp: tmp, dir: filepath.Join(root, "tree"), srv: srv,
 		session: dial(t, srv), operator: dialOperator(t, srv)}
 	return f, gate, aud
 }
@@ -163,7 +163,10 @@ func TestLifecycleVerbsAreAbsentFromTheAgentSurface(t *testing.T) {
 		}
 	}
 
-	// The operator surface is the mirror image: lifecycle and nothing else.
+	// The operator surface is the mirror image: the workspace's lifetime
+	// and nothing else.  Kept exact — a within-task verb drifting onto
+	// this surface would give the session manager a second, divergent way
+	// to do what the agent already does.
 	res, err = f.operator.ListTools(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -172,8 +175,54 @@ func TestLifecycleVerbsAreAbsentFromTheAgentSurface(t *testing.T) {
 	for _, tool := range res.Tools {
 		got[tool.Name] = true
 	}
-	if len(got) != 2 || !got["provision"] || !got["dispose"] {
-		t.Errorf("operator surface = %v, want exactly provision and dispose", got)
+	want := map[string]bool{"provision": true, "dispose": true, "workspace_state": true}
+	if len(got) != len(want) {
+		t.Errorf("operator surface = %v, want exactly %v", got, want)
+	}
+	for name := range want {
+		if !got[name] {
+			t.Errorf("operator surface is missing %s", name)
+		}
+	}
+}
+
+// TestWorkspaceStateReportsEachCondition: the session manager's read
+// must distinguish "nothing here yet" (provisionable) from "something
+// here no one may touch" (host-side recovery), and name the provenance
+// in between.
+func TestWorkspaceStateReportsEachCondition(t *testing.T) {
+	f, _, _ := newProvisionFixture(t)
+
+	st := asJSON(t, f.operatorOk(t, "workspace_state", nil))
+	if st["state"] != "empty" {
+		t.Fatalf("fresh workspace = %v, want empty", st)
+	}
+
+	f.operatorOk(t, "provision", map[string]any{"repo": provisionURL, "branch": "agent/stateful"})
+	st = asJSON(t, f.operatorOk(t, "workspace_state", nil))
+	if st["state"] != "provisioned" || st["repo"] != "op/repo" || st["branch"] != "agent/stateful" {
+		t.Errorf("provisioned workspace = %v", st)
+	}
+	if at := field[float64](t, st, "provisioned_at"); at <= 0 {
+		t.Errorf("provisioned_at = %v, want the marker's epoch seconds", at)
+	}
+
+	// A .git with no marker is the CORRUPT case — a mounted host tree, or
+	// a promote that died before its last write.  Reported, never acted on.
+	if err := os.Remove(filepath.Join(f.dir, ".git", "cloister-grange")); err != nil {
+		t.Fatal(err)
+	}
+	st = asJSON(t, f.operatorOk(t, "workspace_state", nil))
+	if st["state"] != "corrupt" {
+		t.Fatalf("markerless tree = %v, want corrupt", st)
+	}
+	if _, ok := st["repo"]; ok {
+		t.Errorf("corrupt workspace reported provenance %v; there is none to read", st)
+	}
+	// And dispose still refuses it at any force — reporting is all anyone
+	// gets here.
+	if text, isErr := f.operatorCall(t, "dispose", map[string]any{"force": true}); !isErr {
+		t.Errorf("force-dispose of a corrupt workspace = %q, want a refusal", text)
 	}
 }
 

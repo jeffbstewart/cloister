@@ -190,7 +190,21 @@ The archivist serves two MCP endpoints from one process:
 | Path | Client | Verbs |
 |---|---|---|
 | `/mcp` | the coding agent | everything within a task: branches, checkpoints, restore, the PR flow |
-| `/operator/mcp` | the workbench session manager | `provision` and `dispose`, nothing else |
+| `/operator/mcp` | the workbench session manager ([workbench.md](workbench.md)) | `provision`, `dispose`, `workspace_state` |
+
+`workspace_state` is the operator's read, and deliberately not the
+agent's `current_state`: that one speaks in branches and pending
+changes, the within-task view, while this one speaks in workspace
+lifetimes.  It is the only verb that reports CORRUPT as a first-class
+answer rather than as the reason every other verb refuses — a session
+manager has to tell "nothing here yet" (provisionable) from "something
+here that no one may touch" (host-side recovery), because the moves
+are opposite.
+
+The client is `internal/operator`, typed and shared: refusals arrive as
+`*RefusedError` carrying the archivist's own words, so a caller shows
+"op/repo fails R2: stale approvals survive" rather than "provision
+failed".
 
 They are separate `mcp.Server` instances, which is the whole point.  The
 lifecycle verbs are not *hidden* from the agent and not *advertised but

@@ -245,6 +245,41 @@ func (g *Grange) State() (LifecycleState, error) {
 	return g.state()
 }
 
+// Status is what the workspace's OWNER needs to decide what to do next:
+// the state plus, when provisioned, the provenance behind it.
+type Status struct {
+	State  LifecycleState
+	Repo   string // owner/name; empty unless provisioned
+	Branch string // empty on the default branch, or when not provisioned
+	// Provisioned is when the marker was written, epoch seconds; zero
+	// unless provisioned.
+	Provisioned int64
+}
+
+// Status reports the state and, when provisioned, the marker behind it —
+// so a session manager can say "op/repo on agent/brisk-otter" rather
+// than just "provisioned".  A CORRUPT workspace answers its state with
+// no provenance: there is none to read, which is what makes it corrupt.
+func (g *Grange) Status() (Status, error) {
+	if g.root == "" {
+		return Status{}, ErrAdopted
+	}
+	st, err := g.state()
+	if err != nil {
+		return Status{}, err
+	}
+	s := Status{State: st}
+	if st != StateProvisioned {
+		return s, nil
+	}
+	m, err := g.readMarker()
+	if err != nil {
+		return Status{}, err
+	}
+	s.Repo, s.Branch, s.Provisioned = m.Repo, m.Branch, m.Provisioned
+	return s, nil
+}
+
 func (g *Grange) markerPath() string { return filepath.Join(g.tree, ".git", markerName) }
 
 // Archive returns the live workspace, or a typed error naming why there is

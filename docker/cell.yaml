@@ -65,6 +65,13 @@
 #       "scholar":   { "httpUrl": "http://scholar:9500/mcp",   "timeout": 2400000 } } }
 # (the archivist's 90 min exceeds await_review's 1 h maxWait cap.)
 #
+# /mcp is the archivist's AGENT surface.  Its workspace lifecycle verbs —
+# provision and dispose — live on a SECOND surface at /operator/mcp, which
+# the agent is not registered against and cannot name; the `workbench`
+# session manager drives it (docs/archivist.md, "Two surfaces").  Same
+# container, same port: the split bounds what the model can name, and is
+# not a network boundary.
+#
 # Least-privilege network map — the cell's four edges, every one of them
 # into an abbey door except the cell-private MCP hop:
 #   agent   ── infernet ─────> agency (the inference door)

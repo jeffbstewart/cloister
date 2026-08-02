@@ -69,6 +69,36 @@ func (s *Server) registerLifecycleTools() {
 			AdditionalProperties: mcpserve.NoExtras(),
 		},
 	}, s.dispose)
+
+	s.addOperator(&mcp.Tool{
+		Name: "workspace_state",
+		Description: "Report the workspace's disk-derived condition — empty, provisioned (with the repository and line of work behind it), or corrupt — " +
+			"so the session manager knows which lifecycle move is available.  Never acts.",
+		InputSchema: &jsonschema.Schema{
+			Type:                 "object",
+			AdditionalProperties: mcpserve.NoExtras(),
+		},
+	}, s.workspaceState)
+}
+
+// workspaceState is the operator's read.  It is deliberately NOT the
+// agent's current_state: that one speaks in branches and pending
+// changes, the within-task view.  This one speaks in workspace
+// lifetimes, and it is the only verb that reports CORRUPT as a
+// first-class answer rather than as the reason every other verb
+// refuses — the session manager has to distinguish "nothing here yet"
+// from "something here that no one may touch", because the first is
+// provisionable and the second needs a human host-side.
+func (s *Server) workspaceState(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	st, err := s.cfg.Grange.Status()
+	if err != nil {
+		return mcpserve.ErrResult(err.Error()), nil
+	}
+	out := map[string]any{"state": string(st.State)}
+	if st.State == archive.StateProvisioned {
+		out["repo"], out["branch"], out["provisioned_at"] = st.Repo, st.Branch, st.Provisioned
+	}
+	return mcpserve.JSONResult(out), nil
 }
 
 func (s *Server) provision(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
