@@ -88,7 +88,7 @@ jobs:
       # every PR: the cell's scholar/read-path rules and the inference
       # stack's agency-fronts-infer rules.
       - name: Compose lint (cell + inference containment)
-        run: go run ./cmd/compose-lint docker/ai-workers.yaml docker/inference.yaml
+        run: go run ./cmd/compose-lint docker/cell.yaml docker/abbey.yaml
 
       # The forge's own merge-path protections (docs/grange.md R1-R8):
       # rulesets, CODEOWNERS, namespace confinement.  The workflow token

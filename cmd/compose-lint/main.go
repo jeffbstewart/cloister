@@ -16,23 +16,24 @@
 // stack's containment invariants.  Each file is identified by content and
 // checked against the matching invariant set:
 //
-//   - cell stack (docker/ai-workers.yaml): scholar off `egress` and off
-//     the archivist's nets, its networks internal, only the egress-holding
-//     relays on `egress`, the kagi-relay pinned to kagi.com:443, no host
-//     workspace anywhere (the grange volume is the only workspace, held by
-//     agent + archivist alone), the retired mediators absent, only the
-//     agent on a toolchain image, and every consumer dialing the agency —
-//     never raw infer.
-//   - inference stack (docker/inference.yaml): the agency is the sole
-//     inference door — infer on `modelnet` alone, modelnet internal and
-//     private to agency+infer, the localhost relay pinned to the agency,
-//     the deep-think path private to agency+deepthink-relay with the
-//     relay's target env-provided (never a committed LAN address), and no
-//     internet egress anywhere in the stack.
+//   - cell (docker/cell.yaml): two services on the abbey's doors — no
+//     host workspace anywhere (the grange volume is the only workspace,
+//     held by agent + archivist alone), no `egress` holder, no shared
+//     door or retired mediator re-declared per cell, archivistnet
+//     internal and private to the pair, only the agent on a toolchain
+//     image, and every consumer dialing the agency — never raw infer.
+//   - abbey (docker/abbey.yaml, docs/abbey.md): the machine's doors and
+//     its memory — the agency the sole inference door with infer on
+//     `modelnet` alone behind it; the scholar contained to the kagi-relay
+//     and off the archivists' wire; the forge relays pinned with the
+//     github.com alias split from its resolution across the two-hop; the
+//     state service owning the record and reading the agency's snapshot
+//     one-way; the deep-think path env-pinned (never a committed LAN
+//     address); and exactly three containers holding `egress`.
 //
 // CI runs it on every PR:
 //
-//	go run ./cmd/compose-lint docker/ai-workers.yaml docker/inference.yaml
+//	go run ./cmd/compose-lint docker/cell.yaml docker/abbey.yaml
 //
 // With no arguments it checks both committed files.
 package main
@@ -46,14 +47,14 @@ import (
 
 // okSummary is the one-line clean verdict printed per stack kind.
 var okSummary = map[composelint.Stack]string{
-	composelint.StackCell:  "scholar contained, egress pinned to the relays, no host tree anywhere, agent on the grange + workbench, mediators absent, archivist jailed on grange + gitegress, consumers dial the agency",
-	composelint.StackInfra: "infer behind the agency on a closed modelnet, relay fronts the door, deep-think path env-pinned, no egress",
+	composelint.StackCell:  "two services, no host tree, no egress, no shared doors re-declared; agent on the grange + workbench, archivist jailed on grange + gitegress",
+	composelint.StackInfra: "infer behind the agency on a closed modelnet, scholar contained, forge relays pinned, memory one-way, egress held by exactly the three relays",
 }
 
 func main() {
 	paths := os.Args[1:]
 	if len(paths) == 0 {
-		paths = []string{"docker/ai-workers.yaml", "docker/inference.yaml"}
+		paths = []string{"docker/cell.yaml", "docker/abbey.yaml"}
 	}
 	exit := 0
 	for _, path := range paths {

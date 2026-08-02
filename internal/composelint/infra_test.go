@@ -24,7 +24,7 @@ import (
 // TestCommittedInfraStackIsContained runs the lint against the real repo
 // file, so a commit that lets anything bypass the agency fails the suite.
 func TestCommittedInfraStackIsContained(t *testing.T) {
-	path := filepath.Join("..", "..", "docker", "inference.yaml")
+	path := filepath.Join("..", "..", "docker", "abbey.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
@@ -34,7 +34,7 @@ func TestCommittedInfraStackIsContained(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(v) != 0 {
-		t.Errorf("committed inference.yaml violates agency containment:\n  - %s",
+		t.Errorf("committed abbey.yaml violates containment:\n  - %s",
 			strings.Join(v, "\n  - "))
 	}
 }
@@ -46,10 +46,13 @@ func TestIdentify(t *testing.T) {
 		want    Stack
 		wantErr bool
 	}{
-		{"cell", "services:\n  scholar: {}\n", StackCell, false},
-		{"infra", "services:\n  infer: {}\n", StackInfra, false},
-		{"both", "services:\n  scholar: {}\n  infer: {}\n", "", true},
+		{"cell", "services:\n  archivist: {}\n", StackCell, false},
+		{"abbey", "services:\n  infer: {}\n", StackInfra, false},
+		{"both", "services:\n  archivist: {}\n  infer: {}\n", "", true},
 		{"neither", "services:\n  mystery: {}\n", "", true},
+		// The scholar moved INTO the abbey, so it is no longer a cell
+		// sentinel: an abbey holding one must still identify as the abbey.
+		{"scholar alone is not a cell", "services:\n  scholar: {}\n", "", true},
 		{"unparseable", ":\t:bad", "", true},
 	}
 	for _, tc := range cases {
@@ -72,10 +75,20 @@ networks:
   infernet: { internal: true }
 ` + modelnetDef + `
   infernet_big: { internal: true }
+  researchnet: { internal: true }
+  statenet: { internal: true }
+  scholarstate: { internal: true }
+  statepub: { internal: true }
+  kagiegress: { internal: true }
+  gitegress: { internal: true }
+  gitforward: { internal: true }
   lanegress: {}
+  egress: {}
   frontend: {}
 services:
   agency:
+    user: "1000:1000"
+    image: ${REGISTRY:-x}/${AGENCY_IMAGE}
     entrypoint: ["/usr/local/bin/agency"]
     dns: "127.0.0.1"
     networks: ` + agencyNets + `
@@ -92,6 +105,42 @@ services:
       infernet_big:
         aliases: [deepthink.internal]
       lanegress: {}
+  scholar:
+    user: "1000:1000"
+    image: ${REGISTRY:-x}/${WORKERS_IMAGE}
+    entrypoint: ["/usr/local/bin/scholar"]
+    dns: "127.0.0.1"
+    networks: [researchnet, infernet, scholarstate, kagiegress]
+  kagi-relay:
+    command: ["TCP-LISTEN:8443,fork,reuseaddr", "TCP:kagi.com:443"]
+    networks: [kagiegress, egress]
+  github-relay:
+    command: ["TCP-LISTEN:443,fork,reuseaddr", "TCP:github-egress:443"]
+    dns: "127.0.0.1"
+    networks:
+      gitegress:
+        aliases: [github.com]
+      gitforward: {}
+  github-egress:
+    command: ["TCP-LISTEN:443,fork,reuseaddr", "TCP:github.com:443"]
+    networks:
+      gitforward: {}
+      egress: {}
+  github-api-relay:
+    command: ["TCP-LISTEN:443,fork,reuseaddr", "TCP:api.github.com:443"]
+    networks:
+      gitegress: {}
+      egress: {}
+  state:
+    user: "1000:1000"
+    image: ${REGISTRY:-x}/${WORKERS_IMAGE}
+    entrypoint: ["/usr/local/bin/state-service"]
+    dns: "127.0.0.1"
+    networks: [statenet, scholarstate, statepub]
+    volumes: ["state:/state", "agency_status:/agency-status:ro"]
+  status:
+    command: ["TCP-LISTEN:9201,fork,reuseaddr", "TCP:state:9201"]
+    networks: [statepub, frontend]
 ` + extra
 	}
 	agencyClean := `[infernet, modelnet, infernet_big]`
@@ -151,6 +200,69 @@ services:
     networks: [infernet_big]`),
 		"stranger on lanegress": base(agencyClean, inferClean, proxyClean, modelnetClean, `  sneaky:
     networks: [lanegress]`),
+
+		// The research door: contained to the kagi-relay, off the
+		// archivists' wire, holding no workspace.
+		"no scholar": strings.Replace(cleanCompose,
+			"  scholar:\n    user: \"1000:1000\"\n    image: ${REGISTRY:-x}/${WORKERS_IMAGE}\n    entrypoint: [\"/usr/local/bin/scholar\"]\n    dns: \"127.0.0.1\"\n    networks: [researchnet, infernet, scholarstate, kagiegress]\n", "", 1),
+		"scholar on egress": strings.Replace(cleanCompose,
+			`networks: [researchnet, infernet, scholarstate, kagiegress]`,
+			`networks: [researchnet, infernet, scholarstate, kagiegress, egress]`, 1),
+		"scholar on statenet": strings.Replace(cleanCompose,
+			`networks: [researchnet, infernet, scholarstate, kagiegress]`,
+			`networks: [researchnet, infernet, statenet, kagiegress]`, 1),
+		"scholar on gitegress": strings.Replace(cleanCompose,
+			`networks: [researchnet, infernet, scholarstate, kagiegress]`,
+			`networks: [researchnet, infernet, scholarstate, kagiegress, gitegress]`, 1),
+		"scholar mounts a workspace": strings.Replace(cleanCompose,
+			"    networks: [researchnet, infernet, scholarstate, kagiegress]\n",
+			"    networks: [researchnet, infernet, scholarstate, kagiegress]\n    volumes: [\"grange:/grange\"]\n", 1),
+		"kagi-relay not pinned": strings.Replace(cleanCompose,
+			`"TCP:kagi.com:443"`, `"TCP:evil.example:443"`, 1),
+		"stranger on kagiegress": base(agencyClean, inferClean, proxyClean, modelnetClean, `  sneaky:
+    dns: "127.0.0.1"
+    networks: [kagiegress]`),
+
+		// The forge door: literal targets, the alias split from its
+		// resolution, membership pinned.
+		"git relay target not literal": strings.Replace(cleanCompose,
+			`"TCP:github.com:443"`, `"TCP:${GH_HOST}:443"`, 1),
+		"git front missing the alias": strings.Replace(cleanCompose,
+			"        aliases: [github.com]\n", "", 1),
+		"api relay missing": strings.Replace(cleanCompose,
+			"  github-api-relay:\n    command: [\"TCP-LISTEN:443,fork,reuseaddr\", \"TCP:api.github.com:443\"]\n    networks:\n      gitegress: {}\n      egress: {}\n", "", 1),
+		"stranger on gitegress": base(agencyClean, inferClean, proxyClean, modelnetClean, `  sneaky:
+    dns: "127.0.0.1"
+    networks: [gitegress]`),
+		"gitforward not internal": strings.Replace(cleanCompose,
+			`gitforward: { internal: true }`, `gitforward: {}`, 1),
+
+		// Memory: the record's owner, its one-way read of the snapshot,
+		// and the window that publishes it.
+		"no state service": strings.Replace(cleanCompose,
+			"  state:\n    user: \"1000:1000\"\n    image: ${REGISTRY:-x}/${WORKERS_IMAGE}\n    entrypoint: [\"/usr/local/bin/state-service\"]\n    dns: \"127.0.0.1\"\n    networks: [statenet, scholarstate, statepub]\n    volumes: [\"state:/state\", \"agency_status:/agency-status:ro\"]\n", "", 1),
+		"state networks wrong": strings.Replace(cleanCompose,
+			`networks: [statenet, scholarstate, statepub]`,
+			`networks: [statenet, scholarstate, statepub, infernet]`, 1),
+		"state writes the snapshot": strings.Replace(cleanCompose,
+			`"agency_status:/agency-status:ro"`, `"agency_status:/agency-status"`, 1),
+		"state cannot see the snapshot": strings.Replace(cleanCompose,
+			`, "agency_status:/agency-status:ro"`, ``, 1),
+		"a third party reads the snapshot": base(agencyClean, inferClean, proxyClean, modelnetClean, `  sneaky:
+    dns: "127.0.0.1"
+    networks: [statepub]
+    volumes: ["agency_status:/agency-status:ro"]`),
+		"no status window": strings.Replace(cleanCompose,
+			"  status:\n    command: [\"TCP-LISTEN:9201,fork,reuseaddr\", \"TCP:state:9201\"]\n    networks: [statepub, frontend]\n", "", 1),
+		// Roles, images, identity.
+		"scholar runs another role's link": strings.Replace(cleanCompose,
+			`entrypoint: ["/usr/local/bin/scholar"]`,
+			`entrypoint: ["/usr/local/bin/state-service"]`, 1),
+		"scholar on a toolchain image": strings.Replace(cleanCompose,
+			"scholar:\n    user: \"1000:1000\"\n    image: ${REGISTRY:-x}/${WORKERS_IMAGE}",
+			"scholar:\n    user: \"1000:1000\"\n    image: ${REGISTRY:-x}/${WORKBENCH_IMAGE}", 1),
+		"state runs as root": strings.Replace(cleanCompose,
+			"state:\n    user: \"1000:1000\"", "state:\n    user: \"0:0\"", 1),
 	}
 	for name, yaml := range cases {
 		t.Run(name, func(t *testing.T) {

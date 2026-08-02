@@ -13,21 +13,26 @@
 // limitations under the License.
 
 // Package composelint statically checks the compose files for the
-// containment invariants: Check covers the cell stack
-// (docker/ai-workers.yaml), CheckInfra the shared inference stack
-// (docker/inference.yaml, see infra.go), and Identify tells them apart.
+// containment invariants: Check covers the per-project cell
+// (docker/cell.yaml), CheckInfra the abbey — the machine's shared doors
+// and its memory (docker/abbey.yaml, see infra.go and docs/abbey.md) —
+// and Identify tells them apart.
 //
-// Scholar: holds no `egress` network and no route to the agent's
-// workspace, every network it IS on is internal (no internet), only the
-// egress-holding relays touch the internet, and the kagi-relay is pinned
-// to kagi.com:443 — the static drift guard paired with the scholar's
-// runtime fail-closed self-check.
+// The abbey (docs/abbey.md): four doors, one machine.  The scholar is
+// the research door — no `egress` network, no route to any workspace or
+// to the archivists' wire, every network internal, and the kagi-relay
+// pinned to kagi.com:443 (the static guard paired with the scholar's
+// runtime fail-closed self-check).  The forge door is the pinned git
+// relays, alias and resolution split across the two-hop.  Memory is one
+// state service and one status window.  Exactly three containers on the
+// whole machine hold `egress`.
 //
-// The grange cutover (docs/grange.md M2–M4): the operator's HOST TREE
-// appears nowhere in the cell — the agent's only workspace is the grange
-// volume it shares with the archivist that provisions it — and the agent
-// is the ONLY service on a toolchain-bearing image (the workbench); the
-// mediators (scribe, librarian, builder) are gone.
+// The cell (docs/grange.md M2–M4): two services.  The operator's HOST
+// TREE appears nowhere — the agent's only workspace is the grange volume
+// it shares with the archivist that provisions it — the agent is the
+// ONLY service on a toolchain-bearing image (the workbench), the shared
+// doors may not be re-declared per cell, and the mediators (scribe,
+// librarian, builder) are gone.
 //
 // DNS discipline (both stacks): every service whose networks are all
 // internal pins `dns: 127.0.0.1`, so the embedded resolver's upstream is
@@ -258,8 +263,11 @@ func (s service) egressCapable(allowed ...string) []string {
 	return held
 }
 
-// Check returns the scholar-containment violations in the compose file; an empty
-// slice means the file is clean.
+// Check returns the CELL stack's violations (docker/cell.yaml); an empty
+// slice means the file is clean.  A cell is two services — the agent and
+// its archivist — attached to the abbey's doors (docs/abbey.md); the
+// shared services and every egress holder are the abbey's business, and
+// this checker refuses them here.
 func Check(data []byte) ([]string, error) {
 	var c compose
 	if err := yaml.Unmarshal(data, &c); err != nil {
@@ -267,113 +275,74 @@ func Check(data []byte) ([]string, error) {
 	}
 	var v []string
 
-	sch, ok := c.Services["scholar"]
-	if !ok {
-		return []string{"no `scholar` service defined"}, nil
-	}
-	for _, n := range sch.egressCapable("kagiegress") { // kagiegress IS its sanctioned route
-		v = append(v, fmt.Sprintf("scholar holds %q — it must reach out ONLY through the kagi-relay", n))
-	}
-	if sch.hasNet("statenet") {
-		v = append(v, "scholar holds `statenet` — use `scholarstate` so it never shares the archivist's wire")
-	}
-	if sch.hasNet("archivistnet") {
-		v = append(v, "scholar holds `archivistnet` — it must have no route to the agent or the archivist")
-	}
-	// (The scholar's no-grange rule rides the global agent+archivist-only
-	// grange check below.)
-	// Every LOCAL network the scholar is on must be internal — a non-internal net
-	// is an internet path that would bypass the relay. (External nets like
-	// infernet are the infra stack's to guarantee; see its compose.)
-	for _, n := range sch.Networks {
-		if def, defined := c.Networks[n.Name]; defined && !def.External && !def.Internal {
-			v = append(v, fmt.Sprintf("scholar network %q is not `internal: true` — it may grant internet egress", n.Name))
-		}
-	}
-
-	var egressHolders []string
-	for name, s := range c.Services {
-		if s.hasNet("egress") {
-			egressHolders = append(egressHolders, name)
-		}
-	}
-	sort.Strings(egressHolders)
-	if !slices.Equal(egressHolders, []string{"github-api-relay", "github-egress", "kagi-relay"}) {
-		v = append(v, fmt.Sprintf("only the egress-holding relays may hold `egress` (kagi-relay, github-egress, github-api-relay); holders = %v", egressHolders))
-	}
-
-	relay, ok := c.Services["kagi-relay"]
-	if !ok {
-		v = append(v, "no `kagi-relay` service defined")
-	} else if !targetsHost(relay.Command, "kagi.com:443") {
-		v = append(v, fmt.Sprintf("kagi-relay is not pinned to kagi.com:443; command = %v", relay.Command))
-	}
-
-	// The grange cutover (docs/grange.md): the retired mediators must not
-	// ride back in, and the operator's HOST TREE appears nowhere — no
-	// ${WORKSPACE} indirection, no /workspace mount on any service.  The
-	// cell's only workspace is the grange volume.
+	// The retired mediators (grange cutover) must not ride back in, and
+	// neither may the abbey's shared doors: one scholar, one state
+	// service, one set of forge relays per MACHINE, or the fleet loses
+	// the single burn ledger, the single audit trail, and the minimal
+	// egress surface those doors exist to provide.
 	for _, name := range []string{"builder", "scribe", "librarian"} {
 		if _, defined := c.Services[name]; defined {
 			v = append(v, fmt.Sprintf("`%s` is defined — the mediators retired with the grange cutover (the PR gate is the boundary)", name))
 		}
 	}
+	for _, name := range []string{"scholar", "state", "status", "kagi-relay", "github-relay", "github-egress", "github-api-relay"} {
+		if _, defined := c.Services[name]; defined {
+			v = append(v, fmt.Sprintf("`%s` belongs to the abbey, not a cell — shared doors are one per machine (docs/abbey.md)", name))
+		}
+	}
+
+	// No egress holder, ever: a cell reaches the internet only through the
+	// abbey's pinned relays, on the far side of a door.
+	if h := holdersOf(c, "egress"); len(h) != 0 {
+		v = append(v, fmt.Sprintf("cell services hold `egress` (%v) — only the abbey's relays touch the internet", h))
+	}
+	// The agency's status volume is the abbey's one-way glass; nothing in
+	// a cell reads or writes it (the abbey's state service renders it).
 	for _, name := range serviceNames(c) {
 		for _, vol := range c.Services[name].Volumes {
+			if strings.HasPrefix(vol, "agency_status:") {
+				v = append(v, fmt.Sprintf("%s mounts agency_status — the abbey's state service is its only reader", name))
+			}
+			// The operator's HOST TREE appears nowhere: no ${WORKSPACE}
+			// indirection, no /workspace mount.  The grange volume is the
+			// cell's only workspace, and only its two services hold it.
 			if strings.Contains(vol, "${WORKSPACE") || strings.Contains(vol, ":/workspace") {
 				v = append(v, fmt.Sprintf("%s mounts a host workspace (%q) — the operator's tree never enters a cell; the grange volume is the only workspace", name, vol))
 			}
-			// The grange is agent + archivist ONLY — a mediator reborn
-			// under a fresh name must not evade the by-name refusal by
-			// mounting the workspace volume.
 			if strings.Contains(vol, ":/grange") && name != "agent" && name != "archivist" {
 				v = append(v, fmt.Sprintf("%s mounts the grange — only the agent and the archivist hold the workspace", name))
 			}
 		}
 	}
 
-	// Internal-network membership is pinned, like gitegress/gitforward
-	// below: a service quietly joining a sanctioned wire is the same
-	// drift as a new egress holder.  Subset check (a fixture or a future
-	// cell may omit a member); the exact-list checks on the agent and
-	// archivist bound their sides.
-	for net, allowed := range map[string][]string{
-		"archivistnet": {"agent", "archivist"},
-		"statenet":     {"archivist", "state"},
-		"researchnet":  {"agent", "scholar"},
-		"scholarstate": {"scholar", "state"},
-		"kagiegress":   {"kagi-relay", "scholar"},
-		"statepub":     {"state", "status"},
-	} {
-		for _, holder := range holdersOf(c, net) {
-			if !slices.Contains(allowed, holder) {
-				v = append(v, fmt.Sprintf("%s holds %q — membership is pinned to %v", holder, net, allowed))
-			}
+	// The four doors are the ABBEY's networks, joined by name; a cell that
+	// defines one locally would silently get its own private copy and
+	// reach nothing.  archivistnet is the cell's own and must stay
+	// internal + private to the two services.
+	for _, n := range []string{"infernet", "researchnet", "statenet", "gitegress"} {
+		def, defined := c.Networks[n]
+		if !defined {
+			v = append(v, fmt.Sprintf("network %q is not declared — a cell joins the abbey's doors by name", n))
+			continue
 		}
+		if !def.External {
+			v = append(v, fmt.Sprintf("network %q must be `external: true` — it is the abbey's door, not a cell-local network", n))
+		}
+	}
+	if def, defined := c.Networks["archivistnet"]; !defined || !def.Internal || def.External {
+		v = append(v, "archivistnet must be declared `internal: true` and cell-LOCAL — the agent->archivist MCP edge never leaves the cell")
+	}
+	if h := holdersOf(c, "archivistnet"); !slices.Equal(h, []string{"agent", "archivist"}) {
+		v = append(v, fmt.Sprintf("archivistnet membership must be exactly agent+archivist; got %v", h))
 	}
 
 	// The agent works in the grange: exactly one mount, the dedicated
-	// volume, writable, shared with the archivist that provisions it —
-	// and the agent's networks are exactly its three sanctioned edges.
+	// volume, writable — and exactly its three sanctioned edges.
 	agent, ok := c.Services["agent"]
 	if !ok {
 		v = append(v, "no `agent` service defined")
 	} else {
-		wsMounts := 0
-		for _, vol := range agent.Volumes {
-			if strings.Contains(vol, ":/grange") {
-				wsMounts++
-				if !strings.HasPrefix(vol, "grange:") {
-					v = append(v, fmt.Sprintf("agent /grange must be the dedicated grange volume; mount = %q", vol))
-				}
-				if strings.HasSuffix(vol, ":ro") {
-					v = append(v, "agent grange mount is `:ro` — the agent edits and builds in the tree")
-				}
-			}
-		}
-		if wsMounts != 1 {
-			v = append(v, fmt.Sprintf("agent must mount exactly one grange volume (the workspace root); found %d", wsMounts))
-		}
+		v = append(v, grangeMountViolations("agent", agent)...)
 		nets := agent.Networks.names()
 		sort.Strings(nets)
 		if !slices.Equal(nets, []string{"archivistnet", "infernet", "researchnet"}) {
@@ -381,10 +350,8 @@ func Check(data []byte) ([]string, error) {
 		}
 	}
 
-	// The git jail (docs/archivist.md): the archivist exists, holds
-	// exactly archivistnet + statenet + gitegress, works only in the grange
-	// volume — the operator's host tree never enters — and reaches out
-	// only through the aliased git relays.
+	// The git jail (docs/archivist.md): the archivist holds exactly
+	// archivistnet + statenet + gitegress and works only in the grange.
 	arc, ok := c.Services["archivist"]
 	if !ok {
 		v = append(v, "no `archivist` service defined — the cell's version control has no jailed owner without it")
@@ -394,147 +361,76 @@ func Check(data []byte) ([]string, error) {
 		if !slices.Equal(nets, []string{"archivistnet", "gitegress", "statenet"}) {
 			v = append(v, fmt.Sprintf("archivist networks must be exactly archivistnet+statenet+gitegress; got %v", nets))
 		}
-		wsMounts := 0
-		for _, vol := range arc.Volumes {
-			if strings.Contains(vol, "${WORKSPACE") {
-				v = append(v, "archivist mounts ${WORKSPACE} — the operator's host tree must never enter; the grange volume is its workspace")
-			}
-			if strings.Contains(vol, ":/grange") {
-				wsMounts++
-				if !strings.HasPrefix(vol, "grange:") {
-					v = append(v, fmt.Sprintf("archivist /grange must be the dedicated grange volume; mount = %q", vol))
-				}
-				if strings.HasSuffix(vol, ":ro") {
-					v = append(v, "archivist grange mount is `:ro` — provision clones and the worktree verbs write")
-				}
-			}
-		}
-		if wsMounts != 1 {
-			v = append(v, fmt.Sprintf("archivist must mount exactly one grange volume (the workspace root); found %d", wsMounts))
-		}
-	}
-	for _, n := range []string{"gitegress", "gitforward"} {
-		if def, defined := c.Networks[n]; !defined || !def.Internal {
-			v = append(v, fmt.Sprintf("%s must be defined `internal: true` — it is a hop between the archivist and the relays, never the internet", n))
-		}
-	}
-	// gitegress: the archivist and the two relays it dials directly (the
-	// git front and the api relay).  gitforward: the git two-hop only.
-	if h := holdersOf(c, "gitegress"); !slices.Equal(h, []string{"archivist", "github-api-relay", "github-relay"}) {
-		v = append(v, fmt.Sprintf("gitegress membership must be exactly the archivist and the relays it dials; got %v", h))
-	}
-	if h := holdersOf(c, "gitforward"); !slices.Equal(h, []string{"github-egress", "github-relay"}) {
-		v = append(v, fmt.Sprintf("gitforward membership must be exactly github-relay and github-egress (the git two-hop); got %v", h))
-	}
-	// The git relays: literal socat destinations (no ${} indirection a
-	// deploy could repoint), and the alias/target DECOUPLED so no
-	// container both holds the github.com alias and resolves it.  The
-	// front carries the alias git dials (TLS verifies github.com against
-	// the real cert) and pipes to the separately-named egress hop; the
-	// egress hop resolves the real github.com.  The api relay needs NO
-	// alias — the archivist's Go client dials it by service name.
-	for _, r := range []struct {
-		service, target, alias string
-	}{
-		{"github-relay", "github-egress:443", "github.com"},
-		{"github-egress", "github.com:443", ""},
-		{"github-api-relay", "api.github.com:443", ""},
-	} {
-		relay, ok := c.Services[r.service]
-		if !ok {
-			v = append(v, fmt.Sprintf("no `%s` service defined — the archivist's git jail is incomplete without it", r.service))
-			continue
-		}
-		if !targetsHost(relay.Command, r.target) {
-			v = append(v, fmt.Sprintf("%s must pipe to the literal TCP:%s; command = %v", r.service, r.target, relay.Command))
-		}
-		if r.alias != "" && !slices.Contains(relay.Networks.aliasesOn("gitegress"), r.alias) {
-			v = append(v, fmt.Sprintf("%s must carry the network alias %q on gitegress (git dials it for end-to-end TLS)", r.service, r.alias))
-		}
+		v = append(v, grangeMountViolations("archivist", arc)...)
+		v = append(v, wantsRoleEntrypoint(c, "archivist", "archivist")...)
 	}
 
-	// Grange-touching workers must run as a non-root user: root would
-	// bypass the volume's uid-1000 ownership and drop root-owned files
-	// into the tree.  This catches a missing or hardcoded-root `user:`.
+	// Grange-touching services run non-root: root would bypass the
+	// volume's uid-1000 ownership and drop root-owned files in the tree.
 	for _, name := range []string{"agent", "archivist"} {
 		if svc, ok := c.Services[name]; ok && svc.runsAsRoot() {
 			v = append(v, fmt.Sprintf("%s must run as a non-root user (the grange volume's uid); user = %q", name, svc.User))
 		}
 	}
 
-	// The image split (docs/toolchains.md, amended by grange M4): the
-	// AGENT is the only service on a toolchain-bearing image (the
-	// workbench); every worker runs the slim toolchain-free image.  The
-	// linter sees the raw ${VAR} text, so pinning the variable NAME per
-	// service is the drift guard — a compiler can't quietly ride back
-	// into the scholar via a shared image reference.
+	// The image split (grange M4): the AGENT is the only service on a
+	// toolchain-bearing image.  The linter sees raw ${VAR} text, so
+	// pinning the variable NAME per service is the drift guard.
 	for _, w := range []struct{ service, imageVar string }{
 		{"agent", "WORKBENCH_IMAGE"},
-		{"scholar", "WORKERS_IMAGE"},
-		{"state", "WORKERS_IMAGE"},
 		{"archivist", "WORKERS_IMAGE"},
 	} {
 		svc, ok := c.Services[w.service]
 		if !ok {
-			continue // presence is the concern of the checks above
+			continue
 		}
 		if !strings.Contains(svc.Image, "${"+w.imageVar) {
 			v = append(v, fmt.Sprintf("%s image must come from ${%s}; image = %q", w.service, w.imageVar, svc.Image))
 		}
 	}
 
-	// Every worker container execs its own role link, so the topology file
-	// says what each container is and no service can run another's role.
-	for _, w := range []struct{ service, role string }{
-		{"scholar", "scholar"}, {"state", "state-service"}, {"archivist", "archivist"},
-	} {
-		v = append(v, wantsRoleEntrypoint(c, w.service, w.role)...)
-	}
+	v = append(v, directInferDials(c)...)
+	v = append(v, dnsPinViolations(c)...)
+	return v, nil
+}
 
-	// The inference door: every consumer's model endpoint is the agency
-	// (docs/agency.md).  An env var dialing `infer` directly is drift back
-	// to the pre-agency topology — it would bypass the door (and fail at
-	// runtime, since infer no longer shares a network with any cell).
-	var svcNames []string
-	for name := range c.Services {
-		svcNames = append(svcNames, name)
+// grangeMountViolations asserts the one-workspace rule for a service that
+// legitimately holds it: exactly one mount, the dedicated `grange` volume,
+// writable (provision clones into it; the agent edits and builds there).
+func grangeMountViolations(name string, s service) []string {
+	var v []string
+	mounts := 0
+	for _, vol := range s.Volumes {
+		if !strings.Contains(vol, ":/grange") {
+			continue
+		}
+		mounts++
+		if !strings.HasPrefix(vol, "grange:") {
+			v = append(v, fmt.Sprintf("%s /grange must be the dedicated grange volume; mount = %q", name, vol))
+		}
+		if strings.HasSuffix(vol, ":ro") {
+			v = append(v, fmt.Sprintf("%s grange mount is `:ro` — the workspace is written by both holders", name))
+		}
 	}
-	sort.Strings(svcNames)
-	for _, name := range svcNames {
+	if mounts != 1 {
+		v = append(v, fmt.Sprintf("%s must mount exactly one grange volume (the workspace root); found %d", name, mounts))
+	}
+	return v
+}
+
+// directInferDials catches a consumer env var dialing the model server
+// around the agency — drift back to the pre-agency topology (and a
+// runtime failure, since infer shares a network with nothing else).
+func directInferDials(c compose) []string {
+	var v []string
+	for _, name := range serviceNames(c) {
 		for _, env := range c.Services[name].Environment {
 			if strings.Contains(env, "//infer:") {
 				v = append(v, fmt.Sprintf("%s dials `infer` directly (%s) — consumers reach models only through the agency", name, env))
 			}
 		}
 	}
-
-	// The agency's status volume is one-way glass (docs/agency.md): in the
-	// cell, ONLY the state service may mount it, and only read-only —
-	// machine-wide operation metadata must never be reachable by an agent,
-	// and no cell may write into the agency's snapshot.
-	for _, name := range svcNames {
-		for _, vol := range c.Services[name].Volumes {
-			if !strings.HasPrefix(vol, "agency_status:") {
-				continue
-			}
-			if name != "state" {
-				v = append(v, fmt.Sprintf("%s mounts agency_status — in the cell only the state service reads the agency's status", name))
-			} else if !strings.HasSuffix(vol, ":ro") {
-				v = append(v, "state's agency_status mount is not `:ro` — cells read the agency's status, never write it")
-			}
-		}
-	}
-	if st, ok := c.Services["state"]; ok {
-		mounted := false
-		for _, vol := range st.Volumes {
-			mounted = mounted || strings.HasPrefix(vol, "agency_status:")
-		}
-		if !mounted {
-			v = append(v, "state has no agency_status mount — the dashboard's Inference panel reads `agency_status:/agency-status:ro`")
-		}
-	}
-	v = append(v, dnsPinViolations(c)...)
-	return v, nil
+	return v
 }
 
 // holdersOf returns the sorted names of the services attached to net.

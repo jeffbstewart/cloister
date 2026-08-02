@@ -7,7 +7,7 @@ after the task.  Version control and every remote touch are the archivist's
 alone; the web is reachable only through a quarantined **scholar**; the
 boundary that keeps `main` clean is the forge's human-reviewed PR gate
 (docs/grange.md).  Workers are modes of one Go binary, wired into per-project
-"cells" (docker/ai-workers.yaml).
+"cells" (docker/cell.yaml).
 
 ## Layout
 - `cmd/cloister-worker` — the one multi-call binary; the program name (a role
@@ -31,7 +31,7 @@ failure).  It runs, in order:
     gofmt -l .              # must be empty
     go vet ./...
     go-licenses check ./... # deny copyleft (benign "non-Go code can't be inspected" asm warnings are expected, not failures)
-    go run ./cmd/compose-lint docker/ai-workers.yaml docker/inference.yaml
+    go run ./cmd/compose-lint docker/cell.yaml docker/abbey.yaml
     go run ./cmd/copyright-lint   # headers present + year current (policy embedded from cmd/copyright-lint/copyright.yaml)
 
 Codify pipelines instead of retyping them: if you run the same multi-command
