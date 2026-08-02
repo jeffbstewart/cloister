@@ -179,7 +179,16 @@ COPY jail-probe.mjs /usr/local/bin/jail-probe.mjs
 # The identity-free non-root user, uid 1000 to match the image-owned
 # grange volume.  The grange mount itself lives in compose
 # (docker/ai-workers.yaml); this image stays pure capability.
-RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin agent \
+# A REAL login shell, unlike the slim workers image this was copied
+# from: there, nologin is right (a scratch worker never needs one);
+# here it broke everything.  tmux takes `default-shell` from $SHELL or,
+# failing that, the passwd entry — and `docker exec` sets no SHELL — so
+# every tmux command ran as `nologin -c '...'`, which prints "This
+# account is currently not available", exits, and takes the pane and
+# session with it before the message can be read.  The agent having a
+# shell is the entire point of the workbench (docs/grange.md M3).
+ENV SHELL=/bin/bash
+RUN useradd --uid 1000 --create-home --shell /bin/bash agent \
     && mkdir -p /home/agent/.qwen \
     && chown -R 1000:1000 /home/agent
 # The operator's session door: agents run under tmux so their lifetime
@@ -196,6 +205,14 @@ COPY <<'EOF' /etc/tmux.conf
 unbind C-b
 set -g prefix C-z
 bind C-z send-prefix
+# Explicit, not inherited: tmux otherwise takes the shell from $SHELL or
+# the passwd entry, and a nologin there kills every pane instantly (with
+# the error scrolling past as the session dies).  Stating it here means
+# the session survives a future change to the image's user.
+set -g default-shell /bin/bash
+# `screen-256color` has terminfo in ncurses-base, which slim images
+# carry; `tmux-256color` needs ncurses-term, which they do not.
+set -g default-terminal "screen-256color"
 # Agent sessions are long and scrollback is the operator's audit trail
 # of the conversation; keep plenty.
 set -g history-limit 50000
@@ -226,7 +243,7 @@ esac
 # otherwise.  Never mkdir tree/ — an empty tree reads as CORRUPT to the
 # archivist's disk-derived state machine.
 dir=/grange
-[ -d /grange/tree ] && dir=/grange/tree
+if [ -d /grange/tree ]; then dir=/grange/tree; fi
 exec tmux new-session -s "$SESSION" -n main -c "$dir" "$cmd"
 EOF
 RUN chmod 0755 /usr/local/bin/workbench
