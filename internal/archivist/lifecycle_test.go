@@ -34,10 +34,16 @@ import (
 
 const provisionURL = "https://github.com/op/repo"
 
-// fakeGate is a controllable provision gate: err is what Verify returns.
-type fakeGate struct{ err error }
+// fakeGate is a controllable provision gate: err is what Verify returns,
+// namespace what the repo's forge-lint config declares (R8).
+type fakeGate struct {
+	err       error
+	namespace string
+}
 
-func (g *fakeGate) Verify(context.Context, endpoint.Endpoint, string, string) error { return g.err }
+func (g *fakeGate) Verify(context.Context, endpoint.Endpoint, string, string) (string, error) {
+	return g.namespace, g.err
+}
 
 func archivistTable(t *testing.T) *endpoint.Table {
 	t.Helper()
@@ -135,18 +141,28 @@ func newProvisionFixture(t *testing.T) (*fixture, *fakeGate, *fakeAuditor) {
 func TestProvisionDisposeVerbs(t *testing.T) {
 	f, _, aud := newProvisionFixture(t)
 
-	// Before provisioning, working-tree verbs refuse — clearly.
-	if text, isErr := f.call(t, "current_state", nil); !isErr || !strings.Contains(text, "provision first") {
-		t.Fatalf("current_state before provision = %q (err=%v), want a provision-first refusal", text, isErr)
+	// Before provisioning, working-tree verbs refuse — but current_state
+	// ANSWERS: reporting where things stand is its whole job, so the
+	// pre-provision state is a successful answer naming the next step.
+	st := asJSON(t, f.ok(t, "current_state", nil))
+	if st["provisioned"] != false {
+		t.Fatalf("current_state before provision = %v, want provisioned:false", st)
+	}
+	if next := field[string](t, st, "next"); !strings.Contains(next, "provision") {
+		t.Errorf("next = %q, want it to name provision", next)
+	}
+	// Every OTHER verb still refuses, clearly.
+	if text, isErr := f.call(t, "pending_changes", nil); !isErr || !strings.Contains(text, "provision first") {
+		t.Fatalf("pending_changes before provision = %q (err=%v), want a provision-first refusal", text, isErr)
 	}
 
 	res := asJSON(t, f.ok(t, "provision", map[string]any{"repo": provisionURL, "branch": "agent/feature"}))
 	if res["repo"] != "op/repo" || res["branch"] != "agent/feature" {
 		t.Errorf("provision answer = %v", res)
 	}
-	st := asJSON(t, f.ok(t, "current_state", nil))
-	if st["branch"] != "agent/feature" {
-		t.Errorf("post-provision branch = %v, want agent/feature", st["branch"])
+	st = asJSON(t, f.ok(t, "current_state", nil))
+	if st["branch"] != "agent/feature" || st["provisioned"] != true {
+		t.Errorf("post-provision state = %v, want provisioned on agent/feature", st)
 	}
 	recs := aud.records()
 	if len(recs) != 1 || recs[0].Tool != "provision" || recs[0].Decision != audit.DecisionProvisioned {
@@ -157,8 +173,8 @@ func TestProvisionDisposeVerbs(t *testing.T) {
 	}
 
 	f.ok(t, "dispose", nil)
-	if _, isErr := f.call(t, "current_state", nil); !isErr {
-		t.Error("current_state after dispose should refuse — the workspace is empty")
+	if st = asJSON(t, f.ok(t, "current_state", nil)); st["provisioned"] != false {
+		t.Errorf("current_state after dispose = %v, want provisioned:false — the workspace is empty", st)
 	}
 	if recs := aud.records(); len(recs) != 2 || recs[1].Tool != "dispose" || recs[1].Decision != audit.DecisionDisposed {
 		t.Errorf("dispose audit = %+v", aud.records())
@@ -183,8 +199,8 @@ func TestProvisionGateRefusalIsAudited(t *testing.T) {
 		t.Errorf("refusal detail = %+v, want Requirement R2", recs[0].Detail)
 	}
 	// The refused provision left the workspace empty.
-	if _, isErr := f.call(t, "current_state", nil); !isErr {
-		t.Error("a refused provision left a usable workspace")
+	if st := asJSON(t, f.ok(t, "current_state", nil)); st["provisioned"] != false {
+		t.Errorf("a refused provision left a usable workspace: %v", st)
 	}
 }
 

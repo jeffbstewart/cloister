@@ -59,41 +59,45 @@ type ForgeGate struct {
 // governed by the operator via CODEOWNERS (the lock-down runbook).
 const forgeLintPath = ".github/forge-lint.yaml"
 
-// Verify implements archive.ProvisionGate.
-func (g ForgeGate) Verify(ctx context.Context, ep endpoint.Endpoint, repo, stagingTree string) error {
+// Verify implements archive.ProvisionGate, returning the repository's
+// declared agent-branch namespace so branch creation can be refused
+// locally rather than by the forge three steps later.
+func (g ForgeGate) Verify(ctx context.Context, ep endpoint.Endpoint, repo, stagingTree string) (string, error) {
 	if ep.Forge != endpoint.ForgeGitHub {
-		return fmt.Errorf("archivist: the provision gate supports only github endpoints in M1; endpoint %s is %q: %w", ep.Name, ep.Forge, ErrNotGrangeReady)
+		return "", fmt.Errorf("archivist: the provision gate supports only github endpoints in M1; endpoint %s is %q: %w", ep.Name, ep.Forge, ErrNotGrangeReady)
 	}
 	cfgPath := filepath.Join(stagingTree, filepath.FromSlash(forgeLintPath))
 	cfg, err := forgelint.LoadConfig(cfgPath)
 	if err != nil {
-		return fmt.Errorf("archivist: provision gate: %v — bring the repo up to %s: %w", err, forgelint.HardeningRunbook, ErrNotGrangeReady)
+		return "", fmt.Errorf("archivist: provision gate: %v — bring the repo up to %s: %w", err, forgelint.HardeningRunbook, ErrNotGrangeReady)
 	}
 	// The pinned config must govern the repository it ships in, and name
 	// the API host TLS will verify — otherwise a repo could carry another
 	// project's (weaker) expectations.
 	if cfg.Repo != repo {
-		return fmt.Errorf("archivist: provision gate: %s pins repo %q but the workspace is %q: %w", forgeLintPath, cfg.Repo, repo, ErrNotGrangeReady)
+		return "", fmt.Errorf("archivist: provision gate: %s pins repo %q but the workspace is %q: %w", forgeLintPath, cfg.Repo, repo, ErrNotGrangeReady)
 	}
 	if err := sameAPIHost(cfg.APIBase, ep.API); err != nil {
-		return fmt.Errorf("archivist: provision gate: %v: %w", err, ErrNotGrangeReady)
+		return "", fmt.Errorf("archivist: provision gate: %v: %w", err, ErrNotGrangeReady)
 	}
 	token, err := ep.Token()
 	if err != nil {
-		return fmt.Errorf("archivist: provision gate: reading the endpoint credential: %w", err)
+		return "", fmt.Errorf("archivist: provision gate: reading the endpoint credential: %w", err)
 	}
 	client, err := g.Dial(cfg.APIBase, ep.APIRelay)
 	if err != nil {
-		return fmt.Errorf("archivist: provision gate: building the forge transport: %w", err)
+		return "", fmt.Errorf("archivist: provision gate: building the forge transport: %w", err)
 	}
 	snap, err := forgelint.NewGitHub(cfg, token, client).ProvisionSnapshot(ctx)
 	if err != nil {
-		return fmt.Errorf("archivist: provision gate: reading %s protections: %w", repo, err)
+		return "", fmt.Errorf("archivist: provision gate: reading %s protections: %w", repo, err)
 	}
 	if r := forgelint.Gate(forgelint.Check(cfg, snap)); !r.OK {
-		return &GateRefusedError{Repo: repo, Blocking: r.Blocking}
+		return "", &GateRefusedError{Repo: repo, Blocking: r.Blocking}
 	}
-	return nil
+	// The repo's own declared namespace travels back so branch creation
+	// can be refused here rather than by the forge, three verbs later.
+	return cfg.AgentNamespace, nil
 }
 
 // sameAPIHost checks that the forge-lint config's apiBase and the

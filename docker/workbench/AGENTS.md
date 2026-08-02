@@ -24,6 +24,15 @@ assuming anything works the way an open laptop does.
   `start_work` / `switch_work` for branches, `checkpoint` to record the
   tree, `restore` / `set_aside` / `resume` for rollback and parking,
   `sync_from_upstream` to update from the default branch.
+- **Branch names must start with `agent/`** — e.g. `agent/fix-parser`,
+  not `fix-parser` or `agent-fix-parser`.  The forge refuses to create
+  any other branch from this account, so a wrong name is discovered
+  when you try to publish, after the work is already committed to it.
+  `start_work` refuses it up front for the same reason.
+- The normal order is: `start_work` → edit and build → `checkpoint` →
+  `publish` → `propose` → `await_review`.  `publish` pushes the branch
+  the archivist is already on; it does not create one, so `start_work`
+  comes first.
 - Remote operations are archivist-ONLY, and there is no credential in
   your container — `git push` cannot work and must not be attempted.
   Use `publish` to push your branch, `propose` to open the PR,

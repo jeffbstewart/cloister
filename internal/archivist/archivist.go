@@ -164,11 +164,16 @@ func (s *Server) addForge(tool *mcp.Tool, h func(context.Context, *mcp.CallToolR
 }
 
 func (s *Server) registerTools() {
-	s.addArc(&mcp.Tool{
+	// NOT addArc: this is the one verb whose job is to report where things
+	// stand, so "there is no workspace" is an ANSWER, not a failure.  An
+	// agent orienting itself asks this first; handing it a tool error for
+	// the normal pre-provision state teaches it that something broke.
+	s.add(&mcp.Tool{
 		Name: "current_state",
-		Description: "Where the working tree stands: branch, publication state, ahead/behind, " +
-			"dirty and untracked files, set-aside parcels.  Read this before any destructive verb.  " +
-			"ahead/behind count against the last-synced remote state and can be stale until sync_from_upstream.",
+		Description: "Where things stand: whether a workspace is provisioned, and if so its branch, publication state, " +
+			"ahead/behind, dirty and untracked files, and set-aside parcels.  Read this before any destructive verb, " +
+			"and first in a session to orient.  ahead/behind count against the last-synced remote state and can be " +
+			"stale until sync_from_upstream.",
 		InputSchema: &jsonschema.Schema{Type: "object", AdditionalProperties: mcpserve.NoExtras()},
 	}, s.currentState)
 
@@ -228,11 +233,13 @@ func (s *Server) registerTools() {
 	s.addArc(&mcp.Tool{
 		Name: "start_work",
 		Description: "Begin a NEW line of work off the local default branch (to update that base first, run sync_from_upstream while on the default branch).  " +
+			"The name MUST be in the repository's agent namespace — `agent/<something>`; the forge refuses to create any other branch, " +
+			"so a wrong name would only surface at publish, after the work is committed to it.  " +
 			"Uncommitted changes ride along.  The name must not already exist — switch_work returns to an existing line of work.",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"name": mcpserve.Str("branch name, e.g. agent/fix-thing: letters, digits, '.', '_', '/', '-', not starting with '.' or '-'"),
+				"name": mcpserve.Str("branch name in the agent namespace, e.g. agent/fix-thing: letters, digits, '.', '_', '/', '-', not starting with '.' or '-'"),
 			},
 			Required:             []string{"name"},
 			AdditionalProperties: mcpserve.NoExtras(),
@@ -325,7 +332,20 @@ func (s *Server) registerTools() {
 
 // --- tool handlers ---
 
-func (s *Server) currentState(ctx context.Context, _ *mcp.CallToolRequest, arc *archive.Archive) (*mcp.CallToolResult, error) {
+func (s *Server) currentState(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	arc, err := s.cfg.Grange.Archive()
+	if err != nil {
+		// No workspace is a STATE, reported as a successful answer that
+		// names the next step.  A CORRUPT workspace is different: it needs
+		// host-side recovery, so it stays an error.
+		if errors.Is(err, archive.ErrNotProvisioned) {
+			return mcpserve.JSONResult(map[string]any{
+				"provisioned": false,
+				"next":        "provision(repo, branch?) brings a workspace into being; every other verb refuses until then",
+			}), nil
+		}
+		return mcpserve.ErrResult(err.Error()), nil
+	}
 	st, err := arc.CurrentState(ctx)
 	if err != nil {
 		return mcpserve.ErrResult(err.Error()), nil
@@ -340,6 +360,7 @@ func (s *Server) currentState(ctx context.Context, _ *mcp.CallToolRequest, arc *
 	}
 	untracked, total := capUntracked(st.Untracked)
 	return mcpserve.JSONResult(map[string]any{
+		"provisioned":     true,
 		"branch":          st.Branch,
 		"default":         st.Default,
 		"published":       st.Published,

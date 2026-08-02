@@ -57,6 +57,7 @@ type Identity struct {
 type Archive struct {
 	run   *runner
 	def   BranchName // the default branch, e.g. "main"
+	ns    string     // agent-branch prefix (R8); "" = only the forge enforces
 	ident Identity
 	table *endpoint.Table    // nil = local-only mode: remote verbs refuse
 	ep    *endpoint.Endpoint // the endpoint origin resolved to at open time
@@ -70,6 +71,7 @@ const originRemote = "origin"
 type config struct {
 	gitPath   string
 	def       string
+	ns        string
 	now       func() time.Time
 	ident     Identity
 	identSet  bool
@@ -105,6 +107,16 @@ func WithGitPath(path string) Option {
 // whose origin/HEAD is absent or wrong.
 func WithDefaultBranch(name string) Option {
 	return func(c *config) { c.def = name }
+}
+
+// WithBranchNamespace confines new lines of work to a prefix — the
+// repository's own `agentNamespace` (R8), learned at provision.  The
+// forge refuses an out-of-namespace branch at PUSH, by which time the
+// agent has already committed work to a doomed branch; this refuses at
+// start_work, when the fix is free.  "" disables the local check and
+// leaves the forge as the only enforcer.
+func WithBranchNamespace(prefix string) Option {
+	return func(c *config) { c.ns = prefix }
 }
 
 // New opens the working tree rooted exactly at dir.  It refuses a dir
@@ -193,6 +205,7 @@ func New(dir string, opts ...Option) (*Archive, error) {
 		return fail("archive: the default branch of %s is not a name the archivist will hand to git: %w", abs, err)
 	}
 	a.def = def
+	a.ns = cfg.ns
 	if a.table != nil {
 		ep, _, err := a.originEndpoint(ctx)
 		if err != nil {

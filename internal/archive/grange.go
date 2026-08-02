@@ -67,6 +67,10 @@ type Grange struct {
 	// verb that reads arc.
 	arc   *Archive
 	forge forge.Client
+	// namespace is the provisioned repo's agent-branch prefix (R8),
+	// learned from its forge-lint config at provision and restored from
+	// the marker on restart.  "" = unknown; only the forge enforces.
+	namespace string
 }
 
 // LifecycleState is the workspace's disk-derived condition.
@@ -105,7 +109,13 @@ type Cloner func(ctx context.Context, ep endpoint.Endpoint, repoURL, dst string)
 // injected because the check lives above this package (it speaks
 // forgelint and HTTP); archive only knows to run it and refuse.
 type ProvisionGate interface {
-	Verify(ctx context.Context, ep endpoint.Endpoint, repo, stagingTree string) error
+	// Verify returns the repository's own agent-branch namespace (R8's
+	// `agentNamespace`, e.g. "agent/") so the archivist can refuse an
+	// out-of-namespace branch LOCALLY, at start_work, instead of letting
+	// the forge reject it at publish — after the agent has already
+	// committed work to a doomed branch.  "" means the namespace is
+	// unknown and only the server-side rule applies.
+	Verify(ctx context.Context, ep endpoint.Endpoint, repo, stagingTree string) (namespace string, err error)
 }
 
 // GrangeConfig wires a Grange.  Root, Table, and Gate are required.
@@ -286,7 +296,15 @@ func (g *Grange) AdoptForge(fc forge.Client) {
 // open opens the Archive at the promoted tree and, when wired, its forge
 // client.  The tree must be a real checkout (post-clone or a restart).
 func (g *Grange) open() error {
-	opts := []Option{WithEndpoints(g.table), WithClock(g.now), WithGitPath(g.git)}
+	// On a restart the marker is the only memory of what provision
+	// learned, so recover the namespace from it before opening; a fresh
+	// provision has already set it and the marker is not written yet.
+	if g.namespace == "" {
+		if m, err := g.readMarker(); err == nil {
+			g.namespace = m.Namespace
+		}
+	}
+	opts := []Option{WithEndpoints(g.table), WithClock(g.now), WithGitPath(g.git), WithBranchNamespace(g.namespace)}
 	if g.defBranch != "" {
 		opts = append(opts, WithDefaultBranch(g.defBranch))
 	}
@@ -361,10 +379,12 @@ func (g *Grange) Provision(ctx context.Context, repoURL string, branch BranchNam
 	}
 	// The gate reads the repo's own forge-lint config from the staging
 	// checkout; a refusal discards staging and never touches the tree.
-	if err := g.gate.Verify(ctx, ep, repo, g.staging); err != nil {
+	namespace, err := g.gate.Verify(ctx, ep, repo, g.staging)
+	if err != nil {
 		os.RemoveAll(g.staging)
 		return info, err
 	}
+	g.namespace = namespace
 	// Promote.  RemoveAll first so the rename lands on an absent target on
 	// every platform (the state is EMPTY, so the tree is absent or empty).
 	if err := os.RemoveAll(g.tree); err != nil {
@@ -498,13 +518,21 @@ func (g *Grange) Close() error {
 // marker is the provenance marker's on-disk shape: which repository and
 // line of work, and when (bare epoch seconds, per the ledger convention).
 type marker struct {
-	Repo        string `json:"repo"`
-	Branch      string `json:"branch,omitempty"`
+	Repo   string `json:"repo"`
+	Branch string `json:"branch,omitempty"`
+	// Namespace is the repo's declared agent-branch prefix (R8), learned
+	// from its forge-lint config at provision and kept here so a restart
+	// recovers it without another clone.  Absent in markers written
+	// before this field existed: unknown, so only the forge enforces.
+	Namespace   string `json:"namespace,omitempty"`
 	Provisioned int64  `json:"provisioned"`
 }
 
 func (g *Grange) writeMarker(repo string, branch BranchName) error {
-	b, err := json.Marshal(marker{Repo: repo, Branch: branch.String(), Provisioned: g.now().Unix()})
+	b, err := json.Marshal(marker{
+		Repo: repo, Branch: branch.String(),
+		Namespace: g.namespace, Provisioned: g.now().Unix(),
+	})
 	if err != nil {
 		return err
 	}

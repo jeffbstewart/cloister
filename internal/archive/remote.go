@@ -148,6 +148,14 @@ func (a *Archive) Publish(ctx context.Context) (PublishInfo, error) {
 	if branch == a.def.String() {
 		return PublishInfo{}, fmt.Errorf("%w: publish", ErrDefaultBranch)
 	}
+	// Belt on start_work's refusal: a branch can also arrive by
+	// switch_work or a resumed provision, and the forge's rejection here
+	// is an opaque GH013 the agent has to decode.
+	if name, err := ParseBranchName(branch); err == nil {
+		if err := a.inNamespace(name); err != nil {
+			return PublishInfo{}, err
+		}
+	}
 	ep, o, err := a.remoteContext(ctx)
 	if err != nil {
 		return PublishInfo{}, err
