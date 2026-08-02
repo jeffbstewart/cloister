@@ -119,6 +119,12 @@ func runScholar(o scholarOptions) {
 		log.Fatalf("scholar: %v", err)
 	}
 
+	// A research call is a gated multi-hop loop lasting many minutes, and
+	// killing one mid-flight wastes provider spend already burned against
+	// the daily caps — so this role drains slowly, under its compose
+	// stop_grace_period.
+	drainTimeout = 4 * time.Minute
+
 	// One client: audit + approvals + transcripts.
 	stateClient := sink.NewClient(sink.ClientConfig{BaseURL: o.StateURL, Token: token, Origin: auditOrigin()})
 	srv := scholar.New(scholar.Config{

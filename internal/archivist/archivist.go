@@ -74,6 +74,13 @@ type Config struct {
 	// Audit records remote and lifecycle operations; nil disables (tests).
 	// Working-tree verbs are unaudited by design.
 	Audit Auditor
+	// Draining is closed when the process begins a lame-duck shutdown.
+	// await_review blocks for up to an hour, and a graceful shutdown
+	// WAITS for handlers rather than cancelling them, so without this a
+	// restart would hold the drain open until docker's SIGKILL.  nil
+	// (tests) is a channel that never closes — no drain, no early
+	// return.
+	Draining <-chan struct{}
 	// Now and Sleep are await_review's clock: the deadline arithmetic and
 	// the spacing between endpoint polls.  nil means the real time.Now and
 	// a context-aware sleep; tests pin both (never real sleeps).

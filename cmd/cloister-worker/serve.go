@@ -82,6 +82,29 @@ func bannerName() string {
 	return "cloister-worker"
 }
 
+// drainTimeout bounds the lame duck: how long a role keeps serving
+// in-flight work after SIGTERM before it stops waiting.  It must stay
+// UNDER the compose `stop_grace_period` for the service, or docker
+// SIGKILLs mid-drain and the lame duck was theater.  Roles override it
+// per their longest sane operation (the archivist's clone, the
+// scholar's research loop); the default suits a role whose calls are
+// short.
+var drainTimeout = 20 * time.Second
+
+// draining is closed when a shutdown signal arrives — the lame-duck
+// announcement.  Handlers that block for MINUTES (await_review's
+// long-poll, the scholar's gated loop) select on Draining() and return
+// their own "call again" answer instead of being waited out: an
+// http.Server.Shutdown waits for handlers to return, it cannot cancel
+// them, so a one-hour poll would hold the drain open until SIGKILL.
+var draining = make(chan struct{})
+
+// Draining reports the lame-duck channel: closed once shutdown began.
+// A handler blocked on a long wait should treat it like its own
+// deadline expiring — finish cleanly and answer, never abandon work
+// silently.
+func Draining() <-chan struct{} { return draining }
+
 func serveHTTP(httpSrv *http.Server, what string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -94,10 +117,17 @@ func serveHTTP(httpSrv *http.Server, what string) error {
 	case err := <-errCh:
 		return err
 	case <-ctx.Done():
-		log.Print("signal received; shutting down")
-		shCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		// Lame duck: stop admitting new work, tell the long blockers to
+		// wind up, then wait out whatever is still in flight.
+		log.Printf("signal received; draining (up to %s) — no new requests admitted", drainTimeout)
+		close(draining)
+		shCtx, cancel := context.WithTimeout(context.Background(), drainTimeout)
 		defer cancel()
-		_ = httpSrv.Shutdown(shCtx)
+		if err := httpSrv.Shutdown(shCtx); err != nil {
+			log.Printf("drain incomplete after %s: %v — exiting anyway", drainTimeout, err)
+		} else {
+			log.Print("drained cleanly; exiting")
+		}
 		return nil
 	}
 }

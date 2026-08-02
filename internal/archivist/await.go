@@ -23,6 +23,7 @@ package archivist
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -152,7 +153,21 @@ func (s *Server) awaitReview(ctx context.Context, req *mcp.CallToolRequest) (*mc
 				"note": "no review activity within maxWait — read_reviews shows the full current state; activity landing between calls joins the next baseline and will not retrigger",
 			}), nil
 		}
-		if err := s.sleep(ctx, min(awaitPollInterval, remaining)); err != nil {
+		switch err := s.sleep(ctx, min(awaitPollInterval, remaining)); {
+		case errors.Is(err, errDraining):
+			// Lame duck: the archivist is restarting.  Answer with the
+			// same shape a quiet expiry uses — a completed wait that
+			// found nothing yet — so the agent simply calls again once
+			// the new process is up.  Returning promptly is what lets
+			// the drain finish instead of holding it for the full
+			// maxWait.
+			s.auditRemote("await_review", d, audit.DecisionRemoteOK)
+			return mcpserve.JSONResult(map[string]any{
+				"pr": pr.Number, "url": pr.URL, "state": pr.State,
+				"outcome": "interrupted", "waited": s.now().Sub(start).Round(time.Second).String(),
+				"note": "the archivist is restarting — no review activity seen yet; call again",
+			}), nil
+		case err != nil:
 			// The caller hung up mid-wait.  The polls already made still
 			// touched the endpoint, so the abnormal end leaves a record.
 			s.auditRemote("await_review", d, audit.DecisionRemoteError)
@@ -294,8 +309,12 @@ func (s *Server) now() time.Time {
 	return time.Now()
 }
 
-// sleep waits d out or returns the context's error, whichever comes
-// first.
+// errDraining ends a wait because the process is shutting down — not a
+// failure of the operation, and not the caller hanging up.
+var errDraining = errors.New("archivist: draining")
+
+// sleep waits d out, or ends early when the caller hangs up (its error)
+// or the process begins draining (errDraining), whichever comes first.
 func (s *Server) sleep(ctx context.Context, d time.Duration) error {
 	if s.cfg.Sleep != nil {
 		return s.cfg.Sleep(ctx, d)
@@ -305,6 +324,8 @@ func (s *Server) sleep(ctx context.Context, d time.Duration) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-s.cfg.Draining:
+		return errDraining
 	case <-t.C:
 		return nil
 	}
