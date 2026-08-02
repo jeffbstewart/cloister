@@ -104,6 +104,13 @@ type Config struct {
 	Transcripts TranscriptStore // may be nil (no transcript kept)
 	AnswerGate  bool            // gate the answer before returning (default on in prod)
 	Caps        Caps
+	// Draining is closed when the process begins a lame-duck shutdown.
+	// A gate waits MINUTES for a human, and a graceful shutdown waits
+	// for handlers rather than cancelling them, so without this a
+	// restart would hold the drain open until docker's SIGKILL — and
+	// leave a pending approval nobody is waiting on.  nil (tests) is a
+	// channel that never closes.
+	Draining <-chan struct{}
 }
 
 // Server owns the research MCP surface.
