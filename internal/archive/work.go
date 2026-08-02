@@ -61,6 +61,27 @@ func (a *Archive) identityArgs() []string {
 // Uncommitted changes ride along (git refuses the switch itself if that
 // cannot be done cleanly), so "edit first, branch when it becomes
 // real" works.
+// DefaultBranchNamespace is the house convention, used when a
+// repository declares none of its own — it matches the forge-lint
+// template and every hardened repo so far.
+const DefaultBranchNamespace = "agent/"
+
+// Namespace reports the repository's agent-branch prefix, or "" when
+// none is known (a local checkout; only the forge enforces).
+func (a *Archive) Namespace() string { return a.ns }
+
+// BranchExists reports whether a local branch of that name is already
+// present — what a name minter needs to avoid colliding with live work.
+func (a *Archive) BranchExists(ctx context.Context, name BranchName) (bool, error) {
+	// --list prints nothing and exits 0 for an absent branch, so this
+	// needs no exit-code special-casing.
+	out, err := a.run.out(ctx, "branch", "--list", "--end-of-options", name.String())
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(out) != "", nil
+}
+
 // ErrOutsideNamespace refuses a line of work outside the repository's
 // agent-branch namespace.  The forge refuses these too — but at PUSH,
 // after the agent has committed work to a branch that can never be

@@ -34,6 +34,7 @@ import (
 
 	"github.com/jeffbstewart/cloister/internal/archive"
 	"github.com/jeffbstewart/cloister/internal/audit"
+	"github.com/jeffbstewart/cloister/internal/codename"
 	"github.com/jeffbstewart/cloister/internal/forge"
 	"github.com/jeffbstewart/cloister/internal/mcpserve"
 )
@@ -233,15 +234,15 @@ func (s *Server) registerTools() {
 	s.addArc(&mcp.Tool{
 		Name: "start_work",
 		Description: "Begin a NEW line of work off the local default branch (to update that base first, run sync_from_upstream while on the default branch).  " +
-			"The name MUST be in the repository's agent namespace — `agent/<something>`; the forge refuses to create any other branch, " +
-			"so a wrong name would only surface at publish, after the work is committed to it.  " +
+			"OMIT name unless it matters — a codename is minted in the repository's agent namespace (agent/brisk-otter), which is " +
+			"usually better than coining one.  A name you DO pass must be in that namespace: the forge refuses to create any other " +
+			"branch, so a wrong one only surfaces at publish, after the work is committed to it.  " +
 			"Uncommitted changes ride along.  The name must not already exist — switch_work returns to an existing line of work.",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
-				"name": mcpserve.Str("branch name in the agent namespace, e.g. agent/fix-thing: letters, digits, '.', '_', '/', '-', not starting with '.' or '-'"),
+				"name": mcpserve.Str("optional branch name in the agent namespace, e.g. agent/fix-thing: letters, digits, '.', '_', '/', '-', not starting with '.' or '-'.  Omit to have one minted"),
 			},
-			Required:             []string{"name"},
 			AdditionalProperties: mcpserve.NoExtras(),
 		},
 	}, s.startWork)
@@ -481,6 +482,18 @@ func (s *Server) startWork(ctx context.Context, req *mcp.CallToolRequest, arc *a
 	if err := mcpserve.Decode(req, &a); err != nil {
 		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
 	}
+	if a.Name == "" {
+		// No opinion about the name: mint a codename in the repository's
+		// own namespace.  Coining one is friction that yields
+		// agent/fix-thing, agent/fix-thing-2, agent/fix-thing-final —
+		// and a name that claims something ages badly when the work
+		// turns out otherwise.  A handle is enough.
+		minted, err := s.mintBranchName(ctx, arc)
+		if err != nil {
+			return mcpserve.ErrResult(err.Error()), nil
+		}
+		a.Name = minted
+	}
 	name, err := archive.ParseBranchName(a.Name)
 	if err != nil {
 		return mcpserve.ErrResult("bad arguments: " + err.Error()), nil
@@ -489,6 +502,40 @@ func (s *Server) startWork(ctx context.Context, req *mcp.CallToolRequest, arc *a
 		return mcpserve.ErrResult(err.Error()), nil
 	}
 	return mcpserve.TextResult(fmt.Sprintf("working on %s (off %s)", name, arc.DefaultBranch())), nil
+}
+
+// mintCodenameTries bounds the search for an unused codename.  With 2500
+// pairs against a handful of live branches a collision is already
+// unlikely; a few redraws make it negligible without looping forever on
+// a repository that somehow holds thousands.
+const mintCodenameTries = 8
+
+// mintBranchName builds a fresh branch name in the repo's agent
+// namespace — the prefix the forge requires, so a minted name is never
+// the thing that gets refused at publish.
+func (s *Server) mintBranchName(ctx context.Context, arc *archive.Archive) (string, error) {
+	prefix := arc.Namespace()
+	if prefix == "" {
+		// No declared namespace (a local checkout, or a marker predating
+		// the field): the house convention is still the safe guess, and
+		// the forge remains the enforcer either way.
+		prefix = archive.DefaultBranchNamespace
+	}
+	for i := 0; i < mintCodenameTries; i++ {
+		candidate := prefix + codename.New()
+		name, err := archive.ParseBranchName(candidate)
+		if err != nil {
+			return "", fmt.Errorf("archivist: minted branch name %q is unusable: %w", candidate, err)
+		}
+		taken, err := arc.BranchExists(ctx, name)
+		if err != nil {
+			return "", err
+		}
+		if !taken {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("archivist: could not mint an unused branch name in %d tries — name one explicitly", mintCodenameTries)
 }
 
 func (s *Server) switchWork(ctx context.Context, req *mcp.CallToolRequest, arc *archive.Archive) (*mcp.CallToolResult, error) {
