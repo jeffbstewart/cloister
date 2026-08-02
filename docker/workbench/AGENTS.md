@@ -24,11 +24,15 @@ assuming anything works the way an open laptop does.
   `start_work` / `switch_work` for branches, `checkpoint` to record the
   tree, `restore` / `set_aside` / `resume` for rollback and parking,
   `sync_from_upstream` to update from the default branch.
-- **Branch names must start with `agent/`** — e.g. `agent/fix-parser`,
-  not `fix-parser` or `agent-fix-parser`.  The forge refuses to create
-  any other branch from this account, so a wrong name is discovered
-  when you try to publish, after the work is already committed to it.
-  `start_work` refuses it up front for the same reason.
+- **Don't coin branch names.**  Call `start_work` with no name and it
+  mints one — `agent/brisk-otter`.  A codename is a handle for talking
+  about the work, and it can't age badly the way `agent/quick-fix`
+  does when the work turns out otherwise.
+- If you *do* pass a name, it **must start with `agent/`** — e.g.
+  `agent/fix-parser`, not `fix-parser` or `agent-fix-parser`.  The
+  forge refuses to create any other branch from this account, so a
+  wrong name is discovered at publish, after the work is already
+  committed to it; `start_work` refuses it up front for that reason.
 - The normal order is: `start_work` → edit and build → `checkpoint` →
   `publish` → `propose` → `await_review`.  `publish` pushes the branch
   the archivist is already on; it does not create one, so `start_work`

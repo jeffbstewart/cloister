@@ -263,6 +263,36 @@ func TestRestoreRefusesAmbiguousShapes(t *testing.T) {
 	}
 }
 
+// TestStartWorkMintsACodename: with no name given, start_work coins one
+// in the agent namespace — so neither the operator nor the model has to
+// invent agent/fix-thing-final, and a minted name is never the thing the
+// forge refuses at publish.
+func TestStartWorkMintsACodename(t *testing.T) {
+	f := newFixture(t)
+
+	text := f.ok(t, "start_work", nil)
+	st := asJSON(t, f.ok(t, "current_state", nil))
+	branch := field[string](t, st, "branch")
+	if !strings.HasPrefix(branch, "agent/") {
+		t.Fatalf("minted branch %q is outside the agent namespace — the forge would refuse it", branch)
+	}
+	if !strings.Contains(text, branch) {
+		t.Errorf("start_work answer %q does not name the branch it minted (%q)", text, branch)
+	}
+	// adjective-animal, so it reads as a handle rather than an id.
+	if name := strings.TrimPrefix(branch, "agent/"); strings.Count(name, "-") != 1 {
+		t.Errorf("minted name %q is not an adjective-animal codename", name)
+	}
+
+	// A second mint must not collide with the first.
+	f.ok(t, "switch_work", map[string]any{"name": "main"})
+	f.ok(t, "start_work", nil)
+	st2 := asJSON(t, f.ok(t, "current_state", nil))
+	if second := field[string](t, st2, "branch"); second == branch {
+		t.Errorf("second mint reused %q — the minter must skip live branches", second)
+	}
+}
+
 func TestSwitchWork(t *testing.T) {
 	f := newFixture(t)
 	f.ok(t, "start_work", map[string]any{"name": "agent/first"})
