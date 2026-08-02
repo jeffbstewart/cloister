@@ -92,7 +92,7 @@ func runArchivist(o archivistOptions) {
 	srv := archivist.New(archivist.Config{
 		Version: version,
 		Grange:  grange,
-		Audit:   sink.NewClient(o.StateURL, token),
+		Audit:   sink.NewClient(sink.ClientConfig{BaseURL: o.StateURL, Token: token, Origin: auditOrigin()}),
 	})
 	// Close before any fatal exit, not deferred past one: log.Fatalf skips
 	// defers, and a crash-looping container would leak a hooks dir per

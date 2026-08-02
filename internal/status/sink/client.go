@@ -36,14 +36,32 @@ import (
 type Client struct {
 	base   string
 	token  string
+	origin string       // stamped on every audit record; see Append
 	stream *http.Client // no overall timeout: log streams last as long as builds
 }
 
-// NewClient targets a state service, e.g. http://state:9201.
-func NewClient(base, token string) *Client {
+// ClientConfig wires a client to its state service.  Named fields, not
+// positional arguments: three same-typed strings at a call site are
+// three chances to transpose two of them silently — and one of these is
+// a credential.
+type ClientConfig struct {
+	// BaseURL is the state service, e.g. http://state:9201.
+	BaseURL string
+	// Token is the shared worker-to-state secret.
+	Token string
+	// Origin names this worker's home — the cell id, or "abbey" for a
+	// shared door — and is stamped on every audit record the client
+	// sends (see Append).  Empty is legal (tests, a local ledger) and
+	// simply leaves records unattributed.
+	Origin string
+}
+
+// NewClient targets the state service named by cfg.
+func NewClient(cfg ClientConfig) *Client {
 	return &Client{
-		base:   strings.TrimRight(base, "/"),
-		token:  token,
+		base:   strings.TrimRight(cfg.BaseURL, "/"),
+		token:  cfg.Token,
+		origin: cfg.Origin,
 		stream: &http.Client{},
 	}
 }
@@ -104,8 +122,15 @@ func (c *Client) Finalize(id runid.ID) error {
 	return c.do(http.MethodPost, "/api/runs/"+id.String()+"/finalize", nil, 10*time.Second)
 }
 
-// Append sends one audit record (satisfies the mcpserver Auditor).
+// Append sends one audit record (satisfies the Auditor interfaces).  The
+// origin is stamped HERE rather than at each audit.New call site: every
+// record a given worker sends has the same origin, one stamp point
+// cannot be forgotten by a new verb, and a record that already carries
+// one (a replayed or forwarded line) is left alone.
 func (c *Client) Append(rec audit.Record) error {
+	if rec.Origin == "" {
+		rec.Origin = c.origin
+	}
 	b, err := json.Marshal(rec)
 	if err != nil {
 		return err

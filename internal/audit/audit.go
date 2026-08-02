@@ -79,6 +79,17 @@ type Header struct {
 	Tool     string    `json:"tool"`
 	Decision Decision  `json:"decision"`
 	Duration Duration  `json:"duration"`
+	// Origin names WHERE the record came from — the cell id for a cell's
+	// workers, "abbey" for the shared doors (docs/abbey.md).  One state
+	// service now holds the whole fleet's trail, and the container that
+	// wrote a record used to be its own attribution; centralizing the
+	// memory took that away, so the record carries it instead.  The
+	// worker stamps it (see internal/status/sink): under one shared
+	// token the service cannot infer it, and the value is deployment
+	// config, not something a model can reach.  Optional in the type —
+	// historical records predate it, and a local ledger has no origin
+	// to speak of.
+	Origin string `json:"origin,omitempty"`
 	// Limit is the one optional envelope field: which bound was exhausted, set
 	// only alongside a cap decision.  The required core above is what Validate
 	// enforces.

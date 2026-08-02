@@ -119,7 +119,8 @@ func runScholar(o scholarOptions) {
 		log.Fatalf("scholar: %v", err)
 	}
 
-	stateClient := sink.NewClient(o.StateURL, token) // one client: audit + approvals + transcripts
+	// One client: audit + approvals + transcripts.
+	stateClient := sink.NewClient(sink.ClientConfig{BaseURL: o.StateURL, Token: token, Origin: auditOrigin()})
 	srv := scholar.New(scholar.Config{
 		Version: version,
 		Egress:  sub,

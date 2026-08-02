@@ -266,6 +266,8 @@ services:
       - *tz
       - STATE_URL=http://state:9201
       - STATE_TOKEN=${STATE_TOKEN:?set STATE_TOKEN, the shared worker-to-state secret}
+      # A shared door's records are the abbey's, not any cell's.
+      - AUDIT_ORIGIN=abbey
       # No model name: the scholar asks the agency for its `research`
       # engine class by name.
       - OPENAI_BASE_URL=http://agency:11434/v1

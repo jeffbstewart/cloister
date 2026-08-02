@@ -95,7 +95,7 @@ func TestStreamFinalizeAndFetch(t *testing.T) {
 	srv, _ := newServer(t, Config{})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
-	c := NewClient(ts.URL, testToken)
+	c := NewClient(ClientConfig{BaseURL: ts.URL, Token: testToken})
 	id := mustRunID(t)
 
 	stream := c.StartRun(id)
@@ -131,7 +131,7 @@ func TestDiffStoreRoundTrip(t *testing.T) {
 	srv, dir := newServer(t, Config{})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
-	c := NewClient(ts.URL, testToken)
+	c := NewClient(ClientConfig{BaseURL: ts.URL, Token: testToken})
 	id := mustRunID(t)
 
 	payload := []byte("=== applied diff ===\n--- a/f\n+++ b/f\n@@ @@\n-x\n+y\n")
@@ -161,7 +161,7 @@ func TestDiffStoreCapTruncates(t *testing.T) {
 	srv, _ := newServer(t, Config{MaxDiffBytes: 64})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
-	c := NewClient(ts.URL, testToken)
+	c := NewClient(ClientConfig{BaseURL: ts.URL, Token: testToken})
 	id := mustRunID(t)
 
 	if err := c.PutDiff(id, bytes.Repeat([]byte("z"), 4096)); err != nil {
@@ -180,7 +180,7 @@ func TestApprovalRegisterDecidePoll(t *testing.T) {
 	srv, _ := newServer(t, Config{ApprovalPoll: 200 * time.Millisecond})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
-	c := NewClient(ts.URL, testToken)
+	c := NewClient(ClientConfig{BaseURL: ts.URL, Token: testToken})
 	id := mustRunID(t)
 
 	if err := c.RegisterPending(id, "apply_diff", "build.gradle.kts"); err != nil {
@@ -205,7 +205,7 @@ func TestApprovalWithdraw(t *testing.T) {
 	srv, _ := newServer(t, Config{})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
-	c := NewClient(ts.URL, testToken)
+	c := NewClient(ClientConfig{BaseURL: ts.URL, Token: testToken})
 
 	// Withdraw a pending op → it's gone; a poll then 404s (an error).
 	id := mustRunID(t)
@@ -243,7 +243,7 @@ func TestApprovalRegistrationRateLimited(t *testing.T) {
 	srv, _ := newServer(t, Config{ApprovalPerSec: 1}) // burst 2×
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
-	c := NewClient(ts.URL, testToken)
+	c := NewClient(ClientConfig{BaseURL: ts.URL, Token: testToken})
 
 	var errs int
 	for i := 0; i < 6; i++ {
@@ -260,7 +260,7 @@ func TestApprovalTimeout(t *testing.T) {
 	srv, _ := newServer(t, Config{ApprovalTimeout: 40 * time.Millisecond, ApprovalPoll: 100 * time.Millisecond})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
-	c := NewClient(ts.URL, testToken)
+	c := NewClient(ClientConfig{BaseURL: ts.URL, Token: testToken})
 	id := mustRunID(t)
 
 	if err := c.RegisterPending(id, "apply_diff", "build.gradle.kts"); err != nil {
@@ -280,7 +280,7 @@ func TestApprovalPersistsAcrossRestart(t *testing.T) {
 	dir := t.TempDir()
 	srv, _ := newServer(t, Config{StateDir: dir})
 	ts := httptest.NewServer(srv.Handler())
-	c := NewClient(ts.URL, testToken)
+	c := NewClient(ClientConfig{BaseURL: ts.URL, Token: testToken})
 	id := mustRunID(t)
 	if err := c.RegisterPending(id, "apply_diff", "x.gradle.kts"); err != nil {
 		t.Fatal(err)
@@ -295,7 +295,7 @@ func TestApprovalPersistsAcrossRestart(t *testing.T) {
 	srv2, _ := newServer(t, Config{StateDir: dir})
 	ts2 := httptest.NewServer(srv2.Handler())
 	defer ts2.Close()
-	c2 := NewClient(ts2.URL, testToken)
+	c2 := NewClient(ClientConfig{BaseURL: ts2.URL, Token: testToken})
 	if rec, err := c2.PollDecision(id); err != nil || rec.Decision != approval.Approved {
 		t.Errorf("decision not persisted across restart: %v, %v", rec.Decision, err)
 	}
@@ -305,7 +305,7 @@ func TestApprovalsUIApproveRejectAndCSRF(t *testing.T) {
 	srv, _ := newServer(t, Config{})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
-	c := NewClient(ts.URL, testToken)
+	c := NewClient(ClientConfig{BaseURL: ts.URL, Token: testToken})
 	// No redirects, so we can assert the 303 the form returns.
 	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 
@@ -383,7 +383,7 @@ func TestAuthRejectsBadToken(t *testing.T) {
 	}
 
 	// Wrong token via the client.
-	bad := NewClient(ts.URL, "wrong")
+	bad := NewClient(ClientConfig{BaseURL: ts.URL, Token: "wrong"})
 	if err := bad.Append(audit.New(mustRunID(t), "x", audit.DecisionRun, 0)); err == nil {
 		t.Error("wrong token accepted")
 	}
@@ -406,7 +406,7 @@ func TestAuditTimestampIsServerAuthoritative(t *testing.T) {
 	srv, dir := newServer(t, Config{})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
-	c := NewClient(ts.URL, testToken)
+	c := NewClient(ClientConfig{BaseURL: ts.URL, Token: testToken})
 
 	forged := audit.New(mustRunID(t), "build", audit.DecisionRun, 0)
 	forged.Time = time.Date(1999, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -422,11 +422,51 @@ func TestAuditTimestampIsServerAuthoritative(t *testing.T) {
 	}
 }
 
+// TestAuditOriginStamped: one state service now holds the whole fleet's
+// trail, so every record must say which cell produced it.  The client
+// stamps its configured origin on records that lack one, and leaves an
+// existing origin alone (a forwarded or replayed line keeps its own).
+func TestAuditOriginStamped(t *testing.T) {
+	srv, dir := newServer(t, Config{})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	c := NewClient(ClientConfig{BaseURL: ts.URL, Token: testToken, Origin: "h2kt"})
+
+	if err := c.Append(audit.New(mustRunID(t), "provision", audit.DecisionProvisioned, 0)); err != nil {
+		t.Fatal(err)
+	}
+	elsewhere := audit.New(mustRunID(t), "publish", audit.DecisionRemoteOK, 0)
+	elsewhere.Origin = "other-cell"
+	if err := c.Append(elsewhere); err != nil {
+		t.Fatal(err)
+	}
+	recs := readAudit(t, dir)
+	if len(recs) != 2 {
+		t.Fatalf("got %d records", len(recs))
+	}
+	if recs[0].Origin != "h2kt" {
+		t.Errorf("origin = %q, want the client's configured cell", recs[0].Origin)
+	}
+	if recs[1].Origin != "other-cell" {
+		t.Errorf("origin = %q, want the record's own origin preserved", recs[1].Origin)
+	}
+
+	// An unconfigured client (a local ledger, a test) leaves records
+	// unattributed rather than inventing an origin.
+	plain := NewClient(ClientConfig{BaseURL: ts.URL, Token: testToken})
+	if err := plain.Append(audit.New(mustRunID(t), "x", audit.DecisionRun, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if recs := readAudit(t, dir); recs[2].Origin != "" {
+		t.Errorf("origin = %q, want empty for an unconfigured client", recs[2].Origin)
+	}
+}
+
 func TestStatusRoundTrip(t *testing.T) {
 	srv, _ := newServer(t, Config{})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
-	c := NewClient(ts.URL, testToken)
+	c := NewClient(ClientConfig{BaseURL: ts.URL, Token: testToken})
 	id := mustRunID(t)
 
 	if err := c.PutStatus(cellstate.Status{
@@ -451,7 +491,7 @@ func TestPerRunSizeCap(t *testing.T) {
 	srv, _ := newServer(t, Config{MaxRunBytes: 1024, LogBytesPerSec: 1 << 30})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
-	c := NewClient(ts.URL, testToken)
+	c := NewClient(ClientConfig{BaseURL: ts.URL, Token: testToken})
 	id := mustRunID(t)
 
 	stream := c.StartRun(id)
@@ -490,7 +530,7 @@ func TestTranscriptStoreAndServe(t *testing.T) {
 	srv, _ := newServer(t, Config{})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
-	c := NewClient(ts.URL, testToken)
+	c := NewClient(ClientConfig{BaseURL: ts.URL, Token: testToken})
 
 	id := mustRunID(t)
 	body := "prompt: scholar-prompt-1\nquery: how do X\nsearch \"X\" -> 2 results: https://a/1 https://b/2\nanswer: use X\n"
@@ -525,7 +565,7 @@ func TestTranscriptRetentionPrunesOldest(t *testing.T) {
 	srv, _ := newServer(t, Config{TranscriptRetention: 100 << 10}) // 100 KiB total
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
-	c := NewClient(ts.URL, testToken)
+	c := NewClient(ClientConfig{BaseURL: ts.URL, Token: testToken})
 
 	var ids []runid.ID
 	for i := 0; i < 3; i++ { // each ~64 KiB incompressible → total ~192 KiB > cap
@@ -547,7 +587,7 @@ func TestAuditRateLimit(t *testing.T) {
 	srv, _ := newServer(t, Config{AuditPerSec: 1}) // burst 2
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
-	c := NewClient(ts.URL, testToken)
+	c := NewClient(ClientConfig{BaseURL: ts.URL, Token: testToken})
 
 	var rejected bool
 	for i := 0; i < 10; i++ {
