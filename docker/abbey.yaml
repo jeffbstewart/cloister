@@ -250,6 +250,10 @@ services:
     container_name: scholar
     user: "1000:1000"
     restart: unless-stopped
+    # Lame duck: a research call runs a gated multi-hop loop for many
+    # minutes, and killing one mid-flight wastes real provider spend
+    # against the daily caps.  Drain generously.
+    stop_grace_period: 5m
     # The scholar role: a quarantined research service, ONE per machine
     # (docs/abbey.md) — every cell's agent dials it over researchnet.
     # Serves ONE MCP tool research(query) on :9500 and internally drives a

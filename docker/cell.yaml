@@ -160,6 +160,13 @@ services:
     # same uid the agent runs as) — never the operator's host tree.
     user: "1000:1000"
     restart: unless-stopped
+    # Lame duck: a clone runs for minutes and await_review blocks for up
+    # to an hour, so the drain gets room.  The role's own drain timeout
+    # (4m) sits UNDER this, and await_review winds itself up on the
+    # signal rather than being waited out — a graceful shutdown waits
+    # for handlers, it cannot cancel them, so without that an hour-long
+    # poll would hold the drain open until docker's SIGKILL.
+    stop_grace_period: 5m
     entrypoint: ["/usr/local/bin/archivist"]
     environment:
       - *tz

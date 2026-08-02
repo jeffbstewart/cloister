@@ -430,6 +430,48 @@ func TestAwaitReviewExpiredUnverified(t *testing.T) {
 	}
 }
 
+// TestAwaitReviewDrains: a lame-duck shutdown ends the wait promptly
+// with the same shape a quiet expiry uses — a completed operation the
+// agent simply retries — instead of holding the drain open for the
+// full maxWait until docker's SIGKILL.
+func TestAwaitReviewDrains(t *testing.T) {
+	ff := &fakeForge{pr: openPR()}
+	tmp := t.TempDir()
+	_, dir := archivetest.Seed(t, tmp)
+	archivetest.GitRun(t, dir, "remote", "set-url", "origin", "https://github.com/op/repo")
+	a, err := archive.New(dir, archive.WithClock(time.Now), archive.WithEndpoints(awaitTable(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { a.Close() })
+	g := archive.AdoptArchive(a)
+	g.AdoptForge(ff)
+
+	// A real (unmocked) sleep so the drain channel is what ends it, and a
+	// maxWait far longer than the test could tolerate otherwise.
+	drain := make(chan struct{})
+	aud := &fakeAuditor{}
+	srv := New(Config{Version: "test", Grange: g, Audit: aud, Draining: drain})
+	f := &fixture{session: dial(t, srv)}
+	f.ok(t, "start_work", map[string]any{"name": "agent/pr"})
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		close(drain)
+	}()
+	res := asJSON(t, f.ok(t, "await_review", map[string]any{"maxWait": "1h"}))
+	if got := field[string](t, res, "outcome"); got != "interrupted" {
+		t.Errorf("outcome = %q, want interrupted", got)
+	}
+	if note := field[string](t, res, "note"); !strings.Contains(note, "call again") {
+		t.Errorf("note = %q, want the retry instruction", note)
+	}
+	recs := aud.records()
+	if len(recs) != 1 || recs[0].Decision != audit.DecisionRemoteOK {
+		t.Errorf("audit = %+v, want one remote_ok record for the drained wait", recs)
+	}
+}
+
 // TestAwaitReviewNoOpenPR: with nothing proposed there is nothing to
 // await, the refusal names a next step this verb's caller can actually
 // take (not resolvePR's "pass pr explicitly" — await_review has no pr

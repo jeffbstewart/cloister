@@ -89,10 +89,16 @@ func runArchivist(o archivistOptions) {
 		log.Fatalf("archivist: %v", err)
 	}
 
+	// A clone can run for minutes and await_review blocks for up to an
+	// hour, so this role drains slowly — kept under the compose
+	// stop_grace_period, with await_review winding itself up on the
+	// drain signal rather than being waited out.
+	drainTimeout = 4 * time.Minute
 	srv := archivist.New(archivist.Config{
-		Version: version,
-		Grange:  grange,
-		Audit:   sink.NewClient(sink.ClientConfig{BaseURL: o.StateURL, Token: token, Origin: auditOrigin()}),
+		Version:  version,
+		Grange:   grange,
+		Audit:    sink.NewClient(sink.ClientConfig{BaseURL: o.StateURL, Token: token, Origin: auditOrigin()}),
+		Draining: Draining(),
 	})
 	// Close before any fatal exit, not deferred past one: log.Fatalf skips
 	// defers, and a crash-looping container would leak a hooks dir per
