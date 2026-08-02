@@ -1,0 +1,222 @@
+# Copyright 2026 Jeffrey B. Stewart
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# ── Per-project cell stack ──────────────────────────────────────────────────
+# TWO services: the coding agent and its archivist.  Everything shared —
+# the inference, research, forge, and memory doors — lives in the ABBEY
+# (docker/abbey.yaml, docs/abbey.md), which must be deployed first: this
+# stack attaches to four of its networks by name.
+#
+# Stack env vars (Portainer).  Required vars carry a ${VAR:?message} guard at
+# their first use, so a missing one fails the deploy naming the variable —
+# not with docker's bare "invalid reference format".
+#   PROJECT        short project id, e.g. myproject
+#   WORKBENCH_IMAGE  the fat agent workbench image (toolchains + the agent
+#                  CLIs; docker/workbench).  Published by images.yml with
+#                  the qwen version leading the tag: pin e.g.
+#                  cloister-workbench:0.19.4-sha-<commit>, or track :latest.
+#                  There is NO host workspace: the agent works in the
+#                  grange volume the archivist provisions (docs/grange.md).
+#   AGENT_CACHES   host dir for the agent's warmed dependency caches
+#                  (gradle/go/cargo, via the airlock).  Per USER, shared
+#                  across that user's projects; pre-create it owned by
+#                  uid 1000.  Mounted at a CACHES subdir, never the whole
+#                  home — a shared writable home would carry dotfiles
+#                  (.bashrc, gradle init scripts) across cells, a
+#                  cross-project persistence channel.  Interim-accepted
+#                  as rw, like the builder's BUILD_HOME before it: the
+#                  read-only content-addressed stores (grange.md "Stores,
+#                  warming, and the airlock") are the planned successor.
+#                  e.g. /srv/home/alice/.cloister-cache
+#   WORKERS_IMAGE  e.g. cloister-workers:latest — the SLIM toolchain-free
+#                  multi-call worker image (scratch + the static binary);
+#                  every worker except the agent runs it
+#   OPENAI_MODEL   (optional) the agency ENGINE CLASS the agent drives
+#                  (default interactive-code); model tags live in the
+#                  agency's routing policy, not in cells
+#   STATE_TOKEN    the worker<->state secret; must MATCH the abbey's (one
+#                  fleet memory, one token — per-cell attribution rides the
+#                  audit records, not the credential)
+#   TZ             timezone for log timestamps, e.g. America/New_York
+#                  (default UTC); applied to every container
+#   ARCHIVIST_ENDPOINTS host path of the archivist's endpoint table yaml
+#                  (etc/endpoints.example.yaml is the template)
+#   GITHUB_TOKEN_FILE host path of the bot-account token file the table's
+#                  credentialFile points at (mounted read-only)
+#
+# The agent registers the archivist and scholar MCP servers in
+# /home/agent/.qwen/settings.json (persisted in the qwen_home volume) and
+# excludes the built-in web tools (web access MUST go through the scholar).
+# The native file tools and shell are the agent's own now — it edits and
+# builds directly in the grange (docs/grange.md M3/M4):
+#   { "mcpServers": {
+#       "archivist": { "httpUrl": "http://archivist:9600/mcp", "timeout": 5400000 },
+#       "scholar":   { "httpUrl": "http://scholar:9500/mcp",   "timeout": 2400000 } } }
+# (the archivist's 90 min exceeds await_review's 1 h maxWait cap.)
+#
+# Least-privilege network map — the cell's four edges, every one of them
+# into an abbey door except the cell-private MCP hop:
+#   agent   ── infernet ─────> agency (the inference door)
+#   agent   ── researchnet ──> scholar (the research door, MCP)
+#   agent   ── archivistnet ─> archivist (MCP) — CELL-PRIVATE
+#   archivist ─ statenet ────> state (remote + lifecycle audit)
+#   archivist ─ gitegress ───> the abbey's github relays (git + PR verbs)
+# The agent cannot reach state (it never touches the record of its own
+# actions) and holds no route to any registry or the internet.  The
+# operator's host tree appears NOWHERE: the cell's only workspace is the
+# grange volume, cloned from the forge by the archivist and destroyed
+# after the task.
+
+# Single-source timezone: referenced by every container's environment so log
+# timestamps read in the operator's local zone.  Defaults to UTC.  tzdata is
+# embedded in the Go binary, so any IANA zone works.
+x-tz: &tz "TZ=${TZ:-UTC}"
+
+services:
+  agent:
+    # The workbench (docker/workbench): every toolchain under the agent
+    # CLIs, working directly in the grange.  The ONLY service on a
+    # toolchain-bearing image — the mediators (scribe, librarian,
+    # builder) are retired (docs/grange.md M3/M4); the PR gate is the
+    # boundary, and builds here are untrusted scratch work.
+    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${WORKBENCH_IMAGE:?set WORKBENCH_IMAGE, e.g. cloister-workbench:latest}
+    container_name: ${PROJECT:?set PROJECT, the short project id}-agent
+    user: "1000:1000"
+    restart: unless-stopped
+    # No entrypoint override: the image entrypoint registers the MCP
+    # servers and materializes the stock prompt, then execs the image's
+    # `sleep infinity` — the container idles; the operator starts agents
+    # with `workbench` in an exec shell (tmux sessions survive it).
+    environment:
+      - *tz
+      - OPENAI_BASE_URL=http://agency:11434/v1
+      - OPENAI_API_KEY=ignored-for-local-use
+      # The agency engine class the agent's session rides; the routing
+      # policy (agency side) picks the node and model tag.
+      - OPENAI_MODEL=${OPENAI_MODEL:-interactive-code}
+      # The toolchains' caches ride the shared per-user AGENT_CACHES
+      # bind below — cache content only; HOME itself is per-project.
+      - GRADLE_USER_HOME=/home/agent/caches/gradle
+      - GOMODCACHE=/home/agent/caches/go-mod
+      - GOCACHE=/home/agent/caches/go-build
+      - CARGO_HOME=/home/agent/caches/cargo
+    volumes:
+      # THE workspace: the grange ROOT, shared with the archivist that
+      # provisions it.  tree/ (the checkout) appears at provision and
+      # vanishes at dispose; the operator's host tree never enters.
+      # The working_dir stays the ROOT — naming tree/ here would make
+      # docker CREATE it at container start, which the archivist's
+      # disk-derived state machine reads as CORRUPT; `workbench` drops
+      # sessions into tree/ when it exists.
+      - grange:/grange
+      # The agent's HOME: a per-PROJECT volume, so dotfiles and shell
+      # state never cross cells.  Only the caches subdir below is the
+      # per-user shared surface.
+      - agent_home:/home/agent
+      # Warmed dependency caches, per user, shared across projects —
+      # cache content only (the env below points the toolchains here),
+      # never the home itself.
+      - ${AGENT_CACHES:?set AGENT_CACHES, the agent's warmed dependency-cache dir on /srv (pre-create it uid-1000-owned), e.g. /srv/home/alice/.cloister-cache}:/home/agent/caches
+      # qwen settings/history: its own per-project volume (predates
+      # agent_home; kept separate so an agent_home reset preserves it).
+      - qwen_home:/home/agent/.qwen
+    working_dir: /grange
+    read_only: true
+    tmpfs:
+      - /tmp:size=2g                     # build scratch (gradle/go/cargo temp)
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 1024
+    mem_limit: 8g                        # builds run here now (the builder's old budget)
+    # Dead DNS upstream: every network below is internal, and on engines with
+    # daemon-side DNS forwarding (CVE-2024-29018) name resolution alone
+    # exfiltrates from an internal network.  127.0.0.1 black-holes the
+    # embedded resolver's upstream; container names (agency, archivist, ...)
+    # are answered authoritatively and never consult it.  compose-lint
+    # requires this pin on every all-internal service; only the relays
+    # (egress/frontend holders) keep real DNS.
+    dns: 127.0.0.1
+    networks:
+      - infernet                         # reach the agency (shared infra stack)
+      - archivistnet                     # reach the archivist MCP; NOT infer's peers
+      - researchnet                      # reach the scholar MCP (research)
+
+  archivist:
+    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${WORKERS_IMAGE}
+    container_name: ${PROJECT}-archivist
+    # Fixed image uid: the workspace here is the grange named volume —
+    # image-initialized and owned by the image's worker uid (1000, the
+    # same uid the agent runs as) — never the operator's host tree.
+    user: "1000:1000"
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/archivist"]
+    environment:
+      - *tz
+      - STATE_URL=http://state:9201
+      - STATE_TOKEN=${STATE_TOKEN}
+    volumes:
+      # A dedicated grange volume, NEVER a host bind — the operator's host
+      # tree does not enter the archivist (docs/archivist.md).  The volume
+      # is the grange ROOT: the archivist manages tree/ (the exported
+      # checkout) and staging/ (the pre-promote clone) under it, so the
+      # promote can be an atomic rename.
+      - grange:/grange
+      - ${ARCHIVIST_ENDPOINTS:?set ARCHIVIST_ENDPOINTS to the host path of the endpoint table yaml}:/etc/cloister/endpoints.yaml:ro
+      - ${GITHUB_TOKEN_FILE:?set GITHUB_TOKEN_FILE to the host path of the bot token file}:/run/secrets/github-token:ro
+    working_dir: /grange
+    read_only: true
+    tmpfs:
+      - /tmp                             # the runner's empty hooks dir lives here
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/archivist", "-healthcheck"]
+      interval: 30s
+    dns: 127.0.0.1                       # dead upstream — the git relays are its only routes out
+    networks:
+      - archivistnet                     # reachable by the agent (inbound MCP)
+      - statenet                         # remote-op audit to state
+      - gitegress                        # to the git relays ONLY (internal)
+
+# Four of the five networks are the ABBEY's, attached by name (deploy
+# the abbey first): the doors live there and every cell shares them.
+# Only archivistnet is the cell's own — the agent->archivist MCP edge
+# never leaves the cell, so no cell can reach another's archivist.
+networks:
+  infernet:
+    external: true                       # abbey: the inference door
+    name: infernet
+  researchnet:
+    external: true                       # abbey: the research door (scholar)
+    name: researchnet
+  statenet:
+    external: true                       # abbey: memory + the approvals desk
+    name: statenet
+  gitegress:
+    external: true                       # abbey: the forge door (git relays)
+    name: gitegress
+  archivistnet:
+    internal: true                       # agent <-> archivist (MCP); cell-private
+
+volumes:
+  qwen_home:
+  agent_home:
+    name: ${PROJECT}_agent_home          # per-project HOME: dotfiles never cross cells
+  # The agent's dependency caches (AGENT_CACHES) are a USER-OWNED /srv
+  # bind, not a named volume — per user, shared across that user's
+  # projects.
+  grange:
+    name: ${PROJECT}_grange              # the workspace; provision fills it, dispose empties it

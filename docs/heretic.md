@@ -20,7 +20,7 @@ comprehension step**, injected by the model's alignment training, invisible to
 the audit trail because nothing errored.
 
 We already work around this, badly.  The host model store
-(`c:/ai_models`, the `MODELS_DIR` the [`infer`](../docker/inference.yaml)
+(`c:/ai_models`, the `MODELS_DIR` the [`infer`](../docker/abbey.yaml)
 container mounts read-only) today holds *downloaded* third-party abliterations
 — `huihui_ai/qwen3-coder-abliterated`, `huihui_ai/qwen2.5-coder-abliterate` —
 with a thin local `ollama create` on top for a system prompt (`qwen3-free`) and

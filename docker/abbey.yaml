@@ -1,0 +1,446 @@
+# Copyright 2026 Jeffrey B. Stewart
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# ── The abbey: the machine's shared doors and its memory ────────────────────
+# (docs/abbey.md)  One per host.  LONG-LIVED: deploy once and leave up —
+# before any cell, because the four doors below publish the networks cells
+# attach to by name.  It knows nothing about any project.
+#
+#   the inference door   agency + infer + the localhost bridge, and the blind
+#                        relay to the optional LAN deep-think node
+#   the research door    scholar + kagi-relay — ONE per machine, so the
+#                        daily caps are a fleet number and one container
+#                        holds the Kagi key
+#   the forge door       the github relays (git two-hop + API), pinned and
+#                        project-agnostic, serving every cell's archivist
+#   memory + approvals   state + status — ONE audit trail, ONE approvals
+#                        page.  Both humans are flat superusers for now
+#                        (docs/abbey.md, "Authentication")
+#
+# Per-project cells (cell.yaml) hold only an agent and an archivist.
+#
+# Stack env vars:
+#   MODELS_DIR    host directory holding ollama's model store (default
+#                 c:/ai_models); the stack has no egress to pull weights
+#   AGENCY_IMAGE  the workers image serving the agency, e.g.
+#                 cloister-workers:latest or a pinned cloister-workers:sha-<commit>
+#   WORKERS_IMAGE the same slim worker image, serving the scholar and the
+#                 state service (pin it to the same build)
+#   STATE_TOKEN   the worker<->state secret; every cell must carry the SAME
+#                 value (one fleet memory, one token — per-cell attribution
+#                 rides the audit records, not the credential)
+#   KAGI_API_KEY  the scholar's search/extract token.  Set the account's
+#                 custom billing limit LOW as a spend backstop
+#   SCHOLAR_POLICY host path of the read-only egress policy yaml (engine +
+#                 caps + deny list); etc/scholar-policy.example.yaml is a
+#                 complete working leash.  Now per-MACHINE: one scholar
+#                 means one policy and one burn ledger
+#   BRAVE_API_KEY only if the policy sets search.engine: brave (else unset)
+#   STATUS_PORT   (optional) host port for the status pages (default 9201)
+#   STATUS_BIND   (optional) host interface for them; default 127.0.0.1.
+#                 0.0.0.0 = LAN monitoring opt-in — see the exposure note
+#                 on the status service before widening
+#   AGENCY_ROUTES (optional) host path of an engine-class routing yaml that
+#                 replaces the config embedded in the binary — the place for
+#                 local model choices; unset = embedded default
+#   DEEPTHINK_ADDR (optional) host:port of the deep-think node's LAN relay
+#                 (docs/deepthink.md), the target of the deepthink-relay
+#                 below.  Unset, the relay forwards to a dead loopback port,
+#                 the agency's presence probe marks the node absent, and
+#                 every chain serves from the local GPU node.
+#   AGENCY_BIND   (optional) host interface for the agency's smoke-test
+#                 door; default 127.0.0.1.  0.0.0.0 = LAN inference
+#                 opt-in — see the exposure note on the proxy service
+#   TZ            timezone for log timestamps and the status pages (default UTC)
+
+# Single-source timezone: referenced by every container's environment so
+# log timestamps (and the status pages) read in the operator's local zone.
+x-tz: &tz "TZ=${TZ:-UTC}"
+
+# Shared hardening for every socat relay (kagi, the forge pair, the API
+# relay, the status publisher): the same unprivileged, read-only,
+# capability-stripped shell.  Only `command`, `networks`, `ports`, and
+# `container_name` differ per relay — the load-bearing lines stay
+# explicit at each site.
+x-relay: &relay
+  image: alpine/socat:1.8.0.3
+  user: "65534:65534"                    # nobody
+  restart: unless-stopped
+  environment:
+    - *tz
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  pids_limit: 64
+  mem_limit: 64m
+
+services:
+  agency:
+    # The sole inference door (docs/agency.md), routing ENGINE CLASSES:
+    # cells dial http://agency:11434/v1 with a class name in the model
+    # field (interactive-code, think-fast, research, ...) and the routing
+    # policy picks the node and model tag.  Only /v1/ paths pass (ollama's
+    # native API, pulls included, is unreachable through the door), and
+    # `infer` holds no consumer-reachable network of its own.
+    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${AGENCY_IMAGE:?set AGENCY_IMAGE, the workers image serving the agency, e.g. cloister-workers:latest}
+    container_name: agency
+    user: "1000:1000"
+    restart: unless-stopped
+    # The agency role link of the multi-call worker binary; -addr defaults
+    # to the role's :11434.  The routing policy is the config embedded in
+    # the binary unless AGENCY_ROUTES mounts an override (below).
+    entrypoint: ["/usr/local/bin/agency"]
+    command: ["-status-dir", "/status"]
+    environment:
+      - TZ=${TZ:-UTC}
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      # rw: the door's status snapshot writer (docs/agency.md, phase 4);
+      # cells' state services mount the same volume read-only and render
+      # the Inference panel from it.
+      - agency_status:/status
+      # Optional host-local routing override, no compose edit needed: set
+      # the stack var AGENCY_ROUTES to a routes yaml ON THE HOST and
+      # redeploy — that file replaces the embedded config entirely.
+      # Unset, /dev/null mounts here (a character device, which the door
+      # ignores) and the embedded reference config routes every class to
+      # infer/qwen3-coder:30b.
+      - "${AGENCY_ROUTES:-/dev/null}:/etc/agency/routes.yaml:ro"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/agency", "-healthcheck"]
+      interval: 30s
+    # Dead DNS upstream: both networks below are internal, and on engines
+    # with daemon-side DNS forwarding (CVE-2024-29018) name resolution
+    # alone exfiltrates from an internal network.  127.0.0.1 black-holes
+    # the embedded resolver's upstream; container names (infer) resolve
+    # authoritatively without it.  compose-lint requires this pin on every
+    # all-internal service.
+    dns: 127.0.0.1
+    networks:
+      - infernet                         # consumers (cells) dial in here
+      - modelnet                         # the only route to infer
+      - infernet_big                     # the only route to the deep-think relay
+  infer:
+    image: ollama/ollama:0.24.0          # pin a version; avoid :latest for reproducibility
+    container_name: infer
+    user: "1000:1000"
+    restart: unless-stopped
+
+    # --- GPU passthrough -------------------------------------------------
+    # Docker Desktop + WSL2 provides the plumbing; this reservation requests it.
+    # (Compose v2 also accepts the shorthand `gpus: all` instead of this block.)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+      - OLLAMA_MODELS=/models
+      - OLLAMA_CONTEXT_LENGTH=32768
+      # Never idle-unload: the agency pins which models may live here, so
+      # nothing can evict a resident and a timeout unload would only re-buy
+      # a cold load.  The agency preloads pinned models it finds cold; real
+      # requests reset the keep-alive timer from this value, so it must be
+      # -1 or the preload's pin is undone by the first caller.
+      - OLLAMA_KEEP_ALIVE=-1
+      - HOME=/home/ollama                # ephemeral, rebuilt on each launch
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+    # --- filesystem: weights read-only; writable state in tmpfs ----------
+    volumes:
+      # Pre-staged weights (read-only): the hardened stack has no egress to
+      # pull them.  MODELS_DIR is the host directory holding ollama's model
+      # store; see docs/GETTING_STARTED.md for staging it.
+      - "${MODELS_DIR:-c:/ai_models}:/models:ro"
+
+    read_only: true                      # root filesystem read-only (defense in depth)
+    tmpfs:
+      - /tmp
+      - /home/ollama:uid=1000,gid=1000,mode=0700
+
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    dns: 127.0.0.1                       # dead upstream — see the agency's dns note
+    networks:
+      - modelnet                         # reachable ONLY via the agency; no consumer net
+
+  proxy:
+    image: alpine/socat:1.8.0.3
+    container_name: agency-proxy
+    restart: unless-stopped
+    user: "65534:65534"                  # nobody
+    # Fronts the AGENCY, not raw ollama: host smoke tests hit the same door
+    # the cells do (GET /v1/models), and direct host access to the model
+    # server is gone.  Model staging is unaffected — weights enter via the
+    # host-side ollama store (docs/GETTING_STARTED.md).
+    command: ["TCP-LISTEN:11434,fork,reuseaddr", "TCP:agency:11434"]
+    ports:
+      # Defaults to localhost-only.  AGENCY_BIND=0.0.0.0 publishes the
+      # inference door to the LAN — an operator opt-in that lets any
+      # LAN device consume the GPU through the agency's classes.  Same
+      # trust bar as the cell's STATUS_BIND: only on a network you
+      # fully trust.
+      - "${AGENCY_BIND:-127.0.0.1}:11434:11434" # host reaches the agency for smoke tests
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    pids_limit: 64
+    networks:
+      - infernet
+      - frontend
+
+  deepthink-relay:
+    image: alpine/socat:1.8.0.3
+    container_name: deepthink-relay
+    restart: unless-stopped
+    user: "65534:65534"                  # nobody
+    # Blind LAN relay to the deep-think node (docs/deepthink.md): the agency
+    # dials deepthink-relay:11434 over the internal infernet_big and socat
+    # forwards raw TCP to the env-provided LAN address, so the agency itself
+    # keeps internal networks only and no LAN address enters the repo.  The
+    # node is sometimes-there by design: unset (or with the MacBook away)
+    # the connection just drops, the agency's presence probe marks the node
+    # absent, and chains fall back to local `infer`.  `fork` re-resolves per
+    # connection.  NOT on infernet: a cell dialing this relay directly would
+    # reach the node's raw API around the door's routing and queueing.
+    command: ["TCP-LISTEN:11434,fork,reuseaddr", "TCP:${DEEPTHINK_ADDR:-127.0.0.1:1}"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    pids_limit: 64
+    mem_limit: 64m
+    networks:
+      infernet_big:                      # reachable by the agency ONLY
+        # The routes dial the node as deepthink.internal, NOT the service
+        # name: a loopback-bound ollama runs a DNS-rebinding guard that
+        # 403s any Host header it doesn't recognize, and `.internal` names
+        # are on its allowlist while a bare `deepthink-relay` is not.  The
+        # relay is blind, so the Host header rides through to the node
+        # exactly as the agency sent it.  Load-bearing: without this alias
+        # every probe is refused and the node stays absent.
+        aliases: [deepthink.internal]
+      lanegress: {}                      # the LAN path to the node
+
+  # ── the research door ─────────────────────────────────────────────────
+  scholar:
+    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${WORKERS_IMAGE:?set WORKERS_IMAGE, the slim worker image, e.g. cloister-workers:latest}
+    container_name: scholar
+    user: "1000:1000"
+    restart: unless-stopped
+    # The scholar role: a quarantined research service, ONE per machine
+    # (docs/abbey.md) — every cell's agent dials it over researchnet.
+    # Serves ONE MCP tool research(query) on :9500 and internally drives a
+    # model (over the agency) with a FIXED three-tool menu whose only
+    # egress is Kagi via the kagi-relay.  It handles UNTRUSTED web
+    # content, so it holds no workspace of any kind, no route to any
+    # agent's grange or archivist, and no `egress` network.  On boot it
+    # TCP-probes public IPs and refuses to start if any connect
+    # (fail-closed self-check).  One scholar means ONE burn ledger: the
+    # daily caps are finally a fleet number.
+    entrypoint: ["/usr/local/bin/scholar"]
+    command: ["-policy", "/etc/scholar/policy.yaml"]
+    environment:
+      - *tz
+      - STATE_URL=http://state:9201
+      - STATE_TOKEN=${STATE_TOKEN:?set STATE_TOKEN, the shared worker-to-state secret}
+      # No model name: the scholar asks the agency for its `research`
+      # engine class by name.
+      - OPENAI_BASE_URL=http://agency:11434/v1
+      - OPENAI_API_KEY=ignored-for-local-use
+      - KAGI_API_KEY=${KAGI_API_KEY:?set KAGI_API_KEY, the scholar search/extract token}
+      - BRAVE_API_KEY=${BRAVE_API_KEY:-}       # only if the policy sets search.engine: brave
+      - KAGI_RELAY_ADDR=kagi-relay:8443        # dialed instead of kagi.com; TLS SNI stays kagi.com
+    volumes:
+      - ${SCHOLAR_POLICY:?set SCHOLAR_POLICY to the host path of the egress policy yaml}:/etc/scholar/policy.yaml:ro   # read-only egress policy
+      - scholar_burn:/burn                              # tiny writable burn ledger: timestamps only
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/scholar", "-healthcheck"]
+      interval: 30s
+    # Dead upstream (see the agency's dns note); the scholar's boot
+    # self-check probes this independently of the TCP route.
+    dns: 127.0.0.1
+    networks:
+      - researchnet                      # reachable by every cell's agent (inbound MCP)
+      - infernet                         # reach the model (via the agency); internal -> no internet
+      - scholarstate                     # reach state (audit + approvals + transcripts).
+                                         # NOT statenet: keeps the scholar off the archivists' wire
+      - kagiegress                       # to the kagi-relay ONLY (internal; no internet)
+
+  kagi-relay:
+    <<: *relay
+    container_name: kagi-relay
+    # Hard-wired to Kagi: the scholar dials kagi-relay:8443, socat forwards raw
+    # TCP to kagi.com:443. TLS stays end-to-end (the relay pipes ciphertext);
+    # `fork` re-resolves per connection so Kagi CDN rotation is handled.
+    command: ["TCP-LISTEN:8443,fork,reuseaddr", "TCP:kagi.com:443"]
+    networks:
+      - kagiegress                       # reachable by the scholar
+      - egress                           # one of the machine's three internet holders
+
+  # ── the forge door ────────────────────────────────────────────────────
+  # Pinned to the forge and project-agnostic, so ONE set serves every
+  # archivist (docs/abbey.md).  The git path is a TWO-HOP so no container
+  # both HOLDS the github.com alias and RESOLVES it: the front carries the
+  # alias git dials (needed for end-to-end TLS — git verifies the real cert
+  # against the dialed name) and pipes to a separately-named egress hop that
+  # resolves the real github.com.  Unprivileged :443 binds under Docker's
+  # default ip_unprivileged_port_start=0.
+  github-relay:
+    <<: *relay
+    container_name: github-relay
+    command: ["TCP-LISTEN:443,fork,reuseaddr", "TCP:github-egress:443"]
+    dns: 127.0.0.1                       # internal-only front; resolves github-egress via the embedded resolver, nothing external
+    networks:
+      gitegress:
+        aliases: [github.com]            # every archivist dials this; TLS verifies github.com
+      gitforward: {}                     # to the egress hop (no internet here)
+
+  github-egress:
+    <<: *relay
+    container_name: github-egress
+    command: ["TCP-LISTEN:443,fork,reuseaddr", "TCP:github.com:443"]
+    networks:
+      gitforward: {}                     # reachable by github-relay
+      egress: {}                         # resolves + reaches the real github.com
+
+  # The PR verbs' door.  The archivist's Go client dials this by SERVICE
+  # NAME (github-api-relay) while presenting SNI api.github.com, so — unlike
+  # git — the API host needs no alias, and this single relay resolves the
+  # real api.github.com with no loop.
+  github-api-relay:
+    <<: *relay
+    container_name: github-api-relay
+    command: ["TCP-LISTEN:443,fork,reuseaddr", "TCP:api.github.com:443"]
+    networks:
+      - gitegress                        # reachable by every archivist (by service name)
+      - egress                           # resolves + reaches the real api.github.com
+
+  # ── memory and the approvals desk ─────────────────────────────────────
+  state:
+    image: ${REGISTRY:-ghcr.io/jeffbstewart}/${WORKERS_IMAGE}
+    container_name: state
+    user: "1000:1000"                    # fixed service uid: state touches no workspace; its ledger stays in a Docker volume
+    restart: unless-stopped
+    # The fleet's memory and its permission desk (docs/abbey.md): ONE audit
+    # trail, ONE approvals page, serving every cell.  Both humans are flat
+    # superusers for now — each sees the other's records and may approve the
+    # other's requests; a WebAuthn touch over the approvals desk is the
+    # next phase, and attribution (which cell, which human) rides the audit
+    # records.
+    entrypoint: ["/usr/local/bin/state-service"]
+    environment:
+      - *tz
+      - STATE_TOKEN=${STATE_TOKEN}
+    volumes:
+      - state:/state                     # rw: the SOLE owner of durable logs/audit/status
+      # ro: the agency's status snapshot, for the dashboard's Inference
+      # panel.  One-way glass by mount mode — status flows agency -> volume
+      # -> here; no network edge exists (docs/agency.md).
+      - agency_status:/agency-status:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/state-service", "-healthcheck"]
+      interval: 30s
+    dns: 127.0.0.1                       # dead upstream — see the agency's dns note
+    networks:
+      - statenet                         # reachable by every cell's archivist
+      - scholarstate                     # reachable by the scholar (audit/approvals/transcripts)
+      - statepub                         # reachable by the status relay only
+
+  status:
+    <<: *relay
+    container_name: status
+    # The operator's web-based audit and approval endpoint: publishes the
+    # state service's pages (dashboard, audit tail, run logs, diffs) and the
+    # /approvals page, via a relay that parses nothing.
+    command: ["TCP-LISTEN:9201,fork,reuseaddr", "TCP:state:9201"]
+    ports:
+      # Defaults to localhost-only.  STATUS_BIND=0.0.0.0 publishes the
+      # pages to the LAN — a deliberate operator opt-in for monitoring a
+      # headless host from a dev machine.  What it exposes to that network:
+      # the audit trail, run logs, stored diffs, and the APPROVALS page
+      # (clickable decisions) — UNAUTHENTICATED until the WebAuthn phase
+      # (docs/abbey.md).  Never widen this on a network you do not fully
+      # trust.
+      - "${STATUS_BIND:-127.0.0.1}:${STATUS_PORT:-9201}:9201"
+    networks:
+      - statepub                         # reach state
+      - frontend                         # publish to host; parses nothing
+
+# FOUR networks carry stable names because cells join them as external —
+# they are the doors: inference, research, memory, forge.  The rest are
+# abbey-internal.
+networks:
+  infernet:
+    internal: true                       # NO route to the internet => no egress
+    name: infernet                       # the inference door (cells join by name)
+  researchnet:
+    internal: true                       # agents -> scholar (MCP); no route out
+    name: researchnet                    # the research door
+  statenet:
+    internal: true                       # archivists -> state (token-gated); no route out
+    name: statenet                       # the memory/approvals door
+  gitegress:
+    internal: true                       # archivists -> the forge relays; no internet here
+    name: gitegress                      # the forge door
+  modelnet:
+    internal: true                       # agency <-> infer; the model server's ONLY edge
+  infernet_big:
+    internal: true                       # agency <-> deepthink-relay; no route out
+  scholarstate:
+    internal: true                       # scholar <-> state ONLY (off the archivists' wire)
+  statepub:
+    internal: true                       # state <-> the status relay
+  kagiegress:
+    internal: true                       # scholar <-> kagi-relay (no internet)
+  gitforward:
+    internal: true                       # github-relay <-> github-egress (the git two-hop)
+  lanegress: {}                          # deepthink-relay -> the LAN node (ONLY the relay holds this)
+  egress: {}                             # the internet: ONLY kagi-relay, github-egress, github-api-relay
+  frontend: {}
+
+volumes:
+  agency_status:
+    name: agency_status                  # stable name: this stack creates it (like
+                                         # infernet); the state service mounts it :ro.
+  state:
+    name: abbey_state                    # the fleet's durable record: audit, logs, approvals
+  scholar_burn:
+    name: abbey_scholar_burn             # restart-surviving spend ledger (bare timestamps)
+                                         # Deploy this stack before any cell.

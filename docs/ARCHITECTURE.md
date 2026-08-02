@@ -7,12 +7,15 @@ ports that are the system's entire host-visible surface.  This is the *what*;
 
 Two compose stacks make up a running system:
 
-- **Shared inference stack** (`docker/inference.yaml`) — the GPU model
-  server, the **agency** (the sole inference door fronting it), and the
-  localhost bridge.  Deploy once per machine, leave up.
-- **Project cell** (`docker/ai-workers.yaml`) — the agent and its workers.
-  Deploy one per project; each joins the shared `infernet` by name and
-  reaches models only through the agency.
+- **The abbey** (`docker/abbey.yaml`, [abbey.md](abbey.md)) — the
+  machine's four shared doors and its memory: the **agency** (inference)
+  over the GPU node, the **scholar** (research) over its pinned relay,
+  the **github relays** (forge), and the **state** service (one audit
+  trail, one approvals page) behind its status window.  Deploy once per
+  machine, before any cell — it publishes the networks cells join.
+- **Project cell** (`docker/cell.yaml`) — two services: the **agent**
+  (workbench + grange) and its **archivist**.  Deploy one per project;
+  each attaches to the abbey's doors by name and holds nothing shared.
 
 ## Topology
 
@@ -28,22 +31,22 @@ flowchart LR
   subgraph cell["Project cell (one per project)"]
     agent["agent<br/>cloister-workbench"]
     grange[("grange volume<br/>tree/ + staging/")]
-    scholar["scholar<br/>cloister-workers :9500"]
-    state["state<br/>cloister-workers :9201"]
-    status["status<br/>alpine/socat"]
-    krelay["kagi-relay<br/>alpine/socat :8443"]
     archivist["archivist<br/>cloister-workers :9600"]
-    ghrelay["github-relay<br/>alpine/socat :443"]
-    ghegress["github-egress<br/>alpine/socat"]
-    ghapi["github-api-relay<br/>alpine/socat :443"]
     corrector["corrector :9700<br/>PLANNED"]
   end
 
-  subgraph infra["Shared inference stack (one per machine)"]
+  subgraph infra["The abbey (one per machine)"]
     agency["agency<br/>cloister-workers :11434"]
     infer["infer<br/>ollama/ollama"]
     iproxy["agency-proxy<br/>alpine/socat"]
     dtrelay["deepthink-relay<br/>alpine/socat"]
+    scholar["scholar<br/>cloister-workers :9500"]
+    krelay["kagi-relay<br/>alpine/socat :8443"]
+    ghrelay["github-relay<br/>alpine/socat :443"]
+    ghegress["github-egress<br/>alpine/socat"]
+    ghapi["github-api-relay<br/>alpine/socat :443"]
+    state["state<br/>cloister-workers :9201"]
+    status["status<br/>alpine/socat"]
   end
 
   kagi["kagi.com<br/>search + extract APIs"]
@@ -99,14 +102,26 @@ not per-write mediation.
 | Container | Worker role | Image | Listens | Mounts | Networks |
 |---|---|---|---|---|---|
 | `agent` | the coding agent: the qwen-code CLI over every served toolchain (Go, Rust, JVM), driven through tmux sessions (`workbench` in an exec shell) | `cloister-workbench:<qwen>-<ver>` ([docker/workbench](../docker/workbench)) | — (nothing inbound) | `grange` vol **rw** (the workspace); `agent_home` vol rw (per-project HOME); `AGENT_CACHES` bind rw at `~/caches` (per-user warmed deps); `qwen_home` vol rw | infernet, archivistnet, researchnet |
-| `scholar` | `scholar` role — quarantined web research, one `research` tool | `cloister-workers:<ver>` | `:9500` MCP | policy yaml **ro**; `scholar_burn` vol rw | researchnet, infernet, scholarstate, kagiegress |
 | `archivist` | `archivist` role — the cell's sole VCS authority: grange lifecycle (`provision`/`dispose`), the local checkpoint verbs, audited-ungated PR authorship as the bot ([archivist.md](archivist.md)) | `cloister-workers:<ver>` | `:9600` MCP | `grange` vol rw (the grange ROOT — NEVER a host tree); endpoint table + bot token **ro** | archivistnet, statenet, gitegress |
-| `state` | `state-service` role — sole owner of durable logs/audit/status | `cloister-workers:<ver>` | `:9201` token-gated API + pages | `state` vol rw | statenet, scholarstate, statepub |
-| `status` | blind relay publishing the status pages to the host | `alpine/socat` | `127.0.0.1:STATUS_PORT` | — | statepub, frontend |
-| `kagi-relay` | blind egress pipe hard-wired to `kagi.com:443` | `alpine/socat` | `:8443` (cell-internal) | — | kagiegress, egress |
-| `github-relay` | blind git front: carries the `github.com` network alias git dials (TLS verifies the real cert end-to-end), pipes to the egress hop | `alpine/socat` | `:443` (cell-internal) | — | gitegress, gitforward |
+
+That is the whole cell.  Everything else it uses is a door in the abbey,
+joined by network name.
+
+## The abbey, container by container
+
+| Container | Worker role | Image | Listens | Mounts | Networks |
+|---|---|---|---|---|---|
+| `agency` | `agency` role — the sole inference door: engine-class routing over the local GPU and the sometimes-there deep-think node ([agency.md](agency.md)) | `cloister-workers:<ver>` | `:11434` (infernet) | `agency_status` vol rw; routes yaml **ro** (optional) | infernet, modelnet, infernet_big |
+| `infer` | GPU model server, reachable only via the agency | `ollama/ollama` | `:11434` (modelnet only) | model weights **ro** (host dir) | modelnet |
+| `agency-proxy` | blind relay fronting the agency for host smoke tests | `alpine/socat` | `${AGENCY_BIND}:11434` | — | infernet, frontend |
+| `deepthink-relay` | blind LAN relay to the deep-think node, target from `DEEPTHINK_ADDR` ([deepthink.md](deepthink.md)) | `alpine/socat` | `:11434` (infernet_big only) | — | infernet_big, lanegress |
+| `scholar` | `scholar` role — quarantined web research, one `research` tool, serving every cell.  ONE burn ledger ⇒ the daily caps are a fleet number | `cloister-workers:<ver>` | `:9500` MCP | policy yaml **ro**; `scholar_burn` vol rw | researchnet, infernet, scholarstate, kagiegress |
+| `kagi-relay` | blind egress pipe hard-wired to `kagi.com:443` | `alpine/socat` | `:8443` (abbey-internal) | — | kagiegress, egress |
+| `github-relay` | blind git front: carries the `github.com` network alias git dials (TLS verifies the real cert end-to-end), pipes to the egress hop | `alpine/socat` | `:443` (abbey-internal) | — | gitegress, gitforward |
 | `github-egress` | blind egress hop resolving the real `github.com` — split from the front so no container both holds the alias and resolves it | `alpine/socat` | `:443` (gitforward-internal) | — | gitforward, egress |
-| `github-api-relay` | blind pipe to `api.github.com` for the PR verbs; dialed by service name with SNI verifying the real host, so one relay suffices | `alpine/socat` | `:443` (cell-internal) | — | gitegress, egress |
+| `github-api-relay` | blind pipe to `api.github.com` for the PR verbs; dialed by service name with SNI verifying the real host | `alpine/socat` | `:443` (abbey-internal) | — | gitegress, egress |
+| `state` | `state-service` role — the fleet's memory and permission desk: ONE audit trail, ONE approvals page ([abbey.md](abbey.md)) | `cloister-workers:<ver>` | `:9201` token-gated API + pages | `state` vol rw; `agency_status` **ro** | statenet, scholarstate, statepub |
+| `status` | blind relay publishing the pages to the host | `alpine/socat` | `${STATUS_BIND}:${STATUS_PORT}` | — | statepub, frontend |
 
 All the cell's Go workers — and the infra stack's agency below — are the
 same multi-call binary (`cloister-worker`): each image bakes role links
@@ -124,29 +139,23 @@ hardened runner + CA roots), and only the **agent** runs the
 toolchain-bearing workbench image — the compilers live where the agent
 works and nowhere else.
 
-## The shared inference stack
-
-| Container | Role | Image | Listens | Mounts | Networks |
-|---|---|---|---|---|---|
-| `agency` | `agency` role — the sole inference door: streaming OpenAI-compatible pass-through, `/v1` only ([agency.md](agency.md) phase 1) | `cloister-workers:<ver>` | `:11434` (infernet) | — | infernet, modelnet, infernet_big |
-| `infer` | GPU model server (OpenAI-compatible API), reachable only via the agency | `ollama/ollama` | `:11434` (modelnet only) | model weights **ro** (host dir) | modelnet |
-| `agency-proxy` | blind relay for host smoke tests, fronting the agency | `alpine/socat` | `127.0.0.1:11434` | — | infernet, frontend |
-| `deepthink-relay` | blind relay to the LAN deep-think node ([deepthink.md](deepthink.md)), target from the `DEEPTHINK_ADDR` stack var (dead loopback when unset — the node just probes absent) | `alpine/socat` | `:11434` (infernet_big only) | — | infernet_big, lanegress |
-
 ## Networks
+
+The abbey publishes **four doors** under stable names; cells join them as
+external networks and declare only `archivistnet` themselves.
 
 | Network | Carries | Members |
 |---|---|---|
-| `infernet` | consumer → agency model API traffic (internal: no internet; shared across stacks by name) | agency, agency-proxy, agent, scholar |
-| `modelnet` | agency → infer (internal; the model server's ONLY edge) | agency, infer |
-| `archivistnet` | agent → archivist MCP | agent, archivist |
-| `researchnet` | agent → scholar MCP | agent, scholar |
-| `statenet` | archivist → state (token-gated) | archivist, state |
-| `scholarstate` | scholar → state, kept off `statenet` so the scholar never shares the archivist's wire | scholar, state |
+| `infernet` | **door**: consumers → agency model API traffic | agency, agency-proxy, scholar, every agent |
+| `researchnet` | **door**: agents → scholar MCP | scholar, every agent |
+| `statenet` | **door**: archivists → state (token-gated) | state, every archivist |
+| `gitegress` | **door**: archivists → the forge relays.  Carries the `github.com` alias on the front relay | github-relay, github-api-relay, every archivist |
+| `archivistnet` | agent → archivist MCP — CELL-PRIVATE, one per cell | that cell's agent + archivist |
+| `modelnet` | agency → infer (the model server's ONLY edge) | agency, infer |
+| `scholarstate` | scholar → state, kept off `statenet` so the scholar never shares the archivists' wire | scholar, state |
 | `statepub` | state → status relay | state, status |
-| `kagiegress` | scholar → kagi-relay (internal; no internet) | scholar, kagi-relay |
-| `gitegress` | archivist → the git relays (internal; no internet).  Carries the `github.com` alias on the front relay | archivist, github-relay, github-api-relay |
-| `gitforward` | github-relay → github-egress — the middle of the git two-hop (internal) | github-relay, github-egress |
+| `kagiegress` | scholar → kagi-relay (no internet) | scholar, kagi-relay |
+| `gitforward` | github-relay → github-egress — the middle of the git two-hop | github-relay, github-egress |
 | `infernet_big` | agency → deepthink-relay (internal; the deep-think path's only agency-side edge) | agency, deepthink-relay |
 | `lanegress` | deepthink-relay → the LAN deep-think node.  ONLY the relay holds it | deepthink-relay |
 | `egress` | the internet.  ONLY the egress-holding relays touch it | kagi-relay, github-egress, github-api-relay |
@@ -156,10 +165,20 @@ Every network except `egress`, `lanegress`, and `frontend` is
 `internal: true` — no route out.  Notable absences are the architecture:
 the agent has no route to `state` (it cannot touch the record of its own
 actions) and no route to any registry or the internet, `infer` shares a
-network with nothing but the agency, and the scholar has no route to the
-agent, the archivist, or the workspace.  compose-lint pins every
-internal network's membership, so a service quietly joining a sanctioned
-wire fails CI like a new egress holder would.
+network with nothing but the agency, and the scholar has no route to any
+agent, archivist, or workspace.  compose-lint pins every internal
+network's membership, so a service quietly joining a sanctioned wire
+fails CI like a new egress holder would.
+
+Sharing the doors creates two adjacencies, stated plainly rather than
+discovered later ([abbey.md](abbey.md)): every agent shares
+`researchnet`, and every archivist shares `statenet` and `gitegress`.
+Agents listen on nothing, so agent-to-agent reach is not a surface;
+archivist-to-archivist reach exists and is accepted, because the
+archivist is deterministic Go with no model driving it — its jail is
+thoroughness, not model containment.  A cell's agent still cannot reach
+another cell's archivist: that edge is `archivistnet`, and it never
+leaves the cell.
 
 ## Host surface
 
@@ -191,8 +210,8 @@ cell fetches images or code.
 | `grange` | agent (rw), archivist (rw) | the workspace: the grange ROOT — `tree/` (the exported checkout) and `staging/` (the pre-promote clone).  `provision` fills it, `dispose` empties it; NEVER the operator's host tree ([grange.md](grange.md)) |
 | `agent_home` | agent | the agent's per-project HOME, so dotfiles and shell state never cross cells; the per-user shared surface is only the `AGENT_CACHES` bind at `~/caches` |
 | `qwen_home` | agent | qwen-code settings/history (`/home/agent/.qwen`); survives image swaps and `agent_home` resets |
-| `state` | state | the durable record: logs, audit, status, approvals |
-| `scholar_burn` | scholar | restart-surviving spend ledger (bare timestamps), so a crash loop cannot reset daily caps |
+| `state` (`abbey_state`) | state | the FLEET's durable record: logs, audit, approvals — one trail for every cell |
+| `scholar_burn` (`abbey_scholar_burn`) | scholar | restart-surviving spend ledger (bare timestamps), so a crash loop cannot reset the daily caps — one ledger, so the caps are a fleet number |
 
 ## Planned components
 

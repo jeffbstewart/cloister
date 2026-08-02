@@ -30,13 +30,13 @@ cloister/
 │   │   └── extract/       #   Retriever, Extracted, kagi extract (→ wire)
 │   └── status/{web, sink}/    # were statusweb / statesink
 ├── etc/scholar-policy.example.yaml
-├── docker/{agent, builder}/  docker/ai-workers.yaml  docker/inference.yaml
+├── docker/{agent, builder}/  docker/cell.yaml  docker/abbey.yaml
 ├── docs/DESIGN.md  docs/example-qwen.md
 ├── scripts/probe-scholar-egress.ps1
 └── .github/workflows/{ci.yml, images.yml}
 ```
 
-Renames: `cell-stack.yaml`→`docker/ai-workers.yaml`, `compose.yaml`→`docker/inference.yaml`,
+Renames: `cell-stack.yaml`→`docker/cell.yaml`, `compose.yaml`→`docker/abbey.yaml`,
 `qwen/`→`docker/agent/`, `toolchains/jdk25-gradle/`→`docker/builder/`.
 
 ### egress split — cycle avoidance
@@ -100,7 +100,7 @@ git config core.hooksPath .githooks
 **CI (`ci.yml`, every PR):** `go build ./...`, `go test ./...`, `gofmt -l`
 (fail if dirty), `go vet`, `go-licenses check ./...` (deny copyleft), the
 secret scan re-run server-side, and — once PR 22 lands —
-`go run ./cmd/compose-lint docker/ai-workers.yaml`.
+`go run ./cmd/compose-lint docker/cell.yaml`.
 
 ## Authoritative images (`images.yml`, PR 23)
 
@@ -115,7 +115,7 @@ private-registry batch build scripts.
 ## Known changes during migration
 
 - Parameterize the private test-registry address as
-  `${REGISTRY:-ghcr.io/jeffbstewart}` in `docker/ai-workers.yaml` (PR 22);
+  `${REGISTRY:-ghcr.io/jeffbstewart}` in `docker/cell.yaml` (PR 22);
   the presubmit guards against reintroducing the literal.
 - The live scholar policy stays uncommitted; only
   `etc/scholar-policy.example.yaml` ships.

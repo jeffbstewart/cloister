@@ -1,14 +1,15 @@
-# Getting started
+# Getting started — Portainer, straight from this repo
 
-> **STALE — being refreshed for the grange era** (2026-07-31).  This
+> **STALE — being refreshed for the abbey/grange era** (2026-08-02).  This
 > walkthrough describes the retired mediator topology (builder/scribe/
 > librarian, host workspace mounts, `WORKSPACE`/`BUILD_HOME`/
 > `SCRIBE_STATE` variables).  Until the refresh lands, the current
 > deploy reference is the variable header of
-> [docker/ai-workers.yaml](../docker/ai-workers.yaml) plus
+> [docker/cell.yaml](../docker/cell.yaml) plus
 > [grange.md](grange.md)'s "Locking down a project for grange service"
-> runbook; the Portainer mechanics (git-backed stacks, model staging)
-> below remain accurate. — Portainer, straight from this repo
+> runbook, plus [abbey.md](abbey.md) for what moved into the shared
+> stack; the Portainer mechanics (git-backed stacks, model staging)
+> below remain accurate.
 
 How to stand up a working Cloister installation with **git-backed Portainer
 stacks**: Portainer pulls the compose files from this repository, everything
@@ -70,7 +71,7 @@ Once per machine, before any cell.
 3. Repository URL: `https://github.com/jeffbstewart/cloister` — public, no
    authentication.
 4. Repository reference: `refs/heads/main`.
-5. Compose path: `docker/inference.yaml`.
+5. Compose path: `docker/abbey.yaml`.
 6. Environment variables:
    - `MODELS_DIR` = your staging directory from step 1 (defaults to
      `c:/ai_models` if unset).
@@ -133,7 +134,7 @@ Outside the project repository (host paths, never committed):
 ## 4. Deploy the project cell
 
 One stack per project.  Same flow as step 2, with compose path
-`docker/ai-workers.yaml`, and these stack environment variables (each
+`docker/cell.yaml`, and these stack environment variables (each
 required one is guarded in the compose file, so a missing value fails the
 deploy naming the variable):
 

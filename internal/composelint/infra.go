@@ -28,11 +28,13 @@ import (
 type Stack string
 
 const (
-	// StackCell is the per-project cell stack (docker/ai-workers.yaml),
-	// recognized by its `scholar` service.
+	// StackCell is the per-project cell stack (docker/cell.yaml),
+	// recognized by its `archivist` service.
 	StackCell Stack = "cell"
-	// StackInfra is the shared inference stack (docker/inference.yaml),
-	// recognized by its `infer` service.
+	// StackInfra is the abbey — the machine's shared doors and its memory
+	// (docker/abbey.yaml, docs/abbey.md) — recognized by its `infer`
+	// service.  The constant keeps its name: it is still "the shared
+	// stack" as far as callers are concerned.
 	StackInfra Stack = "infra"
 )
 
@@ -44,17 +46,17 @@ func Identify(data []byte) (Stack, error) {
 	if err := yaml.Unmarshal(data, &c); err != nil {
 		return "", fmt.Errorf("parse compose: %w", err)
 	}
-	_, cell := c.Services["scholar"]
+	_, cell := c.Services["archivist"]
 	_, infra := c.Services["infer"]
 	switch {
 	case cell && infra:
-		return "", fmt.Errorf("compose file defines both `scholar` and `infer` — cell and infra stacks must not merge")
+		return "", fmt.Errorf("compose file defines both `archivist` and `infer` — the cell and the abbey must not merge")
 	case cell:
 		return StackCell, nil
 	case infra:
 		return StackInfra, nil
 	default:
-		return "", fmt.Errorf("compose file defines neither `scholar` nor `infer` — unknown stack, refusing to lint as clean")
+		return "", fmt.Errorf("compose file defines neither `archivist` nor `infer` — unknown stack, refusing to lint as clean")
 	}
 }
 
@@ -111,22 +113,9 @@ func CheckInfra(data []byte) ([]string, error) {
 			v = append(v, "agency has no agency_status mount — the status snapshots have nowhere to land (`agency_status:/status`)")
 		}
 	}
-	// And nothing else in this stack may touch the status volume at all.
-	var statusHolders []string
-	for name, s := range c.Services {
-		if name == "agency" {
-			continue
-		}
-		for _, vol := range s.Volumes {
-			if strings.HasPrefix(vol, "agency_status:") {
-				statusHolders = append(statusHolders, name)
-			}
-		}
-	}
-	sort.Strings(statusHolders)
-	for _, name := range statusHolders {
-		v = append(v, fmt.Sprintf("%s mounts agency_status — only the agency writes the status volume", name))
-	}
+	// The volume's OTHER end — the state service reading it `:ro`, and
+	// nobody else touching it at all — is memoryDoorViolations' business
+	// (the snapshot is one-way glass: agency writes, state renders).
 
 	// The model server retreats behind the door: modelnet only, so no
 	// consumer (nothing on infernet) can dial it.
@@ -216,19 +205,180 @@ func CheckInfra(data []byte) ([]string, error) {
 		v = append(v, fmt.Sprintf("%s holds `lanegress` — only the deepthink-relay may reach the LAN", name))
 	}
 
-	// Nothing in this stack touches the internet.
-	var egressHolders []string
-	for name, s := range c.Services {
-		if s.hasNet("egress") {
-			egressHolders = append(egressHolders, name)
-		}
+	// The internet is reachable by exactly three blind relays — the whole
+	// machine's egress surface, and the reason the doors are shared.
+	if h := holdersOf(c, "egress"); !slices.Equal(h, []string{"github-api-relay", "github-egress", "kagi-relay"}) {
+		v = append(v, fmt.Sprintf("only the pinned relays may hold `egress` (kagi-relay, github-egress, github-api-relay); holders = %v", h))
 	}
-	sort.Strings(egressHolders)
-	for _, name := range egressHolders {
-		v = append(v, fmt.Sprintf("%s holds `egress` — nothing in the inference stack may reach the internet", name))
+
+	v = append(v, researchDoorViolations(c)...)
+	v = append(v, forgeDoorViolations(c)...)
+	v = append(v, memoryDoorViolations(c)...)
+
+	// Every worker container execs its own role link, so the topology file
+	// says what each container is and no service can run another's role;
+	// and the image split holds — no toolchain-bearing image in the abbey
+	// (the workbench is the agent's alone, and the agent is a cell's).
+	for _, w := range []struct{ service, role string }{
+		{"scholar", "scholar"}, {"state", "state-service"},
+	} {
+		v = append(v, wantsRoleEntrypoint(c, w.service, w.role)...)
+	}
+	for _, name := range []string{"agency", "scholar", "state"} {
+		svc, ok := c.Services[name]
+		if !ok {
+			continue
+		}
+		imageVar := "WORKERS_IMAGE"
+		if name == "agency" {
+			imageVar = "AGENCY_IMAGE"
+		}
+		if !strings.Contains(svc.Image, "${"+imageVar) {
+			v = append(v, fmt.Sprintf("%s image must come from ${%s}; image = %q", name, imageVar, svc.Image))
+		}
+		if svc.runsAsRoot() {
+			v = append(v, fmt.Sprintf("%s must run as a non-root user; user = %q", name, svc.User))
+		}
 	}
 	v = append(v, dnsPinViolations(c)...)
 	return v, nil
+}
+
+// researchDoorViolations checks the shared scholar (docs/abbey.md): it
+// handles UNTRUSTED web content for every cell, so its only route out is
+// the kagi-relay, it never shares the archivists' wire, and it holds no
+// workspace of any kind.
+func researchDoorViolations(c compose) []string {
+	var v []string
+	sch, ok := c.Services["scholar"]
+	if !ok {
+		return []string{"no `scholar` service defined — the machine has no research door"}
+	}
+	for _, n := range sch.egressCapable("kagiegress") { // kagiegress IS its sanctioned route
+		v = append(v, fmt.Sprintf("scholar holds %q — it must reach out ONLY through the kagi-relay", n))
+	}
+	if sch.hasNet("statenet") {
+		v = append(v, "scholar holds `statenet` — use `scholarstate` so it never shares the archivists' wire")
+	}
+	if sch.hasNet("gitegress") {
+		v = append(v, "scholar holds `gitegress` — the research door gets no route to the forge")
+	}
+	for _, vol := range sch.Volumes {
+		if strings.Contains(vol, ":/grange") || strings.Contains(vol, ":/workspace") {
+			v = append(v, fmt.Sprintf("scholar mounts a workspace (%q) — web content and project source never meet", vol))
+		}
+	}
+	for _, n := range sch.Networks {
+		if def, defined := c.Networks[n.Name]; defined && !def.External && !def.Internal {
+			v = append(v, fmt.Sprintf("scholar network %q is not `internal: true` — it may grant internet egress", n.Name))
+		}
+	}
+	relay, ok := c.Services["kagi-relay"]
+	if !ok {
+		v = append(v, "no `kagi-relay` service defined")
+	} else if !targetsHost(relay.Command, "kagi.com:443") {
+		v = append(v, fmt.Sprintf("kagi-relay is not pinned to kagi.com:443; command = %v", relay.Command))
+	}
+	if h := holdersOf(c, "kagiegress"); !slices.Equal(h, []string{"kagi-relay", "scholar"}) {
+		v = append(v, fmt.Sprintf("kagiegress membership must be exactly scholar+kagi-relay; got %v", h))
+	}
+	return v
+}
+
+// forgeDoorViolations checks the shared git relays (docs/archivist.md):
+// literal socat destinations (no ${} a deploy could repoint), and the
+// alias/target DECOUPLED so no container both holds the github.com alias
+// and resolves it — the front carries the alias git dials (TLS verifies
+// the real cert against the dialed name) and pipes to a separately-named
+// egress hop.  The api relay needs no alias: the archivist's Go client
+// dials it by service name with SNI api.github.com.
+func forgeDoorViolations(c compose) []string {
+	var v []string
+	for _, n := range []string{"gitegress", "gitforward"} {
+		if def, defined := c.Networks[n]; !defined || !def.Internal {
+			v = append(v, fmt.Sprintf("%s must be defined `internal: true` — it is a hop between the archivists and the relays, never the internet", n))
+		}
+	}
+	// The archivists live in the CELLS and join gitegress as an external
+	// network, so on this side the door is exactly its two dialable
+	// relays; gitforward is the git two-hop alone.
+	if h := holdersOf(c, "gitegress"); !slices.Equal(h, []string{"github-api-relay", "github-relay"}) {
+		v = append(v, fmt.Sprintf("gitegress membership in the abbey must be exactly github-relay and github-api-relay; got %v", h))
+	}
+	if h := holdersOf(c, "gitforward"); !slices.Equal(h, []string{"github-egress", "github-relay"}) {
+		v = append(v, fmt.Sprintf("gitforward membership must be exactly github-relay and github-egress (the git two-hop); got %v", h))
+	}
+	for _, r := range []struct {
+		service, target, alias string
+	}{
+		{"github-relay", "github-egress:443", "github.com"},
+		{"github-egress", "github.com:443", ""},
+		{"github-api-relay", "api.github.com:443", ""},
+	} {
+		relay, ok := c.Services[r.service]
+		if !ok {
+			v = append(v, fmt.Sprintf("no `%s` service defined — the forge door is incomplete without it", r.service))
+			continue
+		}
+		if !targetsHost(relay.Command, r.target) {
+			v = append(v, fmt.Sprintf("%s must pipe to the literal TCP:%s; command = %v", r.service, r.target, relay.Command))
+		}
+		if r.alias != "" && !slices.Contains(relay.Networks.aliasesOn("gitegress"), r.alias) {
+			v = append(v, fmt.Sprintf("%s must carry the network alias %q on gitegress (git dials it for end-to-end TLS)", r.service, r.alias))
+		}
+	}
+	return v
+}
+
+// memoryDoorViolations checks the fleet's state service and its status
+// relay (docs/abbey.md): the state service owns the durable record, reads
+// the agency's snapshot through one-way glass (`:ro`, no network edge),
+// and is reachable only on its three wires — the status relay is the one
+// thing that publishes to a host port.
+func memoryDoorViolations(c compose) []string {
+	var v []string
+	st, ok := c.Services["state"]
+	if !ok {
+		return []string{"no `state` service defined — the fleet has no audit trail or approvals desk"}
+	}
+	nets := st.Networks.names()
+	sort.Strings(nets)
+	if !slices.Equal(nets, []string{"scholarstate", "statenet", "statepub"}) {
+		v = append(v, fmt.Sprintf("state networks must be exactly statenet+scholarstate+statepub; got %v", nets))
+	}
+	mounted := false
+	for _, vol := range st.Volumes {
+		if strings.HasPrefix(vol, "agency_status:") {
+			mounted = true
+			if !strings.HasSuffix(vol, ":ro") {
+				v = append(v, "state's agency_status mount is not `:ro` — the snapshot is read, never written, by its reader")
+			}
+		}
+	}
+	if !mounted {
+		v = append(v, "state has no agency_status mount — the dashboard's Inference panel reads `agency_status:/agency-status:ro`")
+	}
+	// Only the agency writes the snapshot; only the state service reads it.
+	for _, name := range serviceNames(c) {
+		if name == "state" || name == "agency" {
+			continue
+		}
+		for _, vol := range c.Services[name].Volumes {
+			if strings.HasPrefix(vol, "agency_status:") {
+				v = append(v, fmt.Sprintf("%s mounts agency_status — the agency writes it and the state service reads it, nobody else", name))
+			}
+		}
+	}
+	if h := holdersOf(c, "statepub"); !slices.Equal(h, []string{"state", "status"}) {
+		v = append(v, fmt.Sprintf("statepub membership must be exactly state+status; got %v", h))
+	}
+	if h := holdersOf(c, "scholarstate"); !slices.Equal(h, []string{"scholar", "state"}) {
+		v = append(v, fmt.Sprintf("scholarstate membership must be exactly scholar+state; got %v", h))
+	}
+	if _, ok := c.Services["status"]; !ok {
+		v = append(v, "no `status` service defined — the operator has no window on the record")
+	}
+	return v
 }
 
 // targetsEnvAddr reports whether a socat-style command forwards to an
