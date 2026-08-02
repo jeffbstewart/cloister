@@ -133,9 +133,48 @@ func newProvisionFixture(t *testing.T) (*fixture, *fakeGate, *fakeAuditor) {
 		t.Fatalf("NewGrange: %v", err)
 	}
 	t.Cleanup(func() { g.Close() })
+	srv := New(Config{Version: "test", Grange: g, Audit: aud})
 	f := &fixture{tmp: tmp, dir: filepath.Join(root, "tree"),
-		session: dial(t, New(Config{Version: "test", Grange: g, Audit: aud}))}
+		session: dial(t, srv), operator: dialOperator(t, srv)}
 	return f, gate, aud
+}
+
+// TestLifecycleVerbsAreAbsentFromTheAgentSurface is the property the
+// two-registry split exists for.  Not "hidden", not "advertised but
+// refused" — ABSENT: the agent's ListTools does not name them, and
+// calling one by its known name is a protocol-level unknown tool, not a
+// tool-level refusal.  A guessed name buys nothing.
+func TestLifecycleVerbsAreAbsentFromTheAgentSurface(t *testing.T) {
+	f, _, _ := newProvisionFixture(t)
+	ctx := context.Background()
+
+	res, err := f.session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range res.Tools {
+		if tool.Name == "provision" || tool.Name == "dispose" {
+			t.Errorf("%s is on the agent surface; lifecycle belongs to the operator alone", tool.Name)
+		}
+	}
+	for _, name := range []string{"provision", "dispose"} {
+		if _, err := f.session.CallTool(ctx, &mcp.CallToolParams{Name: name}); err == nil {
+			t.Errorf("the agent called %s; it must not resolve at all", name)
+		}
+	}
+
+	// The operator surface is the mirror image: lifecycle and nothing else.
+	res, err = f.operator.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, tool := range res.Tools {
+		got[tool.Name] = true
+	}
+	if len(got) != 2 || !got["provision"] || !got["dispose"] {
+		t.Errorf("operator surface = %v, want exactly provision and dispose", got)
+	}
 }
 
 func TestProvisionDisposeVerbs(t *testing.T) {
@@ -156,7 +195,7 @@ func TestProvisionDisposeVerbs(t *testing.T) {
 		t.Fatalf("pending_changes before provision = %q (err=%v), want a provision-first refusal", text, isErr)
 	}
 
-	res := asJSON(t, f.ok(t, "provision", map[string]any{"repo": provisionURL, "branch": "agent/feature"}))
+	res := asJSON(t, f.operatorOk(t, "provision", map[string]any{"repo": provisionURL, "branch": "agent/feature"}))
 	if res["repo"] != "op/repo" || res["branch"] != "agent/feature" {
 		t.Errorf("provision answer = %v", res)
 	}
@@ -172,7 +211,7 @@ func TestProvisionDisposeVerbs(t *testing.T) {
 		t.Errorf("lifecycle detail = %+v", recs[0].Detail)
 	}
 
-	f.ok(t, "dispose", nil)
+	f.operatorOk(t, "dispose", nil)
 	if st = asJSON(t, f.ok(t, "current_state", nil)); st["provisioned"] != false {
 		t.Errorf("current_state after dispose = %v, want provisioned:false — the workspace is empty", st)
 	}
@@ -187,7 +226,7 @@ func TestProvisionGateRefusalIsAudited(t *testing.T) {
 		Repo:     "op/repo",
 		Blocking: []forgelint.Verdict{{Req: "R2", Status: forgelint.Violation, Detail: "stale approvals survive"}},
 	}
-	text, isErr := f.call(t, "provision", map[string]any{"repo": provisionURL})
+	text, isErr := f.operatorCall(t, "provision", map[string]any{"repo": provisionURL})
 	if !isErr || !strings.Contains(text, "R2") {
 		t.Fatalf("provision through a refusing gate = %q (err=%v), want an R2 refusal", text, isErr)
 	}
@@ -206,7 +245,7 @@ func TestProvisionGateRefusalIsAudited(t *testing.T) {
 
 func TestProvisionRefusesUnknownHost(t *testing.T) {
 	f, _, aud := newProvisionFixture(t)
-	text, isErr := f.call(t, "provision", map[string]any{"repo": "https://evil.example/op/repo"})
+	text, isErr := f.operatorCall(t, "provision", map[string]any{"repo": "https://evil.example/op/repo"})
 	if !isErr || !strings.Contains(text, "allowlist") {
 		t.Fatalf("provision of an off-table host = %q (err=%v), want an allowlist refusal", text, isErr)
 	}
@@ -215,37 +254,39 @@ func TestProvisionRefusesUnknownHost(t *testing.T) {
 	}
 }
 
-// TestVerbsSerializeUnderConcurrency hammers the surface — lifecycle
-// transitions interleaved with working-tree verbs — from many goroutines
-// at once.  The single serialization lock must keep the live-workspace
-// pointer and the tree consistent: nothing panics, every call returns a
-// clean answer or a clean refusal, and the server is still usable after.
-// Run under -race, an unsynchronized g.arc access is a failure.
+// TestVerbsSerializeUnderConcurrency hammers both surfaces at once —
+// lifecycle transitions on the operator session interleaved with
+// working-tree verbs on the agent session — from many goroutines.  The
+// two registries share ONE serialization lock, which is what keeps the
+// live-workspace pointer and the tree consistent across them: nothing
+// panics, every call returns a clean answer or a clean refusal, and the
+// server is still usable after.  Run under -race, an unsynchronized
+// g.arc access is a failure.
 func TestVerbsSerializeUnderConcurrency(t *testing.T) {
 	f, _, _ := newProvisionFixture(t)
 	ctx := context.Background()
-	call := func(name string, args map[string]any) {
+	call := func(s *mcp.ClientSession, name string, args map[string]any) {
 		// Errors are fine (a verb may hit an empty workspace mid-storm); a
 		// panic or a race is not.
-		f.session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
+		s.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
 	}
 	var wg sync.WaitGroup
 	for i := 0; i < 12; i++ {
 		wg.Add(4)
 		go func() {
 			defer wg.Done()
-			call("provision", map[string]any{"repo": provisionURL, "branch": "agent/race"})
+			call(f.operator, "provision", map[string]any{"repo": provisionURL, "branch": "agent/race"})
 		}()
-		go func() { defer wg.Done(); call("current_state", nil) }()
-		go func() { defer wg.Done(); call("history", map[string]any{"limit": 1}) }()
-		go func() { defer wg.Done(); call("dispose", map[string]any{"force": true}) }()
+		go func() { defer wg.Done(); call(f.session, "current_state", nil) }()
+		go func() { defer wg.Done(); call(f.session, "history", map[string]any{"limit": 1}) }()
+		go func() { defer wg.Done(); call(f.operator, "dispose", map[string]any{"force": true}) }()
 	}
 	wg.Wait()
 
 	// The surface still works: dispose to a known-empty state, then a clean
 	// provision succeeds.
-	f.session.CallTool(ctx, &mcp.CallToolParams{Name: "dispose", Arguments: map[string]any{"force": true}})
-	f.ok(t, "provision", map[string]any{"repo": provisionURL, "branch": "agent/after"})
+	call(f.operator, "dispose", map[string]any{"force": true})
+	f.operatorOk(t, "provision", map[string]any{"repo": provisionURL, "branch": "agent/after"})
 	st := asJSON(t, f.ok(t, "current_state", nil))
 	if st["branch"] != "agent/after" {
 		t.Errorf("post-storm branch = %v, want agent/after", st["branch"])

@@ -32,10 +32,16 @@ import (
 // The grange lifecycle verbs (docs/archivist.md, "Grange lifecycle"): the
 // workspace's boundary events, audited like the remote verbs.  They act on
 // the Grange rather than a live Archive — provision is what brings one into
-// being — so they register with add, not addArc.
+// being — so they register with addOperator, not addArc.
+//
+// addOperator puts them on the OPERATOR surface, where the agent cannot name
+// them: a workspace's lifetime is a session's lifetime, owned by the
+// human running the workbench (see New).  An agent that could swap the
+// tree under itself would go on reasoning from a context describing a
+// repository that no longer exists.
 
 func (s *Server) registerLifecycleTools() {
-	s.add(&mcp.Tool{
+	s.addOperator(&mcp.Tool{
 		Name: "provision",
 		Description: "Bring an EMPTY workspace into being: clone the repository through its endpoint, verify its forge protections meet grange service " +
 			"(refusing and naming the failing requirement otherwise), check out a line of work, and record provenance.  " +
@@ -51,7 +57,7 @@ func (s *Server) registerLifecycleTools() {
 		},
 	}, s.provision)
 
-	s.add(&mcp.Tool{
+	s.addOperator(&mcp.Tool{
 		Name: "dispose",
 		Description: "Return the workspace to EMPTY.  Refuses while unpublished work exists — a dirty tree, checkpoints not yet at the endpoint, or set-aside parcels — " +
 			"unless force is set, and refuses any workspace with no provenance marker regardless of force.  Audited.",

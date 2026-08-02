@@ -11,9 +11,18 @@ assuming anything works the way an open laptop does.
   files with your native tools; run builds and tests directly
   (`go`, `cargo`, `./gradlew`, `make`).  Nothing here outlives the task
   except commits on a published branch.
-- If `/grange/tree` does not exist yet, nothing is provisioned: call
-  the **archivist**'s `provision` tool with the repository URL (and a
-  branch to resume, if any).  Never create `/grange/tree` yourself.
+- **You cannot change your workspace, and there is no tool that lets
+  you.**  Which repository is checked out is decided before you start
+  and holds for your whole session; provisioning and disposal belong to
+  the operator's session manager, on an MCP surface you are not
+  connected to.  This is deliberate: a tree swapped mid-session would
+  leave you reasoning confidently about a repository that is no longer
+  there.
+- So if `/grange/tree` does not exist, nothing is provisioned and there
+  is nothing you can do about it — say so and stop.  Don't go looking
+  for a `provision` verb, don't create `/grange/tree` yourself, and
+  don't try to clone anything (there is no route to a forge from here
+  anyway).
 - `/grange/staging` and `.git/cloister-grange` are lifecycle machinery.
   Leave them alone.
 

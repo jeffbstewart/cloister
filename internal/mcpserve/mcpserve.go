@@ -48,9 +48,31 @@ import (
 
 // Handler serves MCP at /mcp and a liveness probe at /healthz.
 func Handler(s *mcp.Server) http.Handler {
+	return HandlerAt(map[string]*mcp.Server{"/mcp": s})
+}
+
+// HandlerAt serves one MCP server per path, plus the /healthz probe —
+// how a worker offers two DIFFERENT tool sets to two different callers
+// from one process.
+//
+// Each path is a separate mcp.Server with its own tool registry, which
+// is the point: a tool registered on one surface is not merely hidden
+// from the other, it is ABSENT — a call for it there answers "unknown
+// tool" because the lookup misses.  (The protocol permits advertising
+// and calling to disagree, and this SDK could be middleware'd into
+// hiding a tool while leaving it callable; that would give obscurity
+// whose secret is a guessable tool name.  Two registries give the real
+// property.)  The archivist uses this to keep workspace lifecycle out
+// of the agent's addressable action set (docs/archivist.md).
+//
+// This is NOT a security boundary: co-resident callers can reach any
+// path.  It bounds what a model can NAME, not what a process can dial.
+func HandlerAt(servers map[string]*mcp.Server) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(
-		func(*http.Request) *mcp.Server { return s }, nil))
+	for path, srv := range servers {
+		mux.Handle(path, mcp.NewStreamableHTTPHandler(
+			func(*http.Request) *mcp.Server { return srv }, nil))
+	}
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		io.WriteString(w, "ok")
