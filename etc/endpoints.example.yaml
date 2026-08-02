@@ -27,6 +27,15 @@ endpoints:
     canonical: https://github.com/
     wire: https://github.com/ # resolved to the relay by network alias
     forge: github
+    # api vs apiRelay is IDENTITY vs ROUTE.  `api` is never dialed: it
+    # names who the PR verbs believe they talk to — request URLs, the
+    # Host header, and the TLS certificate the client verifies
+    # end-to-end through the blind pipe.  `apiRelay` is the ONLY
+    # address the archivist's guarded transport will dial (a
+    # cell-internal service name on gitegress; every other host is
+    # refused at dial time).  The archivist never resolves the public
+    # name — its DNS is dead by design, and the dialer maps
+    # api-host -> relay without a lookup.
     api: https://api.github.com/
     apiRelay: github-api-relay:443   # the api relay's cell address (NOT aliased as api.github.com)
     credentialFile: /run/secrets/github-token
