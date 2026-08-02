@@ -27,6 +27,13 @@ import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from '
 import { dirname } from 'node:path';
 
 const path = process.env.QWEN_SETTINGS_PATH || '/home/agent/.qwen/settings.json';
+// /mcp is the archivist's AGENT surface.  Its workspace lifecycle verbs
+// (provision, dispose) live on a separate surface at /operator/mcp,
+// registered by the workbench session manager and NOT here: a workspace's
+// lifetime is the session's lifetime, and an agent that swapped the tree
+// under itself would go on reasoning about a repository that no longer
+// exists.  Pointing ARCHIVIST_MCP_URL at the operator path would hand the
+// model exactly the verbs the split exists to keep out of its reach.
 const archivistUrl = process.env.ARCHIVIST_MCP_URL || 'http://archivist:9600/mcp';
 // await_review BLOCKS up to its maxWait (1h cap) while the operator
 // reviews; the MCP timeout must exceed it.  90 min leaves headroom.

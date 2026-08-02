@@ -77,7 +77,7 @@ func TestForgeToolsRegisterAndRefuseWithoutAdapter(t *testing.T) {
 	for _, tool := range res.Tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"publish", "propose", "check_progress", "read_reviews", "reply_to_review", "await_review", "provision", "dispose"} {
+	for _, want := range []string{"publish", "propose", "check_progress", "read_reviews", "reply_to_review", "await_review"} {
 		if !names[want] {
 			t.Errorf("%s is not registered; the full surface is advertised up front", want)
 		}

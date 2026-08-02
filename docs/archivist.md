@@ -133,7 +133,8 @@ over-scoped credential must not become an incident.
 
 [grange.md](grange.md)'s amendment: the archivist is also its
 workspace's provisioner.  Two lifecycle verbs — audited, since they are
-the workspace's boundary events:
+the workspace's boundary events, and served on their **own MCP surface**
+(see "Two surfaces" below), so the agent cannot name them:
 
 | Verb | Meaning |
 |---|---|
@@ -181,6 +182,59 @@ the workspace's boundary events:
 - The stores/lockfile coverage check stays out of M1 — it needs the
   read-only store mounts, which land with the workbench image (grange
   M4).
+
+### Two surfaces: the agent's and the operator's
+
+The archivist serves two MCP endpoints from one process:
+
+| Path | Client | Verbs |
+|---|---|---|
+| `/mcp` | the coding agent | everything within a task: branches, checkpoints, restore, the PR flow |
+| `/operator/mcp` | the workbench session manager ([workbench.md](workbench.md)) | `provision`, `dispose`, `workspace_state` |
+
+`workspace_state` is the operator's read, and deliberately not the
+agent's `current_state`: that one speaks in branches and pending
+changes, the within-task view, while this one speaks in workspace
+lifetimes.  It is the only verb that reports CORRUPT as a first-class
+answer rather than as the reason every other verb refuses — a session
+manager has to tell "nothing here yet" (provisionable) from "something
+here that no one may touch" (host-side recovery), because the moves
+are opposite.
+
+The client is `internal/operator`, typed and shared: refusals arrive as
+`*RefusedError` carrying the archivist's own words, so a caller shows
+"op/repo fails R2: stale approvals survive" rather than "provision
+failed".
+
+They are separate `mcp.Server` instances, which is the whole point.  The
+lifecycle verbs are not *hidden* from the agent and not *advertised but
+refused* — they are **absent from the registry its calls resolve
+against**, so naming one answers "unknown tool".  A guessed name buys
+nothing, which is what a description saying "operators only" or a
+`listTools` filter would not give.
+
+The reason is epistemic, not adversarial.  A workspace swapped under a
+live session leaves the model reasoning from a context that describes a
+repository which is no longer there — stale beliefs that still look
+like evidence, with no signal that anything moved.  Making the
+workspace's lifetime **the session's lifetime**, owned by the human
+outside the agent, makes that unrepresentable rather than merely
+discouraged; it is how grange invariant 3 stops depending on the model
+choosing well.  The session manager provisions, runs the agent to
+completion, and disposes — so a new workspace is always a new session,
+with a context that was built for it.
+
+This is emphatically **not** a security boundary: the session manager
+and the agent share a container and a network namespace, so a
+determined process can dial either path.  It bounds what the model can
+*name*, which is what accidents are made of.  The boundaries that are
+load-bearing stay where they were — the forge ruleset, the endpoint
+allowlist, the bot credential living only in the archivist.
+
+Both surfaces take the **same serialization lock**: provision and
+dispose move the very state every agent verb reads, so an operator
+dispose can never interleave with an in-flight checkpoint.  Two
+registries, one server, one lock.
 
 ## Hardened git execution
 

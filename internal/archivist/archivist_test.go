@@ -37,9 +37,11 @@ import (
 // as tool-level errors.
 
 type fixture struct {
-	tmp     string // the rig root; origin.git lives here
-	dir     string // the workspace clone
-	session *mcp.ClientSession
+	tmp      string             // the rig root; origin.git lives here
+	dir      string             // the workspace clone
+	srv      *Server            // for the tests that need the HTTP handler
+	session  *mcp.ClientSession // the agent surface
+	operator *mcp.ClientSession // the operator surface (provision/dispose)
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -74,15 +76,32 @@ func newFixtureWith(t *testing.T, cfg Config) *fixture {
 	t.Cleanup(func() { a.Close() })
 
 	cfg.Grange = archive.AdoptArchive(a)
-	return &fixture{tmp: tmp, dir: dir, session: dial(t, New(cfg))}
+	srv := New(cfg)
+	return &fixture{tmp: tmp, dir: dir, srv: srv, session: dial(t, srv), operator: dialOperator(t, srv)}
 }
 
-// dial connects an in-memory MCP client to the server under test.
+// dial connects an in-memory MCP client to the AGENT surface — the
+// verbs a model can name.
 func dial(t *testing.T, srv *Server) *mcp.ClientSession {
+	t.Helper()
+	return dialTo(t, srv.mcp)
+}
+
+// dialOperator connects to the OPERATOR surface, where the workspace's
+// boundary events live; the workbench session manager is its only real
+// client.
+func dialOperator(t *testing.T, srv *Server) *mcp.ClientSession {
+	t.Helper()
+	return dialTo(t, srv.operatorMCP)
+}
+
+// dialTo is the shared plumbing: an in-memory client speaking to one
+// of the server's two registries.
+func dialTo(t *testing.T, target *mcp.Server) *mcp.ClientSession {
 	t.Helper()
 	clientT, serverT := mcp.NewInMemoryTransports()
 	ctx := context.Background()
-	if _, err := srv.mcp.Connect(ctx, serverT, nil); err != nil {
+	if _, err := target.Connect(ctx, serverT, nil); err != nil {
 		t.Fatal(err)
 	}
 	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, nil)
@@ -94,10 +113,33 @@ func dial(t *testing.T, srv *Server) *mcp.ClientSession {
 	return session
 }
 
-// call invokes a tool, returning the first text content and IsError.
+// call invokes a tool on the AGENT surface, returning the first text
+// content and IsError.
 func (f *fixture) call(t *testing.T, name string, args map[string]any) (string, bool) {
 	t.Helper()
-	res, err := f.session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
+	return callOn(t, f.session, name, args)
+}
+
+// operatorCall invokes a tool on the OPERATOR surface — provision and dispose,
+// which the agent's session cannot name.
+func (f *fixture) operatorCall(t *testing.T, name string, args map[string]any) (string, bool) {
+	t.Helper()
+	return callOn(t, f.operator, name, args)
+}
+
+// operatorOk invokes an operator tool and fails on a tool-level error.
+func (f *fixture) operatorOk(t *testing.T, name string, args map[string]any) string {
+	t.Helper()
+	text, isErr := f.operatorCall(t, name, args)
+	if isErr {
+		t.Fatalf("%s%v returned a tool error: %s", name, args, text)
+	}
+	return text
+}
+
+func callOn(t *testing.T, s *mcp.ClientSession, name string, args map[string]any) (string, bool) {
+	t.Helper()
+	res, err := s.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
 	if err != nil {
 		t.Fatalf("CallTool(%s): %v", name, err)
 	}

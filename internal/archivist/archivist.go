@@ -92,7 +92,11 @@ type Config struct {
 // Server owns the archivist's MCP tool surface.
 type Server struct {
 	cfg Config
-	mcp *mcp.Server
+	mcp *mcp.Server // the agent surface: within-task verbs
+	// operatorMCP is the operator surface: provision and dispose, the
+	// workspace's boundary events.  A separate registry, so the agent
+	// cannot name them (see New).
+	operatorMCP *mcp.Server
 	// mu serializes every verb, provision and dispose included: the MCP
 	// SDK dispatches each tool call in its own goroutine, and both the one
 	// working tree (single-writer) and the grange's live-workspace pointer
@@ -106,22 +110,51 @@ type Server struct {
 	mu sync.Mutex
 }
 
-// New builds the archivist tool surface over a grange.  Every verb is
-// registered; the working-tree and remote verbs refuse until a workspace
-// is provisioned, so an unprovisioned instance has a full surface that
-// simply says "provision first".
+// AgentPath and OperatorPath are the archivist's two MCP surfaces.  The
+// agent registers only AgentPath; the workbench session manager drives
+// OperatorPath.
+const (
+	AgentPath    = "/mcp"
+	OperatorPath = "/operator/mcp"
+)
+
+// New builds the archivist's two tool surfaces over a grange.
+//
+// The AGENT surface carries the within-task verbs — branches,
+// checkpoints, the PR flow — which refuse cleanly until a workspace is
+// provisioned.  The OPERATOR surface carries the workspace's boundary
+// events, provision and dispose, and nothing else.
+//
+// They are separate mcp.Servers, so the lifecycle verbs are not hidden
+// from the agent: they are ABSENT from the registry its calls resolve
+// against, and naming one answers "unknown tool".  That is deliberate.
+// A workspace swapped under a live session leaves the agent reasoning
+// from a context describing a repository that no longer exists — stale
+// beliefs that still look like evidence, with no way for the model to
+// know.  Making the workspace's lifetime the SESSION's lifetime, owned
+// by the human outside the agent, is what makes that unrepresentable
+// rather than merely discouraged (docs/grange.md invariant 3).
+//
+// Not a security boundary: the workbench and the agent share a
+// container, so a determined process could dial either path.  It bounds
+// what the model can NAME, which is what accidents are made of.
 func New(cfg Config) *Server {
 	s := &Server{cfg: cfg}
 	s.mcp = mcp.NewServer(&mcp.Implementation{Name: "archivist", Version: cfg.Version}, nil)
+	s.operatorMCP = mcp.NewServer(&mcp.Implementation{Name: "archivist-operator", Version: cfg.Version}, nil)
 	s.registerLifecycleTools()
 	s.registerTools()
 	s.registerRemoteTools()
 	return s
 }
 
-// Handler serves MCP at /mcp and a liveness probe at /healthz.
+// Handler serves the agent surface at /mcp, the operator surface at
+// /operator/mcp, and a liveness probe at /healthz.
 func (s *Server) Handler() http.Handler {
-	return mcpserve.Handler(s.mcp)
+	return mcpserve.HandlerAt(map[string]*mcp.Server{
+		AgentPath:    s.mcp,
+		OperatorPath: s.operatorMCP,
+	})
 }
 
 // add registers one tool with the serialization lock taken around its
@@ -130,7 +163,18 @@ func (s *Server) Handler() http.Handler {
 // construction; await_review manages the lock itself around its target
 // resolution (see registerAwaitReview for why).
 func (s *Server) add(tool *mcp.Tool, h func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error)) {
-	s.mcp.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	s.register(s.mcp, tool, h)
+}
+
+// addOperator registers a tool on the OPERATOR surface — the workspace's
+// boundary events, which the agent cannot name.  Same lock: provision
+// and dispose move the very state every agent verb reads.
+func (s *Server) addOperator(tool *mcp.Tool, h func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error)) {
+	s.register(s.operatorMCP, tool, h)
+}
+
+func (s *Server) register(srv *mcp.Server, tool *mcp.Tool, h func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error)) {
+	srv.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		return h(ctx, req)

@@ -32,10 +32,16 @@ import (
 // The grange lifecycle verbs (docs/archivist.md, "Grange lifecycle"): the
 // workspace's boundary events, audited like the remote verbs.  They act on
 // the Grange rather than a live Archive — provision is what brings one into
-// being — so they register with add, not addArc.
+// being — so they register with addOperator, not addArc.
+//
+// addOperator puts them on the OPERATOR surface, where the agent cannot name
+// them: a workspace's lifetime is a session's lifetime, owned by the
+// human running the workbench (see New).  An agent that could swap the
+// tree under itself would go on reasoning from a context describing a
+// repository that no longer exists.
 
 func (s *Server) registerLifecycleTools() {
-	s.add(&mcp.Tool{
+	s.addOperator(&mcp.Tool{
 		Name: "provision",
 		Description: "Bring an EMPTY workspace into being: clone the repository through its endpoint, verify its forge protections meet grange service " +
 			"(refusing and naming the failing requirement otherwise), check out a line of work, and record provenance.  " +
@@ -51,7 +57,7 @@ func (s *Server) registerLifecycleTools() {
 		},
 	}, s.provision)
 
-	s.add(&mcp.Tool{
+	s.addOperator(&mcp.Tool{
 		Name: "dispose",
 		Description: "Return the workspace to EMPTY.  Refuses while unpublished work exists — a dirty tree, checkpoints not yet at the endpoint, or set-aside parcels — " +
 			"unless force is set, and refuses any workspace with no provenance marker regardless of force.  Audited.",
@@ -63,6 +69,36 @@ func (s *Server) registerLifecycleTools() {
 			AdditionalProperties: mcpserve.NoExtras(),
 		},
 	}, s.dispose)
+
+	s.addOperator(&mcp.Tool{
+		Name: "workspace_state",
+		Description: "Report the workspace's disk-derived condition — empty, provisioned (with the repository and line of work behind it), or corrupt — " +
+			"so the session manager knows which lifecycle move is available.  Never acts.",
+		InputSchema: &jsonschema.Schema{
+			Type:                 "object",
+			AdditionalProperties: mcpserve.NoExtras(),
+		},
+	}, s.workspaceState)
+}
+
+// workspaceState is the operator's read.  It is deliberately NOT the
+// agent's current_state: that one speaks in branches and pending
+// changes, the within-task view.  This one speaks in workspace
+// lifetimes, and it is the only verb that reports CORRUPT as a
+// first-class answer rather than as the reason every other verb
+// refuses — the session manager has to distinguish "nothing here yet"
+// from "something here that no one may touch", because the first is
+// provisionable and the second needs a human host-side.
+func (s *Server) workspaceState(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	st, err := s.cfg.Grange.Status()
+	if err != nil {
+		return mcpserve.ErrResult(err.Error()), nil
+	}
+	out := map[string]any{"state": string(st.State)}
+	if st.State == archive.StateProvisioned {
+		out["repo"], out["branch"], out["provisioned_at"] = st.Repo, st.Branch, st.Provisioned
+	}
+	return mcpserve.JSONResult(out), nil
 }
 
 func (s *Server) provision(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {

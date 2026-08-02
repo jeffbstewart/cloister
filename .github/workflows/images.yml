@@ -15,10 +15,11 @@
 name: images
 
 # The authoritative image pipeline: on every push to main and on version
-# tags, cross-compile the static cloister-worker binary, then build and
-# push the slim workers image and the fat agent workbench (toolchains +
-# the agent CLI; docker/workbench) to GHCR.  Tags carry the binary as a
-# GitHub Release asset.
+# tags, cross-compile the two static binaries — cloister-worker (every
+# worker role) and the workbench session manager — then build and push
+# the slim workers image and the fat agent workbench (toolchains + the
+# agent CLI + the session manager; docker/workbench) to GHCR.  Tags carry
+# the worker binary as a GitHub Release asset.
 #
 # Distribution note: the workbench image redistributes Amazon Corretto
 # (GPLv2 with the Classpath Exception); see THIRD_PARTY_NOTICES for the
@@ -71,6 +72,17 @@ jobs:
             go build -trimpath \
             -ldflags "-s -w -X main.version=${{ steps.ver.outputs.version }}" \
             -o docker/workers/cloister-worker ./cmd/cloister-worker
+
+      # The workbench session manager: the operator's door into a cell,
+      # and the only thing that can provision or dispose now that those
+      # verbs left the agent's MCP surface (docs/archivist.md, "Two
+      # surfaces").  Static, into the workbench image's build context.
+      - name: Build the static workbench session manager
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath \
+            -ldflags "-s -w -X main.version=${{ steps.ver.outputs.version }}" \
+            -o docker/workbench/cloister-workbench ./cmd/workbench
 
       # Buildx now so the platform list below is the only thing to touch
       # when arm64 joins (a Mac-hosted scholar, a D20 cell).

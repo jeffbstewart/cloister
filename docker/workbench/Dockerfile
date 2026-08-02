@@ -218,34 +218,15 @@ set -g default-terminal "screen-256color"
 set -g history-limit 50000
 EOF
 
-COPY <<'EOF' /usr/local/bin/workbench
-#!/bin/sh
-# workbench — attach to the cell's live agent session, or start one.
-# The session survives detachment (that is the point); a second
-# workbench from another terminal attaches to the SAME session.
-set -eu
-SESSION=agent
-if tmux has-session -t "$SESSION" 2>/dev/null; then
-  exec tmux attach -t "$SESSION"
-fi
-echo "cloister workbench — no live session.  start:"
-echo "  1) qwen   (default)"
-echo "  2) shell"
-# claude joins this menu when its image-variant question settles.
-printf "> "
-read -r choice || choice=1
-case "$choice" in
-  ""|1|qwen)  cmd=qwen ;;
-  2|shell|sh) cmd=bash ;;
-  *) echo "workbench: unknown choice \"$choice\"" >&2; exit 1 ;;
-esac
-# Sessions open in the checkout when one is provisioned; the grange ROOT
-# otherwise.  Never mkdir tree/ — an empty tree reads as CORRUPT to the
-# archivist's disk-derived state machine.
-dir=/grange
-if [ -d /grange/tree ]; then dir=/grange/tree; fi
-exec tmux new-session -s "$SESSION" -n main -c "$dir" "$cmd"
-EOF
+# The session manager (cmd/workbench), which replaced the shell script
+# that used to live here.  It owns the workspace's LIFETIME — provision,
+# run the agent, dispose — because those verbs left the agent's MCP
+# surface (docs/archivist.md, "Two surfaces"): a workspace swapped under
+# a live session leaves the model reasoning about a repository that is no
+# longer there.  Static (CGO_ENABLED=0), cross-compiled into this build
+# context by images.yml, so there is no toolchain or CRLF-shebang
+# exposure in the image itself.
+COPY cloister-workbench /usr/local/bin/workbench
 RUN chmod 0755 /usr/local/bin/workbench
 
 # The how-do-I-drive-this banner.  /etc/motd alone only greets PAM
@@ -256,12 +237,16 @@ RUN chmod 0755 /usr/local/bin/workbench
 COPY <<'EOF' /etc/motd
 
 cloister workbench — jailed agent cell
-  workbench    attach the live agent session, or pick one to start.
-               Sessions survive disconnects: close this shell freely,
-               the agent keeps working.  tmux prefix is Ctrl-Z
-               (press it twice to send a literal Ctrl-Z through).
-  workspace    /grange/tree — absent until the archivist provisions;
-               the agent's own rules are in ~/.qwen/QWEN.md.
+  workbench    the session manager: pick a repository, provision it,
+               run the agent, dispose when the task is done.  Attaches
+               instead when a session is already live.  Sessions survive
+               disconnects: close this shell freely, the agent keeps
+               working.  tmux prefix is Ctrl-Z (press it twice to send a
+               literal Ctrl-Z through).
+  workspace    /grange/tree — absent until `workbench` provisions it.
+               The agent CANNOT provision or dispose: the workspace's
+               lifetime is yours, not the model's.  Its own rules are in
+               ~/.qwen/QWEN.md.
   offline      no internet by design; package registries refuse.
                Missing dependencies go through the operator airlock.
 
@@ -285,7 +270,7 @@ WORKDIR /home/agent
 # boot outright; everything after it (prompt copy, MCP registration) is
 # best-effort, because a config hiccup must not stop the CLI.
 ENTRYPOINT ["/bin/sh", "-c", "node /usr/local/bin/jail-probe.mjs || exit 1; mkdir -p \"$HOME/.qwen\" 2>/dev/null || true; cp /usr/local/share/cloister/AGENTS.md \"$HOME/.qwen/QWEN.md\" 2>/dev/null || true; node /usr/local/bin/qwen-mcp-init.mjs || true; exec \"$@\"", "sh"]
-# The container idles; agents start when the operator runs `workbench`
-# in an exec shell ("pick your agent"), living in a tmux session that
-# outlives the shell that started it.
+# The container idles; work starts when the operator runs `workbench` in
+# an exec shell — it provisions the workspace and launches the agent into
+# a tmux session that outlives the shell that started it.
 CMD ["sleep", "infinity"]

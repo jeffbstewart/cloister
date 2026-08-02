@@ -15,6 +15,7 @@
 package mcpserve
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -81,5 +82,60 @@ func TestHandlerServesHealthz(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if rec.Code != http.StatusOK || rec.Body.String() != "ok" {
 		t.Errorf("healthz = %d %q, want 200 ok", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandlerAtRoutesEachPathToItsOwnRegistry proves the routing over
+// real HTTP, which is what the archivist's two surfaces rest on: a tool
+// registered on one server is reachable at its path and NOWHERE else.
+// The in-memory transports the workers' own tests use bypass this mux
+// entirely, so without this the split would be untested where it is
+// actually served.
+func TestHandlerAtRoutesEachPathToItsOwnRegistry(t *testing.T) {
+	build := func(name, tool string) *mcp.Server {
+		s := mcp.NewServer(&mcp.Implementation{Name: name, Version: "0"}, nil)
+		mcp.AddTool(s, &mcp.Tool{Name: tool, Description: tool},
+			func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, any, error) {
+				return JSONResult(map[string]any{"tool": tool}), nil, nil
+			})
+		return s
+	}
+	ts := httptest.NewServer(HandlerAt(map[string]*mcp.Server{
+		"/mcp":          build("public", "greet"),
+		"/operator/mcp": build("operator", "shutdown"),
+	}))
+	defer ts.Close()
+
+	tools := func(path string) map[string]bool {
+		t.Helper()
+		client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, nil)
+		sess, err := client.Connect(context.Background(),
+			&mcp.StreamableClientTransport{Endpoint: ts.URL + path}, nil)
+		if err != nil {
+			t.Fatalf("connect %s: %v", path, err)
+		}
+		defer sess.Close()
+		res, err := sess.ListTools(context.Background(), nil)
+		if err != nil {
+			t.Fatalf("ListTools %s: %v", path, err)
+		}
+		got := map[string]bool{}
+		for _, tool := range res.Tools {
+			got[tool.Name] = true
+		}
+		// The other path's tool must not merely be unlisted — it must not
+		// resolve.
+		if _, err := sess.CallTool(context.Background(),
+			&mcp.CallToolParams{Name: "no-such-tool"}); err == nil {
+			t.Errorf("%s resolved a tool it does not have", path)
+		}
+		return got
+	}
+
+	if got := tools("/mcp"); len(got) != 1 || !got["greet"] {
+		t.Errorf("/mcp = %v, want just greet", got)
+	}
+	if got := tools("/operator/mcp"); len(got) != 1 || !got["shutdown"] {
+		t.Errorf("/operator/mcp = %v, want just shutdown", got)
 	}
 }
