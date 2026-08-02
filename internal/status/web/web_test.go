@@ -246,6 +246,44 @@ func TestPendingApprovalCollapsedWhenResolved(t *testing.T) {
 	}
 }
 
+// TestArchivistRecordsShowTheirTarget: the archivist's lifecycle and
+// remote details arrived after the audit table was written, so its
+// target column rendered them blank — every provision, dispose, publish,
+// and propose looked anonymous on the page while the ledger held the
+// repo, branch, and PR all along.
+func TestArchivistRecordsShowTheirTarget(t *testing.T) {
+	state := t.TempDir()
+	al, err := audit.Open(filepath.Join(state, "audit.jsonl"), audit.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prov := audit.New(mustRunID(t), "provision", "provisioned", 0)
+	prov.Detail = &audit.LifecycleDetail{Repo: "op/toolkit", Branch: "agent/walkthrough"}
+	al.Append(prov)
+	refused := audit.New(mustRunID(t), "provision", "refused", 0)
+	refused.Detail = &audit.LifecycleDetail{Repo: "op/unhardened", Requirement: "R3"}
+	al.Append(refused)
+	prop := audit.New(mustRunID(t), "propose", "remote_ok", 0)
+	prop.Detail = &audit.RemoteDetail{Endpoint: "github.com", Branch: "agent/walkthrough", PR: 7}
+	al.Append(prop)
+	al.Close()
+
+	ts := httptest.NewServer(New(Config{StateDir: state, Version: "test"}).Handler())
+	defer ts.Close()
+	_, body := get(t, ts.URL+"/audit")
+	for _, want := range []string{
+		"op/toolkit",        // the provisioned repo
+		"agent/walkthrough", // the line of work
+		"failed=R3",         // which requirement the gate refused on
+		"#7",                // the PR the remote op touched
+		"github.com",        // and against which endpoint
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("audit page does not show %q — archivist records must name their target", want)
+		}
+	}
+}
+
 func TestDashboardShowsActiveRun(t *testing.T) {
 	f := newFixture(t, true)
 	resp, body := get(t, f.ts.URL+"/")
