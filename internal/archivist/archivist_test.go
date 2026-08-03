@@ -206,6 +206,47 @@ func TestCurrentStateOnFreshClone(t *testing.T) {
 	}
 }
 
+// TestCheckpointReportsWhatItLeftBehind reproduces the way the first
+// agent-authored pull request lost half a rename: the agent renamed a
+// file, checkpointed with paths naming only the NEW path, and the old
+// file's deletion stayed in the working tree.  A checkpoint that
+// records less than was meant is indistinguishable from one that
+// records everything — until the pull request turns out to be missing
+// a file.  So the answer names the leftovers.
+func TestCheckpointReportsWhatItLeftBehind(t *testing.T) {
+	f := newFixture(t)
+	f.ok(t, "start_work", map[string]any{"name": "agent/rename"})
+
+	// The rename: keep.txt (tracked, from the seed) becomes kept.txt.
+	f.write(t, "kept.txt", "constant\n")
+	if err := os.Remove(filepath.Join(f.dir, "keep.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Record only the new path — the mistake.
+	cp := asJSON(t, f.ok(t, "checkpoint", map[string]any{"message": "rename keep to kept", "paths": []any{"kept.txt"}}))
+	left := field[[]any](t, cp, "uncommitted")
+	if len(left) != 1 || !strings.Contains(left[0].(string), "keep.txt") {
+		t.Fatalf("uncommitted = %v, want the unrecorded deletion of keep.txt", cp["uncommitted"])
+	}
+	if !strings.Contains(left[0].(string), "deleted") {
+		t.Errorf("leftover %q does not say what happened to the file", left[0])
+	}
+	if note := field[string](t, cp, "note"); !strings.Contains(note, "rename") {
+		t.Errorf("note = %q; it should name the rename trap that caused this", note)
+	}
+
+	// Checkpointing the rest clears it — and a complete checkpoint says
+	// nothing about leftovers, so the note means something when it appears.
+	cp = asJSON(t, f.ok(t, "checkpoint", map[string]any{"message": "record the deletion"}))
+	if _, ok := cp["uncommitted"]; ok {
+		t.Errorf("a clean tree still reported leftovers: %v", cp)
+	}
+	if _, ok := cp["note"]; ok {
+		t.Errorf("a clean checkpoint carried a note: %v", cp)
+	}
+}
+
 func TestCheckpointFlow(t *testing.T) {
 	f := newFixture(t)
 	f.ok(t, "start_work", map[string]any{"name": "agent/flow"})

@@ -49,7 +49,9 @@ func (s *Server) registerRemoteTools() {
 		Name: "publish",
 		Description: "Push the line of work the archivist is ALREADY on — start_work creates one; this does not.  Records the " +
 			"upstream and flips the branch to published (after which restore and sync switch to forward motion).  Refused on " +
-			"the default branch, and on any branch outside the repository's agent namespace.  Audited.",
+			"the default branch, and on any branch outside the repository's agent namespace.  " +
+			"READ the advanced field: false means nothing new was pushed because the endpoint already had every checkpoint — " +
+			"if you expected to publish new work, it was never recorded.  Audited.",
 		InputSchema: &jsonschema.Schema{Type: "object", AdditionalProperties: mcpserve.NoExtras()},
 	}, s.publish)
 
@@ -151,7 +153,19 @@ func (s *Server) publish(ctx context.Context, _ *mcp.CallToolRequest, arc *archi
 	if err != nil {
 		return mcpserve.ErrResult(err.Error()), nil
 	}
-	return mcpserve.JSONResult(map[string]any{"branch": info.Branch, "endpoint": info.Endpoint, "published": true}), nil
+	out := map[string]any{
+		"branch": info.Branch, "endpoint": info.Endpoint, "published": true,
+		"advanced": info.Advanced,
+	}
+	if !info.Advanced {
+		// Not an error — the branch IS at the endpoint, which is what
+		// publish promises.  But "published" alone would read as "my new
+		// work is on the forge", and the agent has no way to look.  Say
+		// which of the two happened.
+		out["note"] = "nothing new was pushed: the endpoint already had every checkpoint on this branch.  " +
+			"If you expected to publish new work, it was never recorded — checkpoint first, then publish."
+	}
+	return mcpserve.JSONResult(out), nil
 }
 
 func (s *Server) propose(ctx context.Context, req *mcp.CallToolRequest, arc *archive.Archive, fc forge.Client) (*mcp.CallToolResult, error) {

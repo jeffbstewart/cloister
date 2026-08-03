@@ -123,6 +123,15 @@ func (a *Archive) RemoteInfo(ctx context.Context) (endpoint.Endpoint, string, er
 type PublishInfo struct {
 	Branch   string
 	Endpoint string // the endpoint name the branch went to
+	// Advanced reports whether the endpoint's branch actually MOVED —
+	// created, or carried new checkpoints.  False means the push was a
+	// no-op: everything local was already there.
+	//
+	// git push exits 0 for "Everything up-to-date", so without this the
+	// answer to "did my work reach the forge" is the same word whether
+	// it did or not.  The agent cannot see the endpoint, so that word is
+	// all it has (compare DeleteRemoteBranch's deleted, same reasoning).
+	Advanced bool
 }
 
 // Publish pushes the current line of work to its endpoint and records
@@ -160,11 +169,49 @@ func (a *Archive) Publish(ctx context.Context) (PublishInfo, error) {
 	if err != nil {
 		return PublishInfo{}, err
 	}
+	// Ask what the endpoint already has BEFORE pushing: afterwards the
+	// tracking ref has moved and the question is unanswerable.
+	advanced, err := a.wouldAdvance(ctx, branch)
+	if err != nil {
+		return PublishInfo{Branch: branch, Endpoint: ep.Name}, err
+	}
 	if _, err := a.run.outWith(ctx, o, "push", "-u", originRemote, branch); err != nil {
 		// The branch is known even on failure — the caller audits it.
 		return PublishInfo{Branch: branch, Endpoint: ep.Name}, err
 	}
-	return PublishInfo{Branch: branch, Endpoint: ep.Name}, nil
+	return PublishInfo{Branch: branch, Endpoint: ep.Name, Advanced: advanced}, nil
+}
+
+// wouldAdvance reports whether pushing branch would move the endpoint:
+// true when there is no upstream yet (the push creates it) or the local
+// tip differs from the tracking ref.
+//
+// Read from the tracking ref rather than parsing push output — the same
+// discipline as checkpoint's emptiness check, where "nothing changed" is
+// a typed answer and not a scraped git message.
+func (a *Archive) wouldAdvance(ctx context.Context, branch string) (bool, error) {
+	up, err := a.upstreamOf(ctx, branch)
+	if err != nil {
+		return false, err
+	}
+	if up == "" {
+		return true, nil // never published: the push creates it
+	}
+	local, err := a.run.out(ctx, "rev-parse", branch)
+	if err != nil {
+		return false, err
+	}
+	// A tracking ref can be configured but absent (the branch was
+	// deleted at the endpoint); exit != 0 means there is nothing there,
+	// so the push does move it.
+	remote, code, err := a.run.exit(ctx, "rev-parse", up)
+	if err != nil {
+		return false, err
+	}
+	if code != 0 {
+		return true, nil
+	}
+	return local != remote, nil
 }
 
 // DeleteRemoteBranch removes name's published counterpart — the remote,

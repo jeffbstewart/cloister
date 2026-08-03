@@ -236,6 +236,33 @@ dispose move the very state every agent verb reads, so an operator
 dispose can never interleave with an in-flight checkpoint.  Two
 registries, one server, one lock.
 
+### Say what you did NOT do
+
+The agent cannot see the endpoint.  Every answer it gets is the whole
+of its evidence, so a verb that reports the same thing whether it acted
+or not leaves the agent believing something false with no way to check.
+Two answers were shaped that way, and the first agent-authored pull
+request lost a rename through both of them at once:
+
+- **`checkpoint` reports what it left uncommitted.**  A rename is two
+  changes — the new path and the old one — so a checkpoint limited to
+  `paths` naming only the new file records half of it and leaves the
+  deletion in the tree.  That looks identical to a complete checkpoint
+  until the pull request turns out to be missing a file.  The answer now
+  lists the leftovers, and says nothing at all when the tree is clean, so
+  the note means something when it appears.
+- **`publish` reports whether the endpoint actually moved** (`advanced`).
+  `git push` exits 0 for "Everything up-to-date", so a push that carried
+  nothing answered exactly like one that carried the work.  Read from the
+  tracking ref before pushing, not scraped from push output — the same
+  discipline as checkpoint's typed `ErrNoChanges`.
+
+The in-repo precedent is `DeleteRemoteBranch`'s `deleted bool`, which
+exists so "a branch that was never published has no counterpart" is
+reported rather than glossed as success.  New verbs should assume the
+same: **if the answer would be identical in the success and the no-op
+case, it is not an answer.**
+
 ## Hardened git execution
 
 The archivist drives the real git binary — but never with ambient trust:
