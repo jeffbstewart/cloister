@@ -20,49 +20,54 @@ import (
 	"testing"
 )
 
-// fakeGit answers the one question classification asks the repository.
-type fakeGit struct{ branches map[string]bool }
-
-func (f *fakeGit) branchExists(name string) bool { return f.branches[name] }
-
-func withBranches(names ...string) *fakeGit {
-	b := map[string]bool{}
-	for _, n := range names {
-		b[n] = true
-	}
-	return &fakeGit{branches: b}
+// allowed asserts a command runs the real git.
+func allowed(t *testing.T, argv ...string) {
+	t.Helper()
+	t.Run(strings.Join(argv, " "), func(t *testing.T) {
+		if p := classify(argv); p.verdict != pass {
+			t.Errorf("got %v (%s), want pass", p.verdict, p.reason)
+		}
+	})
 }
 
-func plan_(t *testing.T, q gitQuery, argv ...string) plan {
+// denied asserts a command is refused, and that the refusal says
+// something.  want, if non-empty, must appear in the reason.
+func denied(t *testing.T, want string, argv ...string) {
 	t.Helper()
-	return classify(argv, q)
+	t.Run(strings.Join(argv, " "), func(t *testing.T) {
+		p := classify(argv)
+		if p.verdict != refuse {
+			t.Fatalf("got %v, want refuse", p.verdict)
+		}
+		if p.reason == "" {
+			t.Fatal("refused with no reason")
+		}
+		if want != "" && !strings.Contains(p.reason, want) {
+			t.Errorf("reason %q does not mention %q", p.reason, want)
+		}
+	})
 }
 
 func TestReadsPassThrough(t *testing.T) {
-	q := withBranches()
 	for _, argv := range [][]string{
 		{"log", "--oneline", "-20"},
 		{"log", "-p", "--", "src/main.go"},
 		{"show", "HEAD~3"},
 		{"diff", "HEAD"},
+		{"diff", "--stat", "main...HEAD"},
 		{"blame", "README.md"},
 		{"grep", "-n", "TODO"},
 		{"status", "--porcelain"},
 		{"rev-parse", "HEAD"},
 		{"describe", "--tags"},
 		{"ls-files"},
-		{"stash", "list"},
-		{"branch", "--list"},
-		{"reflog"},
-		{"reflog", "show"},
-		// Worktree-only: the next checkpoint records the tree anyway.
-		{"mv", "a.txt", "b.txt"},
-		{"clean", "-fd"},
-		{"rm", "old.txt"},
+		{"ls-tree", "-r", "HEAD"},
+		{"merge-base", "main", "HEAD"},
+		{"cherry", "-v"},
+		{"shortlog", "-sn"},
+		{"for-each-ref", "refs/heads"},
 	} {
-		if p := plan_(t, q, argv...); p.verdict != pass {
-			t.Errorf("git %s = verdict %v (%s), want pass", strings.Join(argv, " "), p.verdict, p.reason)
-		}
+		allowed(t, argv...)
 	}
 }
 
@@ -71,247 +76,286 @@ func TestReadsPassThrough(t *testing.T) {
 // shell out to git on every build; a proxy that refused these would
 // break builds rather than merely annoy the agent.
 func TestToolchainReadsPassThrough(t *testing.T) {
-	q := withBranches()
 	for _, argv := range [][]string{
-		{"status", "--porcelain"},                   // go: is the tree dirty
-		{"rev-parse", "HEAD"},                       // go: the stamped revision
-		{"show", "-s", "--format=%ct", "HEAD"},      // go: commit time
-		{"describe", "--tags", "--always"},          // gradle version plugins
-		{"rev-parse", "--show-toplevel"},            // "am I in a repo"
-		{"-C", "/grange/tree", "rev-parse", "HEAD"}, // with a global option
+		{"status", "--porcelain"},
+		{"rev-parse", "HEAD"},
+		{"rev-parse", "--show-toplevel"},
+		{"describe", "--tags", "--always"},
+		{"-C", "/grange/tree", "rev-parse", "HEAD"},
+		// Go's buildvcs stamping, verbatim.
+		{"-c", "log.showsignature=false", "log", "-1", "--format=%H:%ct"},
+		// Build-scan and release tooling reach for these constantly.
+		{"config", "--get", "remote.origin.url"},
+		// The BARE read form, which is what Go's -buildvcs stamping
+		// actually runs (cmd/go/internal/vcs.gitRemoteRepo).  Observed,
+		// not transcribed: an earlier version of classifyConfig allowed
+		// only the --get spelling and broke every Go build in the cell.
+		{"config", "remote.origin.url"},
+		{"config", "user.name"},
+		{"config", "--local", "remote.origin.url"},
+		{"remote", "-v"},
+		{"remote", "get-url", "origin"},
+		{"branch", "--show-current"},
 	} {
-		if p := plan_(t, q, argv...); p.verdict != pass {
-			t.Errorf("toolchain call git %s = %v (%s), want pass", strings.Join(argv, " "), p.verdict, p.reason)
-		}
+		allowed(t, argv...)
 	}
 }
 
-func TestCommitTranslatesToCheckpoint(t *testing.T) {
-	q := withBranches()
-	p := plan_(t, q, "commit", "-m", "add the parser")
-	if p.verdict != translate || p.verb != "checkpoint" {
-		t.Fatalf("commit = %v/%s, want translate to checkpoint", p.verdict, p.verb)
-	}
-	if p.args["message"] != "add the parser" {
-		t.Errorf("message = %v", p.args["message"])
-	}
-	if _, ok := p.args["paths"]; ok {
-		t.Errorf("a whole-tree commit should not pass paths: %v", p.args)
-	}
-
-	// The message spellings git accepts.
+// TestReadFormsOfSplitCommands: several commands are worth having for
+// their read forms alone, and each must not carry its write forms in
+// with it.
+func TestReadFormsOfSplitCommands(t *testing.T) {
 	for _, argv := range [][]string{
-		{"commit", "-madhoc"},
-		{"commit", "--message=adhoc"},
-		{"commit", "--message", "adhoc"},
-		{"commit", "-a", "-m", "adhoc"}, // -a is a no-op: the tree is recorded regardless
+		{"branch"}, {"branch", "-a"}, {"branch", "-vv"}, {"branch", "--merged"},
+		{"config", "--list"}, {"config", "--get-regexp", "^remote"},
+		{"remote"}, {"remote", "show"},
+		{"stash", "list"}, {"stash", "show"},
+		{"reflog"}, {"reflog", "show"},
+		{"symbolic-ref", "--short", "HEAD"},
+		{"worktree", "list"}, {"submodule", "status"}, {"notes", "list"},
 	} {
-		p := plan_(t, q, argv...)
-		if p.verdict != translate || p.args["message"] != "adhoc" {
-			t.Errorf("git %s = %v, message %v", strings.Join(argv, " "), p.verdict, p.args["message"])
-		}
+		allowed(t, argv...)
 	}
-}
-
-func TestCommitPathsSurvive(t *testing.T) {
-	p := plan_(t, withBranches(), "commit", "-m", "partial", "--", "a.txt", "b.txt")
-	if p.verdict != translate {
-		t.Fatalf("verdict = %v", p.verdict)
-	}
-	paths, _ := p.args["paths"].([]string)
-	if len(paths) != 2 || paths[0] != "a.txt" || paths[1] != "b.txt" {
-		t.Errorf("paths = %v", p.args["paths"])
-	}
-}
-
-// TestUnknownFlagsRefuseRatherThanDrop is the strictness rule.  A
-// dropped flag turns the agent's request into a different request and
-// reports success for it — the exact failure the proxy exists to stop.
-func TestUnknownFlagsRefuseRatherThanDrop(t *testing.T) {
-	q := withBranches("agent/x")
-	for _, argv := range [][]string{
-		{"commit", "-m", "msg", "--author=someone@example.com"},
-		{"commit", "-m", "msg", "--date=2020-01-01"},
-		{"commit", "-m", "msg", "-S"},
-		{"commit", "--amend", "--no-edit"},
-		{"push", "--force"},
-		{"push", "--delete", "agent/x"},
-		{"push", "origin", "HEAD:refs/heads/other"},
-		{"checkout", "--orphan", "thing"},
-		{"branch", "--set-upstream-to=origin/main"},
-	} {
-		p := plan_(t, q, argv...)
-		if p.verdict != refuse {
-			t.Errorf("git %s = %v, want refuse (a flag we cannot honour must not be dropped)", strings.Join(argv, " "), p.verdict)
-		}
-		if p.reason == "" {
-			t.Errorf("git %s refused with no reason", strings.Join(argv, " "))
-		}
-	}
-}
-
-func TestCommitWithoutAMessageRefuses(t *testing.T) {
-	p := plan_(t, withBranches(), "commit")
-	if p.verdict != refuse || !strings.Contains(p.reason, "message") {
-		t.Errorf("bare commit = %v (%s), want a refusal naming the missing message", p.verdict, p.reason)
-	}
-}
-
-func TestPushTranslatesToPublish(t *testing.T) {
-	q := withBranches("agent/x")
-	for _, argv := range [][]string{
-		{"push"},
-		{"push", "origin"},
-		{"push", "-u", "origin", "agent/x"},
-	} {
-		p := plan_(t, q, argv...)
-		if p.verdict != translate || p.verb != "publish" {
-			t.Errorf("git %s = %v/%s, want translate to publish", strings.Join(argv, " "), p.verdict, p.verb)
-		}
-	}
-}
-
-// TestCheckoutIsBranchOrPathDependingOnTheRepository: `git checkout X`
-// is genuinely ambiguous, and only the repository can say which it is.
-func TestCheckoutIsBranchOrPathDependingOnTheRepository(t *testing.T) {
-	q := withBranches("agent/existing", "main")
-
-	if p := plan_(t, q, "checkout", "agent/existing"); p.verdict != translate || p.verb != "switch_work" {
-		t.Errorf("checkout of a real branch = %v/%s, want switch_work", p.verdict, p.verb)
-	}
-	if p := plan_(t, q, "switch", "main"); p.verdict != translate || p.verb != "switch_work" {
-		t.Errorf("switch to a real branch = %v/%s", p.verdict, p.verb)
-	}
-	if p := plan_(t, q, "checkout", "-b", "agent/fresh"); p.verdict != translate || p.verb != "start_work" {
-		t.Errorf("checkout -b = %v/%s, want start_work", p.verdict, p.verb)
-	} else if p.args["name"] != "agent/fresh" {
-		t.Errorf("name = %v", p.args["name"])
-	}
-	if p := plan_(t, q, "checkout", "--", "README.md"); p.verdict != translate || p.verb != "restore" {
-		t.Errorf("checkout -- path = %v/%s, want restore", p.verdict, p.verb)
-	}
-	// Neither a branch nor an explicit path: refuse rather than guess.
-	if p := plan_(t, q, "checkout", "nonesuch"); p.verdict != refuse {
-		t.Errorf("checkout of an unknown ref = %v, want refuse", p.verdict)
-	}
-}
-
-func TestStashAndRestore(t *testing.T) {
-	q := withBranches()
 	for _, tc := range []struct {
+		want string
 		argv []string
-		verb string
 	}{
-		{[]string{"stash"}, "set_aside"},
-		{[]string{"stash", "push"}, "set_aside"},
-		{[]string{"stash", "pop"}, "resume"},
-		{[]string{"restore", "README.md"}, "restore"},
-		{[]string{"branch", "-D", "agent/dead"}, "abandon_work"},
-		{[]string{"pull"}, "sync_from_upstream"},
-		{[]string{"merge", "origin/main"}, "sync_from_upstream"},
+		{"start_work", []string{"branch", "newthing"}},
+		{"abandon_work", []string{"branch", "-D", "agent/x"}},
+		{"switch_work", []string{"branch", "-m", "old", "new"}},
+		{"provision", []string{"config", "user.email", "x@y.z"}},
+		{"changes configuration", []string{"config", "--unset", "user.email"}},
+		{"changes configuration", []string{"config", "--add", "remote.origin.url", "x"}},
+		{"changes configuration", []string{"config", "--global", "--replace-all", "core.pager", "sh"}},
+		{"endpoint table", []string{"remote", "add", "other", "https://example.com"}},
+		{"set_aside", []string{"stash"}},
+		{"resume", []string{"stash", "pop"}},
+		{"maintenance", []string{"reflog", "expire", "--all"}},
+		{"archivist", []string{"symbolic-ref", "HEAD", "refs/heads/other"}},
+		{"grange", []string{"worktree", "add", "/tmp/wt"}},
+		{"", []string{"submodule", "update", "--init"}},
+		{"", []string{"notes", "add", "-m", "x"}},
+		{"publish", []string{"bundle", "create", "out.bundle", "HEAD"}},
 	} {
-		p := plan_(t, q, tc.argv...)
-		if p.verdict != translate || p.verb != tc.verb {
-			t.Errorf("git %s = %v/%s, want %s", strings.Join(tc.argv, " "), p.verdict, p.verb, tc.verb)
-		}
+		denied(t, tc.want, tc.argv...)
 	}
 }
 
-// TestRefusalsNameTheAlternative: a refusal that only says no teaches
-// nothing.  Each one has to leave the reader knowing what to do next.
-func TestRefusalsNameTheAlternative(t *testing.T) {
-	q := withBranches()
+// TestEveryMutatingCommandIsRefused is the safety property in one
+// place.  These are the commands whose translation was removed; each
+// must now refuse and name the tool that replaces it.
+func TestEveryMutatingCommandIsRefused(t *testing.T) {
 	for _, tc := range []struct {
+		want string
 		argv []string
-		want string // a word the reason must contain
 	}{
-		{[]string{"add", "."}, "checkpoint"},
-		{[]string{"rebase", "-i", "HEAD~3"}, "append-only"},
-		{[]string{"reset", "--hard", "HEAD~1"}, "restore"},
-		{[]string{"revert", "HEAD"}, "restore"},
-		{[]string{"fetch"}, "sync_from_upstream"},
-		{[]string{"remote", "add", "other", "https://example.com"}, "endpoint"},
-		{[]string{"tag", "v1.0"}, "release"},
-		{[]string{"rm", "--cached", "a.txt"}, "staging"},
-		{[]string{"clone", "https://example.com/x"}, "provisioned"},
-		{[]string{"config", "user.email", "x@y.z"}, "provision"},
+		{"checkpoint", []string{"commit", "-m", "add the parser"}},
+		{"checkpoint", []string{"commit", "-am", "add the parser"}},
+		{"checkpoint", []string{"commit", "--amend"}},
+		{"publish", []string{"push"}},
+		{"publish", []string{"push", "-u", "origin", "agent/x"}},
+		{"publish", []string{"push", "--force"}},
+		{"start_work", []string{"checkout", "-b", "agent/x"}},
+		{"switch_work", []string{"checkout", "main"}},
+		{"restore", []string{"checkout", "--", "README.md"}},
+		{"restore", []string{"checkout", "main", "--", "README.md"}},
+		{"start_work", []string{"switch", "-c", "agent/x"}},
+		{"restore", []string{"restore", "a.txt", "b.txt"}},
+		{"sync_from_upstream", []string{"pull"}},
+		{"sync_from_upstream", []string{"merge", "origin/main"}},
+		{"sync_from_upstream", []string{"merge", "some-feature"}},
+		{"restore", []string{"reset", "--hard", "HEAD~1"}},
+		{"append-only", []string{"rebase", "-i", "HEAD~3"}},
+		{"checkpoint", []string{"cherry-pick", "abc123"}},
+		{"restore", []string{"revert", "HEAD"}},
+		{"checkpoint", []string{"add", "."}},
+		{"rm", []string{"rm", "old.txt"}},
+		{"mv", []string{"mv", "a.txt", "b.txt"}},
+		{"rm", []string{"clean", "-fd"}},
+		{"release", []string{"tag", "v1.0"}},
+		{"sync_from_upstream", []string{"fetch"}},
+		{"provisioned", []string{"clone", "https://example.com/x"}},
 	} {
-		p := plan_(t, q, tc.argv...)
-		if p.verdict != refuse {
-			t.Fatalf("git %s = %v, want refuse", strings.Join(tc.argv, " "), p.verdict)
-		}
-		if !strings.Contains(p.reason, tc.want) {
-			t.Errorf("git %s refusal %q does not mention %q", strings.Join(tc.argv, " "), p.reason, tc.want)
-		}
+		denied(t, tc.want, tc.argv...)
 	}
 }
 
-// TestVerbsAreNamedAsArchivistToolsNotShellCommands: a bare `checkpoint`
-// in a refusal reads like a git subcommand that happens not to exist
-// yet, and the reader's next move is to try spelling it differently.
-// Every mention has to say it is an MCP tool call on the archivist.
+// TestNoDropSemantics: the invocations that USED to translate into
+// something subtly different.  Each is now a refusal, which is the
+// whole reason translation was removed — a refusal cannot silently do
+// the wrong thing.
+func TestNoDropSemantics(t *testing.T) {
+	for _, argv := range [][]string{
+		{"checkout", "main", "--", "config.go"},       // once became switch_work(main)
+		{"commit", "-m", "title", "-m", "body"},       // once dropped the subject
+		{"restore", "a.txt", "b.txt"},                 // once restored only a.txt
+		{"checkout", "--", "a.txt", "b.txt"},          // likewise
+		{"branch", "-d", "one", "two"},                // once deleted only "two"
+		{"checkout", "-b", "agent/x", "main"},         // once ignored the start point
+		{"push", "origin", "some-other-branch"},       // once published the current branch
+		{"merge", "some-feature"},                     // once synced the default branch
+		{"stash", "push", "-m", "wip", "--", "a.txt"}, // once parked the whole tree
+		{"stash", "pop", "stash@{2}"},                 // once popped the newest
+		{"stash", "apply"},                            // once consumed the parcel
+	} {
+		denied(t, "", argv...)
+	}
+}
+
+// TestGlobalOptionsCannotSmuggleASubcommand is the highest-severity
+// case found in review: subcommand parsing used to skip any leading
+// flag it did not recognize, so the VALUE of a value-taking global
+// option landed in the subcommand slot.  `git --namespace log commit
+// -am x` classified as `log`, passed as a read, and performed a real
+// commit that nothing logged.
+func TestGlobalOptionsCannotSmuggleASubcommand(t *testing.T) {
+	for _, argv := range [][]string{
+		{"--namespace", "log", "commit", "-am", "sneak"},
+		{"--git-dir", "log", "commit", "-m", "sneak"},
+		{"--work-tree", "status", "commit", "-m", "sneak"},
+		{"--config-env", "log", "push"},
+		{"--super-prefix", "log", "commit", "-m", "x"},
+		{"--exec-path=/tmp", "push"},
+		{"--git-dir=/x/y", "commit", "-m", "x"},
+		{"--help", "push"},  // --help was skipped; push then translated
+		{"--help", "stash"}, // …and this parked the tree
+		{"--help", "pull"},
+	} {
+		denied(t, "", argv...)
+	}
+	// The globals that ARE understood keep working.
+	allowed(t, "-C", "/grange/tree", "status")
+	allowed(t, "-C/grange/tree", "status")
+	allowed(t, "--no-pager", "log")
+	allowed(t, "-p", "log")
+	allowed(t, "--literal-pathspecs", "grep", "x")
+	// A global option with no subcommand at all is git's own usage text.
+	allowed(t, "--version")
+	allowed(t)
+}
+
+// TestConfigCannotSmuggleExecution: `-c core.pager=…` turns any read
+// into arbitrary execution wearing git's name.  The agent already has a
+// shell, so this is about CONCEALMENT — a command that runs should look
+// like what it is in the transcript.
+func TestConfigCannotSmuggleExecution(t *testing.T) {
+	for _, argv := range [][]string{
+		{"-c", "core.pager=sh -c 'curl evil'", "log"},
+		{"-c", "core.editor=vim", "log"},
+		{"-c", "diff.external=/bin/sh", "diff"},
+		{"-c", "core.sshCommand=/bin/sh", "log"},
+		{"-c", "alias.x=!sh", "log"},
+		{"-c", "credential.helper=/bin/sh", "log"},
+		{"-ccore.pager=sh", "log"},     // attached form
+		{"-c", "CORE.PAGER=sh", "log"}, // case-insensitive, as git config is
+	} {
+		denied(t, "", argv...)
+	}
+	// Innocuous config still passes — the toolchains depend on it.
+	allowed(t, "-c", "log.showsignature=false", "log")
+	allowed(t, "-c", "core.quotepath=false", "status")
+}
+
+// TestReadsCannotWriteOrExecuteViaFlags: several allow-listed reads
+// accept a flag that writes a file or runs a program.  The allow-list
+// is the entire safety property now, so these must not ride in on it.
+func TestReadsCannotWriteOrExecuteViaFlags(t *testing.T) {
+	for _, argv := range [][]string{
+		{"log", "-1", "--output=.git/HEAD"},
+		{"diff", "--output=OUT.txt"},
+		{"show", "--output", "x"},
+		{"grep", "-Osh", "TODO"},
+		{"grep", "--open-files-in-pager", "TODO"},
+		{"diff", "--ext-diff"},
+	} {
+		denied(t, "", argv...)
+	}
+}
+
+// TestUnknownCommandRefuses: an unrecognized command is refused without
+// being examined, which is the point — a git version that adds a
+// command fails closed rather than through.
+func TestUnknownCommandRefuses(t *testing.T) {
+	denied(t, "read-only list", "nosuchcommand")
+	denied(t, "read-only list", "maintenance", "run")
+	denied(t, "read-only list", "format-patch", "-1")
+	denied(t, "read-only list", "range-diff", "main...HEAD")
+}
+
+// TestVerbsAreNamedAsArchivistToolsNotShellCommands: a bare
+// `checkpoint` in a refusal reads like a git subcommand that happens
+// not to exist yet, and the reader's next move is to try spelling it
+// differently.  Every mention has to say it is an MCP tool call.
 func TestVerbsAreNamedAsArchivistToolsNotShellCommands(t *testing.T) {
-	q := withBranches("agent/x", "main")
+	// Several tool names are also ordinary nouns in this domain —
+	// "the archivist's history is append-only", "a checkpoint to roll
+	// back to" — so a bare word-boundary match cannot tell a reference
+	// from prose.  What it CAN tell, and what the original defect
+	// actually looked like, is a verb offered to the reader as a thing
+	// to invoke: backticked, or the object of "call"/"use".  Those must
+	// carry the tool() form; the same word used as English is fine.
 	verbs := []string{
 		"checkpoint", "publish", "start_work", "switch_work", "abandon_work",
-		"restore", "set_aside", "resume", "sync_from_upstream", "history", "show_change",
+		"restore", "set_aside", "resume", "sync_from_upstream", "history",
+		"show_change", "current_state",
 	}
-	// Every refusal the proxy can produce, including the whole static table.
+	res := make(map[string]*regexp.Regexp, len(verbs))
+	for _, v := range verbs {
+		res[v] = regexp.MustCompile("(`" + v + "`|\\b(?:call|calls|calling|use|uses|using)\\s+" + v + "\\b)")
+	}
+
 	var reasons []string
 	for _, why := range refusals {
 		reasons = append(reasons, why)
 	}
 	for _, argv := range [][]string{
-		{"commit"}, {"commit", "-m", "x", "-S"}, {"commit", "--amend"},
-		{"push", "--force"}, {"push", "origin", "a:b"},
-		{"checkout", "--orphan", "x"}, {"checkout", "nonesuch"}, {"checkout"},
-		{"branch", "newthing"}, {"branch", "--set-upstream-to=origin/main"},
-		{"stash", "drop"}, {"restore", "--staged"}, {"pull", "--depth=1"},
-		{"rm", "--cached", "a.txt"}, {"nosuchcommand"},
+		{"commit", "-m", "x"}, {"push"}, {"checkout", "main"}, {"switch", "x"},
+		{"branch", "newthing"}, {"branch", "-D", "x"}, {"config", "a", "b"},
+		{"remote", "add", "x", "y"}, {"stash"}, {"stash", "pop"},
+		{"reflog", "expire"}, {"symbolic-ref", "HEAD", "x"}, {"worktree", "add", "x"},
+		{"bundle", "create", "x"}, {"nosuchcommand"}, {"--badflag", "log"},
+		{"log", "--output=x"}, {"-c", "core.pager=sh", "log"},
 	} {
-		if p := classify(argv, q); p.verdict == refuse {
+		if p := classify(argv); p.verdict == refuse {
 			reasons = append(reasons, p.reason)
 		}
 	}
 
 	for _, reason := range reasons {
-		for _, v := range verbs {
-			// Word-bounded: "published work must not change" is English,
-			// not a reference to the publish() tool.
-			if !regexp.MustCompile(`\b` + v + `\b`).MatchString(reason) {
-				continue
-			}
-			// The verb appears; it must be marked as a tool — either by
-			// the tool() form, or by naming the tools collectively.
-			marked := strings.Contains(reason, v+"()") || strings.Contains(reason, "MCP tool")
-			if !marked {
-				t.Errorf("refusal names %q without saying it is an archivist MCP tool:\n  %s", v, reason)
+		for v, re := range res {
+			if m := re.FindString(reason); m != "" && !strings.Contains(m, v+"()") {
+				t.Errorf("refusal offers %q as something to invoke, without the tool() form:\n  in: %s\n  saw: %s", v, reason, m)
 			}
 		}
 	}
 }
 
-// TestUnknownCommandRefuses: an unrecognized command is a loud error we
-// see in the log immediately, not a silent bypass.
-func TestUnknownCommandRefuses(t *testing.T) {
-	p := plan_(t, withBranches(), "cherry", "-v")
-	if p.verdict != refuse || !strings.Contains(p.reason, "operator") {
-		t.Errorf("unknown command = %v (%s), want a refusal pointing at the operator", p.verdict, p.reason)
+// TestEveryRefusalSaysSomething: a refusal with an empty reason is a
+// dead end for the reader.  Sweep the whole static table.
+func TestEveryRefusalSaysSomething(t *testing.T) {
+	for cmd, why := range refusals {
+		if strings.TrimSpace(why) == "" {
+			t.Errorf("%s refuses with no reason", cmd)
+		}
 	}
 }
 
-// TestGlobalOptionsDoNotSwallowTheSubcommand: `git -c k=v commit` must
-// still be seen as commit.  Skipping a value-taking flag wrongly is how
-// a mutating command sneaks past as something else.
-func TestGlobalOptionsDoNotSwallowTheSubcommand(t *testing.T) {
-	q := withBranches()
-	if p := plan_(t, q, "-C", "/grange/tree", "commit", "-m", "x"); p.verdict != translate || p.verb != "checkpoint" {
-		t.Errorf("-C then commit = %v/%s", p.verdict, p.verb)
-	}
-	if p := plan_(t, q, "-c", "user.name=x", "commit", "-m", "x"); p.verdict != translate || p.verb != "checkpoint" {
-		t.Errorf("-c then commit = %v/%s", p.verdict, p.verb)
-	}
-	if p := plan_(t, q, "--no-pager", "log"); p.verdict != pass {
-		t.Errorf("--no-pager then log = %v, want pass", p.verdict)
+// TestPassRequiresAKnownRead is the structural guard: nothing reaches
+// pass except through the read allow-list or a split command's read
+// form.  It is the invariant the whole design now rests on, so it is
+// asserted directly rather than inferred from the cases above.
+func TestPassRequiresAKnownRead(t *testing.T) {
+	for _, argv := range [][]string{
+		{"commit", "-m", "x"}, {"push"}, {"merge", "x"}, {"rebase"},
+		{"--namespace", "log", "commit"}, {"-c", "core.pager=sh", "log"},
+		{"log", "--output=x"}, {"branch", "x"}, {"config", "a", "b"},
+		{"stash"}, {"rm", "x"}, {"mv", "a", "b"}, {"clean", "-f"},
+		{"nosuchcommand"}, {"checkout", "main", "--", "f"},
+	} {
+		if p := classify(argv); p.verdict == pass {
+			sub, _, _ := subcommand(argv)
+			t.Errorf("git %s passed; resolved subcommand %q, reads[%q]=%v",
+				strings.Join(argv, " "), sub, sub, reads[sub])
+		}
 	}
 }

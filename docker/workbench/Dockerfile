@@ -38,6 +38,12 @@ FROM ${RUST_IMAGE} AS rust-donor
 FROM ${JDK_IMAGE} AS jdk-donor
 FROM ${NODE_IMAGE} AS node-donor
 
+# This line is also the git VERSION PIN.  Debian does not rebase git's
+# minor version within a suite, so bookworm holds git at 2.39.x — which
+# is the version cmd/git-proxy's read-only allow-list was reviewed
+# against.  Changing the suite changes git, so re-read that allow-list
+# when you do; TestPorcelainCoverage (cmd/git-proxy) will name any new
+# commands, and it runs against whatever git CI has.
 FROM debian:bookworm-slim
 
 # git is the agent's own (grange.md "Local git is the agent's": hooks and
@@ -246,12 +252,7 @@ COPY cloister-git-proxy /usr/local/bin/cloister-git-proxy
 RUN mkdir -p /usr/lib/cloister/libexec \
     && mv /usr/bin/git /usr/lib/cloister/libexec/gx \
     && mv /usr/local/bin/cloister-git-proxy /usr/bin/git \
-    && chmod 0755 /usr/bin/git /usr/lib/cloister/libexec/gx \
-    # Fail the build if the proxy is not what `git` resolves to, or if
-    # the real binary did not survive the move.  A silently-unproxied
-    # cell would look identical from outside.
-    && [ "$(command -v git)" = /usr/bin/git ] \
-    && /usr/lib/cloister/libexec/gx --version > /dev/null
+    && chmod 0755 /usr/bin/git /usr/lib/cloister/libexec/gx
 
 # The how-do-I-drive-this banner.  /etc/motd alone only greets PAM
 # LOGIN shells, and a `docker exec -it ... bash` is not one — so the
@@ -273,6 +274,14 @@ cloister workbench — jailed agent cell
                ~/.qwen/QWEN.md.
   offline      no internet by design; package registries refuse.
                Missing dependencies go through the operator airlock.
+  git          only read-only git commands run in here; anything that
+               changes the repository is refused and points the agent at
+               the archivist's MCP tools (docs/git-proxy.md).  Refusals
+               land in ~agent/.cloister/git-proxy.log — read it to see
+               what the agent reached for and could not have.  To stand
+               the proxy down for a build that needs a refused command:
+                 docker exec -u 0 <project>-agent \
+                   sh -c 'mkdir -p /etc/cloister && touch /etc/cloister/git-passthrough'
 
 EOF
 RUN cat <<'EOF' >> /etc/bash.bashrc
@@ -283,6 +292,35 @@ if [ -n "$PS1" ] && [ -t 1 ] && [ -z "${TMUX:-}" ] && [ -z "${CLOISTER_BANNER:-}
     cat /etc/motd
 fi
 EOF
+
+# The git-proxy install check, LAST so no later layer can undo it.  It
+# asserts the proxy is what `git` resolves to — by asking it a question
+# only the proxy answers — and that the real binary still runs.  Both
+# halves matter: `git version` passes straight through to the real
+# binary, so it proves nothing about which program is installed, and an
+# `apt-get install --reinstall git` in a later layer would satisfy any
+# check that only tested for a working `git`.  A silently-unproxied cell
+# would look identical from outside.
+RUN git --cloister-proxy-version > /dev/null \
+    && /usr/lib/cloister/libexec/gx --version \
+    && [ "$(command -v git)" = /usr/bin/git ] \
+    # And a real toolchain through the real proxy.  Go's -buildvcs
+    # stamping shells out to git on every build, and the tests that
+    # assert those calls pass were written by READING what Go does —
+    # transcription, not observation.  This builds an actual module in
+    # an actual repository, so a proxy that refused one of those calls
+    # fails the image build instead of the operator's first task.
+    && set -eux \
+    && d=$(mktemp -d) && cd "$d" \
+    && /usr/lib/cloister/libexec/gx init -q -b main . \
+    && /usr/lib/cloister/libexec/gx config user.email smoke@cloister.invalid \
+    && /usr/lib/cloister/libexec/gx config user.name smoke \
+    && printf 'module smoke\n\ngo 1.25\n' > go.mod \
+    && printf 'package main\nfunc main() {}\n' > main.go \
+    && /usr/lib/cloister/libexec/gx add -A \
+    && /usr/lib/cloister/libexec/gx commit -qm smoke \
+    && GOFLAGS=-buildvcs=true GOPROXY=off go build -o /dev/null ./... \
+    && cd / && rm -rf "$d"
 
 USER agent
 ENV HOME=/home/agent

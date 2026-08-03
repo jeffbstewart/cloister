@@ -31,6 +31,7 @@ import (
 	"github.com/jeffbstewart/cloister/internal/forge"
 	"github.com/jeffbstewart/cloister/internal/mcpserve"
 	"github.com/jeffbstewart/cloister/internal/runid"
+	"github.com/jeffbstewart/cloister/internal/verbs"
 )
 
 // The remote verbs: audited, ungated (docs/archivist.md).  Every
@@ -46,7 +47,7 @@ func (s *Server) registerRemoteTools() {
 	// endpoint's forge client, which is why they register with addForge.
 	// All refuse cleanly until a workspace is provisioned.
 	s.addArc(&mcp.Tool{
-		Name: "publish",
+		Name: verbs.Publish,
 		Description: "Push the line of work the archivist is ALREADY on — start_work creates one; this does not.  Records the " +
 			"upstream and flips the branch to published (after which restore and sync switch to forward motion).  Refused on " +
 			"the default branch, and on any branch outside the repository's agent namespace.  " +
@@ -56,7 +57,7 @@ func (s *Server) registerRemoteTools() {
 	}, s.publish)
 
 	s.addForge(&mcp.Tool{
-		Name: "propose",
+		Name: verbs.Propose,
 		Description: "Open the pull request for the current published branch — or update its title and body when one is already open.  " +
 			"publish first; the PR's base is the default branch.  Audited.",
 		InputSchema: &jsonschema.Schema{
@@ -71,7 +72,7 @@ func (s *Server) registerRemoteTools() {
 	}, s.propose)
 
 	s.addForge(&mcp.Tool{
-		Name: "check_progress",
+		Name: verbs.CheckProgress,
 		Description: "A pull request's state and CI check results — the current branch's PR by default, or an explicit number " +
 			"(the corrector reviews PRs it did not author).  Audited.",
 		InputSchema: &jsonschema.Schema{
@@ -84,7 +85,7 @@ func (s *Server) registerRemoteTools() {
 	}, s.checkProgress)
 
 	s.addForge(&mcp.Tool{
-		Name: "read_reviews",
+		Name: verbs.ReadReviews,
 		Description: "A pull request's reviews, review-thread comments, and full diff — the current branch's PR by default, or an " +
 			"explicit number (the corrector reviews PRs it did not author).  The diff is always included; diff_truncated marks a capped one.  Audited.",
 		InputSchema: &jsonschema.Schema{
@@ -97,7 +98,7 @@ func (s *Server) registerRemoteTools() {
 	}, s.readReviews)
 
 	s.addForge(&mcp.Tool{
-		Name: "reply_to_review",
+		Name: verbs.ReplyToReview,
 		Description: "Respond on a review thread — thread is the id of ANY comment in it (from read_reviews); the reply is " +
 			"attached to the thread's root automatically.  pr defaults to the current branch's open PR.  Audited.",
 		InputSchema: &jsonschema.Schema{

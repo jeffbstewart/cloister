@@ -27,6 +27,7 @@ import (
 	"github.com/jeffbstewart/cloister/internal/endpoint"
 	"github.com/jeffbstewart/cloister/internal/mcpserve"
 	"github.com/jeffbstewart/cloister/internal/runid"
+	"github.com/jeffbstewart/cloister/internal/verbs"
 )
 
 // The grange lifecycle verbs (docs/archivist.md, "Grange lifecycle"): the
@@ -42,7 +43,7 @@ import (
 
 func (s *Server) registerLifecycleTools() {
 	s.addOperator(&mcp.Tool{
-		Name: "provision",
+		Name: verbs.Provision,
 		Description: "Bring an EMPTY workspace into being: clone the repository through its endpoint, verify its forge protections meet grange service " +
 			"(refusing and naming the failing requirement otherwise), check out a line of work, and record provenance.  " +
 			"Refused unless the workspace is empty.  Audited.",
@@ -58,7 +59,7 @@ func (s *Server) registerLifecycleTools() {
 	}, s.provision)
 
 	s.addOperator(&mcp.Tool{
-		Name: "dispose",
+		Name: verbs.Dispose,
 		Description: "Return the workspace to EMPTY.  Refuses while unpublished work exists — a dirty tree, checkpoints not yet at the endpoint, or set-aside parcels — " +
 			"unless force is set, and refuses any workspace with no provenance marker regardless of force.  Audited.",
 		InputSchema: &jsonschema.Schema{
@@ -71,7 +72,7 @@ func (s *Server) registerLifecycleTools() {
 	}, s.dispose)
 
 	s.addOperator(&mcp.Tool{
-		Name: "workspace_state",
+		Name: verbs.WorkspaceState,
 		Description: "Report the workspace's disk-derived condition — empty, provisioned (with the repository and line of work behind it), or corrupt — " +
 			"so the session manager knows which lifecycle move is available.  Never acts.",
 		InputSchema: &jsonschema.Schema{

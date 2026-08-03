@@ -37,6 +37,7 @@ import (
 	"github.com/jeffbstewart/cloister/internal/codename"
 	"github.com/jeffbstewart/cloister/internal/forge"
 	"github.com/jeffbstewart/cloister/internal/mcpserve"
+	"github.com/jeffbstewart/cloister/internal/verbs"
 )
 
 // Result caps: the consumer is a model context, not a pager, so every
@@ -214,7 +215,7 @@ func (s *Server) registerTools() {
 	// agent orienting itself asks this first; handing it a tool error for
 	// the normal pre-provision state teaches it that something broke.
 	s.add(&mcp.Tool{
-		Name: "current_state",
+		Name: verbs.CurrentState,
 		Description: "Where things stand: whether a workspace is provisioned, and if so its branch, publication state, " +
 			"ahead/behind, dirty and untracked files, and set-aside parcels.  Read this before any destructive verb, " +
 			"and first in a session to orient.  ahead/behind count against the last-synced remote state and can be " +
@@ -276,7 +277,7 @@ func (s *Server) registerTools() {
 	}, s.pendingChanges)
 
 	s.addArc(&mcp.Tool{
-		Name: "start_work",
+		Name: verbs.StartWork,
 		Description: "Begin a NEW line of work off the local default branch (to update that base first, run sync_from_upstream while on the default branch).  " +
 			"OMIT name unless it matters — a codename is minted in the repository's agent namespace (agent/brisk-otter), which is " +
 			"usually better than coining one.  A name you DO pass must be in that namespace: the forge refuses to create any other " +
@@ -292,7 +293,7 @@ func (s *Server) registerTools() {
 	}, s.startWork)
 
 	s.addArc(&mcp.Tool{
-		Name: "switch_work",
+		Name: verbs.SwitchWork,
 		Description: "Return to an EXISTING local line of work (or the default branch).  " +
 			"Uncommitted changes ride along when they can be carried cleanly; otherwise the switch is refused — checkpoint or set_aside first.",
 		InputSchema: &jsonschema.Schema{
@@ -306,7 +307,7 @@ func (s *Server) registerTools() {
 	}, s.switchWork)
 
 	s.addArc(&mcp.Tool{
-		Name: "abandon_work",
+		Name: verbs.AbandonWork,
 		Description: "Discard a line of work: delete the local branch (switching to the default branch first when the doomed branch is checked out).  " +
 			"Refuses the default branch and a dirty tree.  deleteRemote also removes the published counterpart; a branch never published has none, and that is not an error.",
 		InputSchema: &jsonschema.Schema{
@@ -321,7 +322,7 @@ func (s *Server) registerTools() {
 	}, s.abandonWork)
 
 	s.addArc(&mcp.Tool{
-		Name: "checkpoint",
+		Name: verbs.Checkpoint,
 		Description: "Record the working tree — all of it, or just the named paths — as one checkpoint.  " +
 			"There is no staging: the tree is what gets recorded.  Refused on the default branch (start_work first), " +
 			"on a detached HEAD, and when nothing changed.  " +
@@ -339,7 +340,7 @@ func (s *Server) registerTools() {
 	}, s.checkpoint)
 
 	s.addArc(&mcp.Tool{
-		Name: "restore",
+		Name: verbs.Restore,
 		Description: "DESTRUCTIVE rollback; discarded edits are unrecoverable (parked work comes back with resume, and set_aside is the recoverable way to clear the tree).  " +
 			"Shapes: path only — discard one file's local edits; checkpoint + path — one file's content from that checkpoint; " +
 			"checkpoint only — the whole tree to a checkpoint on this line of work (rewinds history only while the published branch stays a fast-forward; " +
@@ -357,7 +358,7 @@ func (s *Server) registerTools() {
 	}, s.restore)
 
 	s.addArc(&mcp.Tool{
-		Name: "set_aside",
+		Name: verbs.SetAside,
 		Description: "Park all uncommitted work — tracked edits and untracked files — so the tree matches the last checkpoint.  " +
 			"Recoverable: resume brings the parcel back (unlike restore, which discards).  Refused when the tree is already clean.",
 		InputSchema: &jsonschema.Schema{Type: "object", AdditionalProperties: mcpserve.NoExtras()},
@@ -370,7 +371,7 @@ func (s *Server) registerTools() {
 	}, s.resume)
 
 	s.addArc(&mcp.Tool{
-		Name: "sync_from_upstream",
+		Name: verbs.SyncFromUpstream,
 		Description: "Update the local default branch from its remote and replay the current line of work on it.  " +
 			"Requires a clean tree (untracked files count).  A conflicted replay is aborted — the tree is restored and the answer lists the conflicting files.",
 		InputSchema: &jsonschema.Schema{Type: "object", AdditionalProperties: mcpserve.NoExtras()},

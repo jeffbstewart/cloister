@@ -35,13 +35,12 @@ archivist's own read verbs (`history`, `show_change`, `file_at`,
 `pending_changes`) are deliberately bounded for your context rather
 than complete.
 
-Every command that **changes** version-control state has an archivist
-verb that does the same job and enforces the rules this repository is
-under.  The `git` on your PATH knows this: the commands below are
-**translated into the verb and say so on stderr**, and mutating
-commands with no counterpart are refused with the reason.  Calling the
-verb yourself is still better — one step instead of two, and the full
-answer rather than a rendering of it:
+**Every git command that changes anything is refused here**, and the
+refusal names what to call instead.  The `git` on your PATH runs only
+commands known to be read-only; it does not translate, guess, or
+partially apply.  So `git commit`, `git push`, `git checkout`, `git
+merge`, `git stash` and the rest will stop and tell you the tool to
+use — that is working as intended, not an environment fault.
 
 Everything in the right-hand column is an **MCP tool on the archivist**
 — you invoke it as a tool, the way you would any other MCP tool.  None

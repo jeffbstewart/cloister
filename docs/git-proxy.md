@@ -4,156 +4,193 @@
 agent image.  The prompt-level rule it enforces is
 docker/workbench/AGENTS.md, "read with git, write with the archivist".*
 
-## Why
+## What it does
 
-The agent has a real git and a real working tree, and the archivist owns
-version control.  That is two vocabularies for one set of operations,
-and the boundary was drawn in the wrong place: the stock prompt was
-emphatic about `git push` — which is already structurally impossible (no
-credential, no route) and fails loudly — and permissive about local
-writes, which always succeed and are silent.
+One question, asked of every invocation: **is this a git command we
+positively know to be read-only?**  If yes, the real git runs
+unchanged.  Everything else is refused with a reason naming the
+archivist MCP tool to call instead.
 
-The archivist caches no git state (`Publish` reads the current branch at
-call time; the grange derives its state from disk), so a raw `git
-commit` does **not** desynchronize it.  The cost is different and
-subtler:
+There is no third answer.
 
-- Every mutating git command has an archivist verb that does the same
-  job **plus** enforces something the raw command doesn't — the
-  default-branch refusal, the `agent/` namespace check (R8), message
-  validation, the attribution-trailer refusal, the endpoint-derived
-  identity.  Reaching for raw git is the same action with the
-  guardrails removed.
-- A raw `git commit` leaves no trace in the MCP transcript, so a session
-  reconstructed afterwards is missing half its history.
+## Why there is no third answer
 
-So git stays, as a **reading** tool, and the writes route to the verbs.
+The first version of this proxy had one.  It translated a "closed core"
+of mutating commands — `commit`, `push`, `checkout`, `branch`, `stash`,
+`restore`, `pull` — into archivist MCP tool calls, announced each
+translation on stderr, and refused the rest.  The reasoning was that a
+*visible* translation buys convenience without the epistemic cost of an
+illusion.
 
-## The cut: refs and HEAD, not read and write
+Six independent review passes over that design found the same class of
+defect in every corner of it:
 
-The useful classification is not read/write.  Commands that touch only
-the working tree are already safe, because `checkpoint` records the tree
-wholesale — git's index is an implementation detail the archivist
-ignores.  What matters is whether a command moves **refs or HEAD**,
-because those are the state the archivist's verbs are meant to author.
-
-| class | examples | proxy behavior |
+| invocation | what it did | what it should have done |
 |---|---|---|
-| reads | `log`, `show`, `diff`, `blame`, `grep`, `rev-parse`, `describe`, `status` | pass through unchanged |
-| worktree-only writes | `mv`, `rm`, `clean` | pass through — `checkpoint` records the tree anyway |
-| ref/HEAD writes with an exact verb | `commit`, `checkout -b`, `switch`, `branch -D`, `stash`, `restore`, `pull`, `push` | translate to the archivist verb |
-| everything else | `rebase`, `commit --amend`, `cherry-pick`, `revert`, `merge`, `tag`, `reset --soft`, `bisect` | refuse, naming why |
+| `git checkout main -- file.go` | switched branches (moved HEAD) | restored one file |
+| `git commit -m title -m body` | recorded "body", dropped "title" | subject + body |
+| `git merge other-branch` | synced the *default* branch | merged `other-branch` |
+| `git restore a.txt b.txt` | restored `a.txt` only | both |
+| `git branch -d one two` | deleted `two` only | both |
+| `git push origin other` | published the *current* branch | pushed `other` |
+| `git checkout -b x main` | branched off the default | branched off `main` |
+| `git stash push -m wip -- a.txt` | parked the **whole tree** | parked one file |
 
-## Visible translation, never illusion
+Every one of those reported success.
 
-**The proxy announces every translation on stderr:**
+The lesson is not "those were bugs, fix them."  It is that git's
+argument grammar is rich enough that a translator either reimplements it
+faithfully — flag arity, positional shapes, `--` handling, abbreviation
+matching, clustered short options — or silently performs a *different
+operation* than the one asked for.  Faithful reimplementation is not a
+thing to maintain in a shim.  And a translation that is merely *usually*
+right is worse than no translation, because it converts a loud failure
+("that command doesn't work here") into a quiet one ("it worked", while
+the tree says otherwise).
 
-```
-[cloister] git commit -m "fix parser"  →  archivist checkpoint
-```
+That is precisely the divergence-of-belief the whole system exists to
+prevent, arriving by a new road.  The convenience was not worth it: the
+agent already has the archivist's tools, and calling one directly costs
+a tool call and returns the tool's real answer instead of a rendering.
 
-This is the load-bearing design decision, and it is the same principle
-that made `provision`/`dispose` *absent* from the agent's MCP surface
-rather than hidden ([archivist.md](archivist.md), "Two surfaces"): the
-model must not hold beliefs that quietly diverge from reality.  An
-emulated git reintroduces exactly that failure one layer down.  If
-`commit --amend` silently became a new checkpoint, the agent would
-believe it rewrote history, it would not have, and it would reason from
-that false belief for the rest of the session — with a transcript that
-looked correct throughout.
+**A refusal cannot silently do the wrong thing.**  That is the entire
+argument.
 
-The visible translation gets both halves: the reflexive `git commit`
-works, *and* the agent's map stays accurate.  It also teaches — after
-two of those lines, a model starts calling `checkpoint` directly.
+## The pass set
 
-## Why the full surface cannot be emulated
+`reads` in `classify.go` is a closed allow-list of commands that cannot
+alter the repository under *any* arguments.  Anything absent is refused
+without further examination, so a git version that adds a command — or
+a command whose writing form we overlooked — fails closed.
 
-Four reasons, in descending order of how fundamental they are:
+Some commands are worth having for their read forms alone and carry
+write forms that must not ride in with them.  Each decides for itself,
+defaulting to refuse: `branch` (listing only), `config` (`--get*`,
+`--list`), `remote` (`-v`, `show`, `get-url`), `stash` (`list`, `show`),
+`reflog` (`show`), `symbolic-ref` (one operand), `notes`, `worktree`,
+`submodule`, `bundle` (all listing/verify only).
 
-1. **Semantic mismatch, not missing features.**  The archivist has no
-   staging area.  `git add`, `git diff --cached`, and `git reset HEAD
-   <path>` reference a noun the target language does not contain.  That
-   is untranslatable in principle.
-2. **No counterpart for history rewriting.**  The archivist's model is
-   append-only checkpoints plus `restore`.  Amend, rebase, and
-   cherry-pick have nothing to map onto; emulating them means either
-   lying or implementing surgery the archivist deliberately withholds.
-3. **Flag combinatorics.**  `git commit` alone carries ~40 flags, and
-   every one silently ignored is a divergence between what was asked
-   and what happened.
-4. **Interactive forms** (`rebase -i`, `add -p`, `bisect`) need an
-   editor and a loop with nothing to map to.
+Two narrower gates apply to commands that would otherwise pass:
 
-Hence: translate a small closed core, refuse the rest with a named
-reason.  Of git's ~150 porcelain commands an agent reaches for perhaps
-fifteen, and the core above covers nearly all of them.
+- **`writeFlags`** — `--output=`, `-O`, `--open-files-in-pager`,
+  `--ext-diff` turn a read into a file write or a program launch.
+  Refused wherever they appear.
+- **`-c` config keys** — `core.pager`, `diff.external`, `alias.*`, and
+  friends make `git log` arbitrary execution wearing git's name.  The
+  deny-list is in `execConfig`.  The agent already has a shell, so this
+  prevents **concealment**, not execution: a command that runs should
+  look like what it is in the transcript.
 
-## Strictness
+## Global options are parsed strictly
 
-**An unrecognized flag on a translatable command is a refusal, not a
-guess.**  Same discipline as the house flag-parsing rule: a flag we do
-not understand means we cannot promise the semantics, and approximating
-is how a request quietly becomes a different request.
+`git --namespace log commit -am x` used to classify as `log`, pass as a
+read, and perform a real commit that nothing logged — because the
+parser skipped unrecognized leading flags as though they were switches,
+so a value-taking option's *value* landed in the subcommand slot.
 
-**An unrecognized command is also a refusal**, not a passthrough — a
-loud error we see immediately beats a silent bypass.  The escape hatch
-below is what keeps that from costing a session.
+Now every unrecognized leading token is a refusal.  A leading token
+whose arity we do not know is a token that may be hiding the
+subcommand, so the only safe reading is to stop.  `-C` and `-c` are
+understood (with the config deny-list above); the valueless switches
+are listed in `globalSwitches`; everything else refuses.
 
 ## Logging
 
-Log the **translations** and the **refusals**.  Do not log passthrough.
+Refusals and passthrough runs are logged; passes are not.  Reads are the
+high-volume, zero-signal case — every `go build` stamps VCS info — and
+recording them would bury the refusals, which are the point.  A refusal
+says the agent wanted something not on offer: a candidate for a new
+archivist tool, a new read to allow, or a line in the environment
+prompt.  Together they are a curriculum for what to build next.
 
-Passthrough is the high-volume, zero-signal case: every `go build`
-stamps VCS info, every Gradle version plugin calls `describe`, and
-recording all of it would bury the two events that carry meaning and
-grow the log without bound.  A translation says the agent reached for
-git where a verb already exists — a prompt-tuning signal.  A refusal
-says it wanted something not on offer — a candidate for a new verb, a
-new translation, or a line in AGENTS.md.  Together the log is a
-curriculum for what to build next.
+`$HOME/.cloister/git-proxy.log`, on the per-project volume, which
+outlives the grange.  Arguments are `%q`-quoted so a newline inside a
+commit message cannot forge a record — this log is meant to be read by
+a parser eventually.
 
-Destination: a file under the agent's HOME (the per-project volume), not
-`/grange` — the grange is destroyed at dispose, and the log's whole
-value is being read afterwards.  Not the state service: the agent holds
-no route to it by design, and it never touches the record of its own
-actions.
+## The escape hatch is a file, not an environment variable
 
-## Escape hatch
+`/etc/cloister/git-passthrough` disables the proxy entirely — the
+operator's out for the first build that trips on a command we did not
+anticipate.
 
-`CLOISTER_GIT_PASSTHROUGH=1` runs the real binary unchanged.  The first
-build that breaks on an unrecognized command must not cost a session to
-unblock, and nested scratch repositories (`cargo new` runs `git init`)
-will find the proxy too.
+It is a file **the agent cannot create**: the cell runs `read_only` with
+`cap_drop: [ALL]` as uid 1000 (docker/cell.yaml), so `/etc` is not
+writable from inside, while the operator sets it with a bind mount or
+`docker exec -u 0`.  An environment variable — the first design — was
+settable by the agent itself, documented in the very repository the
+agent is often granted, and inherited by every subprocess: one `export`
+in a build script and supervision was off for the session.
+
+When it is in force, the proxy says so on stderr and logs it.  This is
+the one path where the proxy stands aside, so it is the last place that
+should be silent.
+
+## It must never invoke itself
+
+The proxy is installed **as** `git`.  Anything that resolves the real
+binary back to this program forks without bound — and this is not a
+hypothetical: a development rig pointed it at a PATH-relative `git`,
+and the machine was carrying eleven thousand processes before anyone
+noticed.
+
+Three guards, because they fail in different ways:
+
+- **`realGit` must be an absolute path.**  A bare name would be
+  resolved through PATH, which finds the proxy.
+- **`realGit` must not be this program**, compared with `os.SameFile`
+  rather than by path — a hardlink or a copy under another name is
+  still the same binary, and path comparison would miss it.
+- **A depth counter in the environment** (`CLOISTER_GIT_PROXY_DEPTH`),
+  because the first two only stop the direct loop.  The indirect ones
+  are invisible to the proxy: git's own script subcommands shell out to
+  `git` by name, and so can a pager, an alias, or a repository hook.
+  Legitimate nesting is shallow — `git-submodule` calling `rev-parse`
+  is depth 2 — so the cap of 8 separates it cleanly from a runaway,
+  which reaches the cap in milliseconds.
+
+The depth check runs **before the escape hatch**, since passthrough is
+the mode that execs most eagerly, and an unreadable counter is treated
+as the cap: a garbled value means something is manipulating the
+environment, and stopping is the safe reading.
 
 ## Not a boundary
 
 The real binary moves to `/usr/lib/cloister/libexec/gx`, a path only the
 proxy names.  This is **obscurity, not enforcement**, and one detail
-makes that concrete rather than theoretical: Debian's
-`/usr/lib/git-core/git` is a *hardlink to the same inode*, and it has to
-stay — git needs `GIT_EXEC_PATH` to find `git-remote-https` and the
-other helpers.  So the real binary remains reachable at a well-known
-path by anything that looks, and `dpkg -L git` or a `find` for
-executables would find it anyway.
+makes that concrete: Debian's `/usr/lib/git-core/git` is a *hardlink to
+the same inode*, and it has to stay — git needs `GIT_EXEC_PATH` to find
+`git-remote-https` and the other helpers.  So the real binary remains
+reachable at a well-known path by anything that looks.
 
-What the move buys is that the wrong move is no longer the *reflexive*
-one — the same claim, with the same limits, as the two-surface split.
+The same goes for the environment: the child inherits `GIT_DIR`,
+`GIT_PAGER`, `GIT_EXTERNAL_DIFF` and friends, several of which turn a
+read into execution or retarget which repository it reads.  Sanitizing
+them would break legitimate build tooling for no gain against a model
+that has bash — the honest description is that the proxy shapes what is
+*reflexive*, not what is *possible*.
+
 The load-bearing boundaries are elsewhere and unchanged: the forge
 ruleset, the endpoint allowlist, and the bot credential living only in
 the archivist.
 
-The image build fails if `git` does not resolve to the proxy, or if the
-moved binary will not run.  A silently-unproxied cell would look
-identical from outside, so that check is worth its line.
+The image build asserts that `git` answers `--cloister-proxy-version`,
+which is the only way to tell the proxy from the real binary at the
+install site — `git version` passes straight through and so proves
+nothing.  The check runs in the **last** layer, because a later
+`apt-get install --reinstall git` would otherwise satisfy any earlier
+one.
 
-## Open questions
+## What breaks first, and how you find out
 
-- **Toolchain callers.**  Go's `-buildvcs` stamping runs `git status
-  --porcelain`, `rev-parse HEAD`, and `show -s`; Gradle version plugins
-  run `describe`.  All reads, so all pass — but this should be confirmed
-  against a real warmed build before the proxy is load-bearing.
-- **`git rm --cached`** touches the index without touching the tree,
-  which has no meaning in a no-staging model.  Probably a refusal.
-- **Which verb set the proxy dials.**  `internal/operator` is the
-  operator surface's client; the proxy needs a sibling for the agent
-  verbs.  Worth sharing the transport and the `*RefusedError` shape.
+Not a new git command — an *existing read that was never listed*, and
+the symptom is a failed build.  The refusal names the command and the
+log records it, so the fix is usually one line in `reads` plus a case in
+`classify_test.go`.  Until that lands, the escape hatch unblocks the
+operator in seconds.
+
+Maintenance note: the tool names in refusal text are free-form strings.
+Renaming or removing an archivist MCP tool leaves this file pointing at
+a tool that no longer exists, discovered by a reader rather than a
+compiler.  `TestVerbsAreNamedAsArchivistToolsNotShellCommands` pins the
+*form* of those mentions but not their existence.

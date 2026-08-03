@@ -13,214 +13,285 @@
 // limitations under the License.
 
 // Command git-proxy is installed as `git` inside the agent cell
-// (docs/git-proxy.md).  Reads run the real git unchanged; the closed
-// core of commands that move refs or HEAD is translated into the
-// archivist's verbs; everything else is refused with a reason.
+// (docs/git-proxy.md).  It answers one question about every
+// invocation — is this a git command we positively know to be
+// read-only? — and either runs the real git unchanged or refuses with a
+// reason naming the archivist MCP tool to call instead.
 //
-// It announces every translation on stderr.  That is the load-bearing
-// decision, and it is the same principle that made provision and
-// dispose ABSENT from the agent's MCP surface rather than hidden: the
-// model must not hold beliefs that quietly diverge from reality.  An
-// invisible translation would buy convenience by making the agent wrong
-// about what just happened — believing it had rewritten history, or
-// staged a subset, when it had not — and the transcript would look
-// correct throughout.  A visible one buys the same convenience and
-// teaches the verb.
+// It does NOT translate.  An earlier design mapped a "closed core" of
+// mutating commands onto archivist tool calls, and review found the
+// same defect in every corner of it: git's argument grammar is rich
+// enough that a translator either reimplements it faithfully or
+// silently performs a different operation than the one asked for.
+// `git checkout main -- file.go` moved HEAD instead of restoring a
+// file; `git commit -m title -m body` dropped the subject line;
+// `git merge other` synced the default branch instead.  Every one
+// looked like success.  Convenience was being paid for in exactly the
+// currency this system refuses to spend — an agent confidently wrong
+// about what just happened.
 //
-// This is NOT a security boundary.  The real binary is moved somewhere
-// only this program names, which is obscurity: a determined process in
-// this container finds it.  What it buys is that the wrong move is no
-// longer the reflexive one.
+// So the proxy has no opinion it cannot defend.  Reads run; everything
+// else is a refusal that says what to call instead, and the agent calls
+// it itself, getting the tool's real answer rather than a rendering of
+// it.
+//
+// This is NOT a security boundary.  The real binary is moved to a path
+// this program names, but /usr/lib/git-core/git is a hardlink to the
+// same inode and must stay for GIT_EXEC_PATH, so a determined process
+// finds it.  What it buys is that the wrong move is no longer the
+// reflexive one.
 package main
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
-
-	"github.com/jeffbstewart/cloister/internal/mcpclient"
 )
 
 // version is set at build time (-ldflags -X main.version=…).
 var version = "dev"
 
-// realGit is where the actual binary lives.  Unadvertised on purpose —
-// see the package note on what that does and does not buy.
-const realGit = "/usr/lib/cloister/libexec/gx"
+// identifyFlag makes the proxy positively identifiable.  The image
+// build asserts that `git` answers it, which is the only way to tell
+// the proxy from the real binary at the install site — `git version`
+// passes straight through and so proves nothing.  A later layer that
+// restored the real git to /usr/bin/git would otherwise satisfy every
+// check the Dockerfile could make.
+const identifyFlag = "--cloister-proxy-version"
 
-// callTimeout bounds a translated verb.  publish pushes through the
-// relays, which is the slow one; the rest are local.
-const callTimeout = 10 * time.Minute
+// realGit is where the actual binary lives.  Unadvertised on purpose —
+// see the package note on what that does and does not buy.  Not
+// configurable by environment: an override would let anything in this
+// container point the shim at a binary of its choosing, and nothing
+// legitimate needs it.  Keep in sync with docker/workbench/Dockerfile.
+//
+// It must be an ABSOLUTE path to a binary that is not this one.  Both
+// halves are load-bearing, and enforced in runGit: a bare name would be
+// resolved through PATH, where this program is installed as `git`, and
+// the proxy would exec itself forever.  That is not hypothetical — it
+// forks until the machine dies, and it took eleven thousand processes
+// to notice.
+var realGit = "/usr/lib/cloister/libexec/gx"
+
+// depthEnv counts how deep we are in nested git invocations.  The path
+// check in runGit stops the direct loop; this stops the indirect ones,
+// which the proxy cannot see: git's own script subcommands shell out to
+// `git` by name, a pager or alias can, and a repository hook certainly
+// can.  Any of those resolves through PATH and lands back here.
+//
+// Legitimate nesting is shallow — git-submodule calling rev-parse is
+// depth 2 — so a generous cap separates it cleanly from a loop, which
+// reaches the cap in milliseconds.
+const depthEnv = "CLOISTER_GIT_PROXY_DEPTH"
+
+// maxDepth is the cap.  Deliberately well above real nesting: the point
+// is to catch runaway recursion, not to police how git organizes its
+// own subcommands.
+const maxDepth = 8
+
+// passthroughMarker disables the proxy entirely — the operator's escape
+// hatch for the first build that trips on a command we did not
+// anticipate.
+//
+// A FILE rather than an environment variable, and deliberately one the
+// agent cannot create: the cell runs read_only with cap_drop ALL as uid
+// 1000 (docker/cell.yaml), so /etc is not writable from inside, while
+// the operator sets it with a bind mount or `docker exec -u 0`.  An
+// env var would have been settable by the agent itself, documented in
+// the very repository it is often granted, and inherited by every
+// subprocess — one export in a build script and git supervision is off
+// for the session.
+const passthroughMarker = "/etc/cloister/git-passthrough"
 
 func main() {
 	os.Exit(run(os.Args[1:]))
 }
 
 func run(argv []string) int {
-	real := envOr("CLOISTER_GIT_REAL", realGit)
-
-	// The operator's escape hatch: the first build to trip on an
-	// unrecognized command must not cost a session to unblock.
-	if os.Getenv("CLOISTER_GIT_PASSTHROUGH") != "" {
-		return exec_(real, argv)
+	if len(argv) == 1 && argv[0] == identifyFlag {
+		fmt.Println(version)
+		return 0
+	}
+	// Before anything else, including the escape hatch: a runaway must
+	// stop even when the proxy has been told to stand aside, because
+	// passthrough is the mode that execs most eagerly.
+	if depth() >= maxDepth {
+		fmt.Fprintf(os.Stderr, "cloister: git invoked itself %d deep and was stopped.\n"+
+			"Something resolves `git` back to this proxy — a hook, an alias, a pager, or a\n"+
+			"misconfigured install.  Nothing ran.\n", maxDepth)
+		return 1
+	}
+	if _, err := os.Stat(passthroughMarker); err == nil {
+		// Logged and announced.  This is the one path where the proxy
+		// stands aside, so it is the last place that should be silent.
+		logEvent("passthrough", argv)
+		fmt.Fprintf(os.Stderr, "[cloister] git supervision is disabled (%s); running git unchanged.\n", passthroughMarker)
+		return runGit(argv)
 	}
 
-	p := classify(argv, &realGitQuery{path: real})
-	switch p.verdict {
+	switch p := classify(argv); p.verdict {
 	case pass:
 		// Not logged.  Reads are the high-volume, zero-signal case —
 		// every `go build` stamps VCS info — and recording them would
-		// bury the two events that carry meaning.
-		return exec_(real, argv)
+		// bury the refusals, which are the whole point of the log.
+		return runGit(argv)
 
 	case refuse:
-		logEvent("refused", argv, "")
-		fmt.Fprintf(os.Stderr, "cloister: `git %s` is not available here.\n\n%s\n\n"+
-			"Those are MCP tools on the archivist — invoke them as tools, not as shell\n"+
-			"commands.  Your environment prompt lists the full set.\n",
-			strings.Join(argv, " "), wrap(p.reason))
+		logEvent("refused", argv)
+		fmt.Fprintf(os.Stderr, "cloister: %s is refused in this workspace.\n\n%s\n\n"+
+			"Only git commands known to be read-only run here; everything that changes the\n"+
+			"repository goes through the archivist's MCP tools, which you invoke as tools\n"+
+			"rather than as shell commands.  Your environment prompt lists the full set.\n",
+			display(argv), wrap(p.reason))
 		return 1
 
-	case translate:
-		logEvent("translated", argv, p.verb)
-		// Name the surface, not just the verb: "archivist checkpoint"
-		// reads like a git subcommand, and the point of announcing at all
-		// is that the agent knows what really happened.
-		fmt.Fprintf(os.Stderr, "[cloister] `git %s` is not what ran — this called the archivist MCP tool %s() for you.\n",
-			strings.Join(argv, " "), p.verb)
-		return callArchivist(p)
-	}
-	return 1
-}
-
-// callArchivist runs the translated verb and prints its answer.  A
-// refusal is the archivist's own words, verbatim: the reason is the part
-// the reader needs, and paraphrasing it is how "op/repo fails R2: stale
-// approvals survive" becomes "publish failed".
-func callArchivist(p plan) int {
-	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
-	defer cancel()
-
-	c, err := mcpclient.Dial(ctx, mcpclient.Config{
-		URL:     envOr("ARCHIVIST_MCP_URL", "http://archivist:9600/mcp"),
-		Name:    "git-proxy",
-		Version: version,
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "cloister: cannot reach the archivist: %v\n", err)
-		return 1
-	}
-	defer c.Close()
-
-	var answer map[string]any
-	if err := c.Call(ctx, p.verb, p.args, &answer); err != nil {
-		var ref *mcpclient.RefusedError
-		if errors.As(err, &ref) {
-			fmt.Fprintf(os.Stderr, "cloister: the archivist MCP tool %s() refused:\n%s\n", p.verb, wrap(ref.Message))
-			return 1
-		}
-		fmt.Fprintf(os.Stderr, "cloister: %v\n", err)
-		return 1
-	}
-	// Print the answer as the archivist gave it.  Anything it chose to
-	// report — a checkpoint's leftovers, a publish that advanced
-	// nothing — is exactly what the caller must not be shielded from.
-	for _, line := range render(p.verb, answer) {
-		fmt.Println(line)
-	}
-	return 0
-}
-
-// render turns a verb's answer into lines a human (or a model reading a
-// terminal) can act on.  Deliberately plain: this is not git's output
-// format and should not pretend to be.
-func render(verb string, answer map[string]any) []string {
-	var out []string
-	switch verb {
-	case "checkpoint":
-		out = append(out, fmt.Sprintf("checkpoint %v", answer["checkpoint"]))
-	case "publish":
-		if adv, _ := answer["advanced"].(bool); !adv {
-			out = append(out, fmt.Sprintf("published %v — but NOTHING NEW was pushed", answer["branch"]))
-		} else {
-			out = append(out, fmt.Sprintf("published %v to %v", answer["branch"], answer["endpoint"]))
-		}
 	default:
-		if len(answer) == 0 {
-			out = append(out, verb+": done")
-		}
+		// Unreachable today.  Said out loud anyway: a program installed
+		// as /usr/bin/git that exits non-zero in silence is the worst
+		// failure available to it.
+		fmt.Fprintf(os.Stderr, "cloister: internal error: unhandled verdict %v for %s\n", p.verdict, display(argv))
+		return 1
 	}
-	// Whatever else the verb reported — notes, leftovers, branch names —
-	// follows verbatim, so a field added server-side is never invisible
-	// here.
-	for _, k := range []string{"branch", "note", "uncommitted", "restored", "rewound"} {
-		if v, ok := answer[k]; ok && !strings.Contains(strings.Join(out, "\n"), fmt.Sprint(v)) {
-			out = append(out, fmt.Sprintf("%s: %v", k, v))
-		}
-	}
-	if len(out) == 0 {
-		out = append(out, verb+": done")
-	}
-	return out
 }
 
-// exec_ runs the real git, passing the terminal through so pagers and
-// colour behave, and propagates its exit code.
-func exec_(real string, argv []string) int {
-	cmd := exec.Command(real, argv...)
+// runGit runs the real git, passing the terminal through so pagers and
+// colour behave, and propagates its exit code.  There is no fallback to
+// it from any refusal path — a refused command must not run by another
+// route.
+func runGit(argv []string) int {
+	if err := checkRealGit(); err != nil {
+		fmt.Fprintf(os.Stderr, "cloister: refusing to run git: %v\n", err)
+		return 1
+	}
+	cmd := exec.Command(realGit, argv...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	cmd.Env = append(os.Environ(), fmt.Sprintf("%s=%d", depthEnv, depth()+1))
 	if err := cmd.Run(); err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
 			return ee.ExitCode()
 		}
-		fmt.Fprintf(os.Stderr, "cloister: cannot run git (%s): %v\n", real, err)
+		// Deliberately without the path: it is obscurity only, but there
+		// is no reason to volunteer it in agent-visible output.
+		fmt.Fprintf(os.Stderr, "cloister: git could not be run: %v\n", err)
 		return 1
 	}
 	return 0
 }
 
-// realGitQuery answers classification's questions using the real
-// binary — `git checkout X` is a branch switch or a path restore
-// depending on what X is, and only the repository knows.
-type realGitQuery struct{ path string }
-
-func (q *realGitQuery) branchExists(name string) bool {
-	if name == "" {
-		return false
+// depth reads the nesting counter.  An unreadable value counts as the
+// cap: a garbled counter means something is manipulating the
+// environment, and stopping is the safe reading.
+func depth() int {
+	v := os.Getenv(depthEnv)
+	if v == "" {
+		return 0
 	}
-	cmd := exec.Command(q.path, "show-ref", "--verify", "--quiet", "refs/heads/"+name)
-	return cmd.Run() == nil
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return maxDepth
+	}
+	return n
 }
 
-// logEvent records translations and refusals.  Never passthrough: that
-// is the high-volume, zero-signal case, and burying these two under it
-// would cost the log its whole value.  A translation says the agent
-// reached for git where a verb exists (a prompt-tuning signal); a
-// refusal says it wanted something not on offer (a candidate for a new
-// verb or a new translation).
+// checkRealGit refuses to exec anything that could be this program.
 //
-// Best-effort: a workspace that cannot write a log is still a workspace.
-func logEvent(kind string, argv []string, verb string) {
-	path := envOr("CLOISTER_GIT_LOG", defaultLogPath())
+// The absolute-path requirement is what keeps PATH out of it: this
+// binary is installed AS `git`, so resolving a bare name would find
+// itself.  os.SameFile then catches the case a path comparison would
+// miss — a hardlink or a copy under another name is still the same
+// inode, and still a loop.
+func checkRealGit() error {
+	if !filepath.IsAbs(realGit) {
+		return fmt.Errorf("the configured git (%q) is not an absolute path, and resolving it "+
+			"through PATH would find this proxy", realGit)
+	}
+	target, err := os.Stat(realGit)
+	if err != nil {
+		return fmt.Errorf("the real git is missing from its expected location: %w", err)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return nil // cannot compare; the absolute-path check still holds
+	}
+	mine, err := os.Stat(self)
+	if err != nil {
+		return nil
+	}
+	if os.SameFile(target, mine) {
+		return fmt.Errorf("the configured git is this proxy itself (%q) — running it would recurse "+
+			"until the machine dies", realGit)
+	}
+	return nil
+}
+
+// display renders an argv for a human, quoting any element that would
+// otherwise read as several.  Without it `git commit -m "fix the
+// parser"` echoes back as four bare words and the reader misjudges what
+// was rejected.
+func display(argv []string) string {
+	parts := make([]string, 0, len(argv)+1)
+	parts = append(parts, "`git")
+	for _, a := range argv {
+		if a == "" || strings.ContainsAny(a, " \t\n\"'") {
+			parts = append(parts, fmt.Sprintf("%q", a))
+			continue
+		}
+		parts = append(parts, a)
+	}
+	return strings.Join(parts, " ") + "`"
+}
+
+// logEvent records refusals and passthrough runs.  Never a pass: that
+// is the high-volume, zero-signal case, and burying the refusals under
+// it would cost the log its whole value.  A refusal says the agent
+// wanted something not on offer — a candidate for a new archivist tool,
+// a new read to allow, or a line in the environment prompt.  Together
+// they are a curriculum for what to build next.
+//
+// Best-effort: a workspace that cannot write a log is still a
+// workspace.
+func logEvent(kind string, argv []string) {
+	path := defaultLogPath()
 	if path == "" {
 		return
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return
 	}
+	rotate(path)
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return
 	}
-	defer f.Close()
-	// Epoch seconds, the house on-disk time format.
-	fmt.Fprintf(f, "%d\t%s\t%s\t%s\n", time.Now().Unix(), kind, verb, strings.Join(argv, " "))
+	defer func() { _ = f.Close() }() // best-effort, as above
+	// %q on the arguments, so a newline or tab inside one cannot forge a
+	// record.  A commit message is free text the model authors, and this
+	// log is meant to be read by a parser eventually.  Epoch seconds,
+	// the house on-disk time format.
+	fmt.Fprintf(f, "%d\t%s\t%q\n", time.Now().Unix(), kind, argv)
+}
+
+// maxLogBytes bounds the log.  An agent that loops on a refusal — which
+// the environment prompt warns against, so it happens — would otherwise
+// append without limit to the per-project volume, and a full volume
+// breaks the session for a diagnostic nobody asked for.
+const maxLogBytes = 4 << 20
+
+// rotate keeps one previous generation.  Two files, no config, no
+// scheduler: enough that the recent past survives a noisy loop, and
+// bounded enough that nothing has to watch it.
+func rotate(path string) {
+	fi, err := os.Stat(path)
+	if err != nil || fi.Size() < maxLogBytes {
+		return
+	}
+	_ = os.Rename(path, path+".1") // best-effort, like everything here
 }
 
 // defaultLogPath puts the log on the agent's HOME — the per-project
@@ -234,8 +305,8 @@ func defaultLogPath() string {
 	return filepath.Join(home, ".cloister", "git-proxy.log")
 }
 
-// wrap breaks a reason into terminal-width lines, because a refusal
-// nobody reads teaches nothing.
+// wrap breaks a reason into 72-column lines, because a refusal nobody
+// reads teaches nothing.
 func wrap(s string) string {
 	const width = 72
 	var b strings.Builder
@@ -252,11 +323,4 @@ func wrap(s string) string {
 		col += len(word)
 	}
 	return b.String()
-}
-
-func envOr(name, def string) string {
-	if v := os.Getenv(name); v != "" {
-		return v
-	}
-	return def
 }

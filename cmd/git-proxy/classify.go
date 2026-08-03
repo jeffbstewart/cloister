@@ -17,327 +17,457 @@ package main
 import (
 	"fmt"
 	"strings"
+
+	"github.com/jeffbstewart/cloister/internal/verbs"
 )
 
-// Classification (docs/git-proxy.md).  The useful cut is not read/write
-// but whether a command moves REFS or HEAD: commands that touch only
-// the working tree are already safe, because `checkpoint` records the
-// tree wholesale and git's index is an implementation detail the
-// archivist ignores.  What matters is the state the archivist's verbs
-// are meant to author.
+// Classification (docs/git-proxy.md).  ONE question, asked of every
+// invocation: is this a git command we positively know to be read-only?
+// If yes it runs unchanged.  Everything else is refused with a reason.
+//
+// There is deliberately no third answer.  An earlier design translated
+// a "closed core" of mutating commands into archivist MCP tool calls,
+// and every review lens found the same class of defect in it: git's
+// argument grammar is rich enough that a translator either implements
+// it faithfully or silently performs a DIFFERENT operation than the one
+// asked for.  `git checkout main -- file.go` moved HEAD instead of
+// restoring a file; `git commit -m title -m body` dropped the subject;
+// `git merge other` synced the default branch instead; multi-path
+// restores discarded every path but the first.  Each looked like
+// success.  Translation was buying convenience by reintroducing exactly
+// the divergence-of-belief the whole system exists to prevent, so it is
+// gone.  Mutation goes through the archivist's MCP tools, which the
+// agent calls itself, with the full answer rather than a rendering.
 
 type verdict int
 
 const (
-	pass      verdict = iota // run the real git unchanged
-	translate                // call an archivist verb instead
-	refuse                   // never run; say why, and what to use
+	// refuse is the ZERO VALUE, so a plan nobody filled in fails closed.
+	// The safety property here is "nothing mutating passes", and a
+	// default of pass would make every future coding slip open the gate.
+	refuse verdict = iota
+	pass
 )
+
+// String names the verdict, so a test failure and the internal-error
+// path both read as words rather than as an integer nobody can decode
+// without counting the iota block.
+func (v verdict) String() string {
+	switch v {
+	case pass:
+		return "pass"
+	case refuse:
+		return "refuse"
+	}
+	return fmt.Sprintf("verdict(%d)", int(v))
+}
 
 // plan is what classify decides about one invocation.
 type plan struct {
 	verdict verdict
-	verb    string         // archivist verb, when translate
-	args    map[string]any // its arguments
-	reason  string         // when refuse: the explanation, naming the alternative
+	reason  string // when refuse: the explanation, naming the alternative
 }
 
-// reads run unchanged.  Deliberately a closed allow-list rather than
-// "anything not known to mutate": an unrecognized command is a refusal
-// (see classify), which is a loud error we see immediately instead of a
-// silent bypass.  Toolchains live here too — Go's -buildvcs stamping
-// runs status/rev-parse/show, Gradle version plugins run describe.
-var reads = map[string]bool{
-	"annotate": true, "blame": true, "cat-file": true, "check-attr": true,
-	"check-ignore": true, "describe": true, "diff": true, "diff-files": true,
-	"diff-index": true, "diff-tree": true, "for-each-ref": true, "grep": true,
-	"help": true, "log": true, "ls-files": true, "ls-tree": true,
-	"merge-base": true, "name-rev": true, "rev-list": true, "rev-parse": true,
-	"shortlog": true, "show": true, "show-ref": true, "status": true,
-	"var": true, "verify-commit": true, "version": true, "whatchanged": true,
-}
-
-// worktreeOnly commands change files without moving refs or HEAD.  They
-// pass because the next checkpoint records the tree as it stands, so
-// there is nothing for them to desynchronize.
-var worktreeOnly = map[string]bool{"mv": true, "clean": true}
+func allow() plan             { return plan{verdict: pass} }
+func deny(reason string) plan { return plan{reason: reason} }
 
 // tool renders an archivist verb the way every message here must: as an
 // MCP TOOL CALL on the archivist, never as something to type at a
 // shell.  Without this the advice reads like a git subcommand that
 // happens not to exist yet, and the reader's next move is to try
 // spelling it differently.
+//
+// Names come from internal/verbs, so a renamed tool is a compile error
+// here rather than a refusal pointing at something that no longer
+// exists.
 func tool(name string) string { return "the archivist MCP tool " + name + "()" }
 
-// refusals are the commands with no archivist counterpart, mapped to
-// the reason.  Being explicit here (rather than falling through to the
-// generic unknown-command message) is what makes the refusal useful:
-// it names why the operation is absent, which is usually a design
-// decision rather than an oversight.
-var refusals = map[string]string{
-	"add": "there is no staging area here — " + tool("checkpoint") + " records the working tree as it stands, " +
-		"so there is nothing to stage.  Just edit the files and call it.",
-	"am":     "patch application is not part of the archivist's model; edit the files and call " + tool("checkpoint") + ".",
-	"apply":  "patch application is not part of the archivist's model; edit the files and call " + tool("checkpoint") + ".",
-	"bisect": "bisect drives HEAD through a search; the archivist owns HEAD.  Reason about changes with " + tool("history") + " and " + tool("show_change") + " instead.",
-	"clone":  "this workspace is provisioned for you and cannot be changed; there is no route to a forge from here either.",
-	"config": "the repository's identity and safety settings are set at provision and are not yours to change or inspect.",
-	"fetch":  "remote access is the archivist's alone; " + tool("sync_from_upstream") + " brings the default branch forward.",
-	"gc":     "repository maintenance is not the agent's concern; the workspace is destroyed after the task.",
-	"init":   "this workspace is already a provisioned clone, and a second repository inside it would not be published.",
-	"rebase": "the archivist's history is append-only: checkpoints accumulate and " + tool("restore") + " rolls back.  " +
-		"There is no rewrite verb, deliberately — published work must not change under a reviewer.",
-	"remote":    "the remote is set at provision from the endpoint table; changing it would point published work somewhere unreviewed.",
-	"reset":     "call " + tool("restore") + " to roll back — it knows whether the branch is published, and rewrites history only while it is still private.",
-	"revert":    "there is no revert verb: call " + tool("restore") + " to reach an earlier checkpoint, then " + tool("checkpoint") + " to record the result forward.",
-	"submodule": "submodules are not provisioned into the grange and cannot be fetched from here.",
-	"tag":       "tags are a release act, and releases are the human's, not the agent's.",
-	"worktree":  "one workspace per session, by design — see the grange rules in your environment prompt.",
+// Convention for the messages below: the FIRST mention in a sentence
+// uses tool() or tools(); later mentions in the same sentence are the
+// bare `name()` form.  Repeating the full phrase reads as boilerplate
+// and buries the names it exists to highlight — the register only has
+// to be established once.
+//
+// tools renders several at once, for the cases where the names share a
+// clause rather than each taking their own.
+func tools(names ...string) string {
+	switch len(names) {
+	case 0:
+		return ""
+	case 1:
+		return tool(names[0])
+	}
+	parts := make([]string, len(names))
+	for i, n := range names {
+		parts[i] = n + "()"
+	}
+	return "the archivist MCP tools " + strings.Join(parts[:len(parts)-1], ", ") + " and " + parts[len(parts)-1]
 }
 
-// gitQuery lets classification ask the real git a read-only question.
-// `git checkout X` is a branch switch or a path restore depending on
-// what X is, and only the repository knows which.
-type gitQuery interface {
-	branchExists(name string) bool
+// reads are the commands that cannot alter the repository under any
+// arguments — the entire pass set.  A closed allow-list is the whole
+// safety property: anything absent is refused, so a git version that
+// adds a command, or a command whose writing form we overlooked,
+// fails closed rather than through.
+//
+// Toolchains live here too: Go's -buildvcs stamping runs log/status/
+// rev-parse, and Gradle version plugins run describe.  Those are the
+// invocations that must never break, and cmd/git-proxy/classify_test.go
+// pins them.
+var reads = map[string]bool{
+	"annotate": true, "blame": true, "cat-file": true, "check-attr": true,
+	"check-ignore": true, "check-mailmap": true, "cherry": true,
+	"count-objects": true, "describe": true, "diff": true, "diff-files": true,
+	"diff-index": true, "diff-tree": true, "difftool": true, "for-each-ref": true,
+	"fsck": true, "get-tar-commit-id": true, "grep": true, "help": true,
+	"log": true, "ls-files": true, "ls-remote": true, "ls-tree": true,
+	"merge-base": true, "merge-tree": true, "name-rev": true, "rev-list": true,
+	"rev-parse": true, "shortlog": true, "show": true, "show-branch": true,
+	"show-index": true, "show-ref": true, "status": true, "unpack-file": true,
+	"var": true, "verify-commit": true, "verify-tag": true, "version": true,
+	"whatchanged": true,
+}
+
+// splitPersonality are commands whose READ forms are worth having and
+// whose write forms must not slip through with them.  Each decides for
+// itself; the default within each is refuse.
+var splitPersonality = map[string]func(args []string) plan{
+	"branch":       classifyBranch,
+	"config":       classifyConfig,
+	"remote":       classifyRemote,
+	"stash":        classifyStash,
+	"reflog":       classifyReflog,
+	"symbolic-ref": classifySymbolicRef,
+	"notes":        classifyNotes,
+	"worktree":     classifyWorktree,
+	"submodule":    classifySubmodule,
+	"bundle":       classifyBundle,
+}
+
+// refusals are the commands with a known archivist counterpart or a
+// known reason for absence, mapped to that reason.  Being explicit here
+// (rather than falling through to the generic message) is what makes a
+// refusal useful: it names the tool to call, or why the operation does
+// not exist, which is usually a design decision rather than an
+// oversight.
+var refusals = map[string]string{
+	"add": "there is no staging area here — " + tool(verbs.Checkpoint) + " records the working tree as it stands, " +
+		"so there is nothing to stage.  Just edit the files and call it.",
+	"am":     "patch application is not part of the archivist's model; edit the files and call " + tool(verbs.Checkpoint) + ".",
+	"apply":  "patch application is not part of the archivist's model; edit the files and call " + tool(verbs.Checkpoint) + ".",
+	"bisect": "bisect drives HEAD through a search, and the archivist owns HEAD.  Reason about changes with " + tools(verbs.History, verbs.ShowChange) + " instead.",
+	"checkout": "checkout means three different things depending on its arguments, and guessing wrong moves HEAD.  Say which you mean with " +
+		tools(verbs.StartWork, verbs.SwitchWork, verbs.Restore) + ": begin a line of work, move to an existing one, or put a file back.",
+	"cherry-pick":     "no cherry-pick verb: the archivist's history is append-only.  Make the change and record it with " + tool(verbs.Checkpoint) + ".",
+	"clean":           "use plain `rm` — the working tree is yours to edit directly, and " + tool(verbs.Checkpoint) + " records whatever it finds.",
+	"clone":           "this workspace is provisioned for you and cannot be changed; there is no route to a forge from here either.",
+	"commit":          "call " + tool(verbs.Checkpoint) + " instead — it records the whole working tree, refuses the default branch, and validates the message.",
+	"fetch":           "remote access is the archivist's alone; " + tool(verbs.SyncFromUpstream) + " brings the default branch forward.",
+	"filter-branch":   "history rewriting has no counterpart here, deliberately — published work must not change under a reviewer.",
+	"gc":              "repository maintenance is not the agent's concern; the workspace is destroyed after the task.",
+	"init":            "this workspace is already a provisioned clone, and a second repository inside it would not be published.",
+	"merge":           "merging an arbitrary branch has no counterpart.  " + tool(verbs.SyncFromUpstream) + " is the one integration the archivist performs: it brings the default branch forward under your line of work.",
+	"mv":              "use plain `mv` — the working tree is yours to edit directly, and " + tool(verbs.Checkpoint) + " records the rename as it finds it.",
+	"pull":            "remote access is the archivist's alone; " + tool(verbs.SyncFromUpstream) + " brings the default branch forward.",
+	"push":            "call " + tool(verbs.Publish) + " instead — it pushes the line of work you are on, and there is no credential in this container for git to use.",
+	"rebase":          "the archivist's history is append-only: checkpoints accumulate and " + tool(verbs.Restore) + " rolls back.  There is no rewrite verb, deliberately — published work must not change under a reviewer.",
+	"replace":         "object replacement has no counterpart here.",
+	"reset":           "call " + tool(verbs.Restore) + " to roll back — it knows whether the branch is published, and rewrites history only while it is still private.",
+	"restore":         "call " + tool(verbs.Restore) + " instead: it takes one path, or a checkpoint to roll the tree back to.",
+	"revert":          "there is no revert verb: call " + tool(verbs.Restore) + " to reach an earlier checkpoint, then " + verbs.Checkpoint + "() to record the result forward.",
+	"rm":              "use plain `rm` — the working tree is yours to edit directly, and " + tool(verbs.Checkpoint) + " records the deletion as it finds it.",
+	"sparse-checkout": "the grange is a full checkout; narrowing it would hide files from the checkpoint that records them.",
+	"switch":          "call " + tool(verbs.StartWork) + " to begin a line of work (with no name it mints one), or " + verbs.SwitchWork + "() to move to an existing one.",
+	"tag":             "tags are a release act, and releases are the human's, not the agent's.",
+	"update-ref":      "refs are the archivist's to move; see " + tools(verbs.StartWork, verbs.SwitchWork, verbs.Checkpoint) + ".",
 }
 
 // classify decides what to do with one git invocation.  argv excludes
 // the program name.
-func classify(argv []string, q gitQuery) plan {
-	sub, args := subcommand(argv)
+func classify(argv []string) plan {
+	sub, args, err := subcommand(argv)
+	if err != "" {
+		return deny(err)
+	}
 	switch {
 	case sub == "":
-		return plan{verdict: pass} // bare `git` prints usage
-	case reads[sub], worktreeOnly[sub]:
-		return plan{verdict: pass}
-	case sub == "rm":
-		return classifyRm(args)
-	case sub == "reflog":
-		// Reading the reflog is fine; `reflog expire` rewrites it.
-		if len(args) == 0 || args[0] == "show" {
-			return plan{verdict: pass}
-		}
-		return plan{verdict: refuse, reason: "only `git reflog show` is available here; expiring the reflog is repository maintenance."}
-	case sub == "commit":
-		return classifyCommit(args)
-	case sub == "push":
-		return classifyPush(args)
-	case sub == "checkout", sub == "switch":
-		return classifyCheckout(sub, args, q)
-	case sub == "branch":
-		return classifyBranch(args)
-	case sub == "stash":
-		return classifyStash(args)
-	case sub == "restore":
-		return classifyRestore(args)
-	case sub == "pull", sub == "merge":
-		return classifyPull(sub, args)
+		return allow() // bare `git`, `git --version`, `git --help`
+	case reads[sub]:
+		return readWithSafeFlags(sub, args)
+	}
+	if f, ok := splitPersonality[sub]; ok {
+		return f(args)
 	}
 	if why, ok := refusals[sub]; ok {
-		return plan{verdict: refuse, reason: why}
+		return deny(why)
 	}
-	return plan{verdict: refuse, reason: "not available in this workspace.  " +
-		"Version control here goes through the archivist's MCP tools — they are listed in your environment prompt, " +
-		"and you call them as tools, not as shell commands.  If a BUILD genuinely needs this git command, tell the operator."}
+	return deny("this git command is not on the read-only list, so it is refused without being examined further.  " +
+		"Version control here goes through the archivist's MCP tools — your environment prompt lists them, and you " +
+		"call them as tools, not as shell commands.  If a BUILD needs this git command, say so in your report.")
 }
 
-// subcommand splits the global options off the front.  Only the global
-// flags that appear in practice are understood, and an unrecognized one
-// refuses downstream rather than being skipped — skipping is how a flag
-// with a value swallows the subcommand.
-func subcommand(argv []string) (string, []string) {
+// writeFlags turn an otherwise read-only command into one that writes a
+// file or executes a program.  They are refused on every passing
+// command rather than per-command, because the list is short and the
+// alternative is auditing each read's full flag set.
+//
+//	--output=<file>          diff/log/show/format-patch: writes the file
+//	-O<cmd> / --open-files-in-pager  grep: runs the command
+//	--ext-diff               diff: runs the configured external differ
+var writeFlags = []string{"--output", "-O", "--open-files-in-pager", "--ext-diff"}
+
+// readWithSafeFlags admits a known read only if nothing in its
+// arguments turns it into a write.
+func readWithSafeFlags(sub string, args []string) plan {
+	for _, a := range args {
+		for _, bad := range writeFlags {
+			if a == bad || strings.HasPrefix(a, bad+"=") || (bad == "-O" && strings.HasPrefix(a, "-O") && a != "-O") {
+				return deny("`" + bad + "` makes `" + sub + "` write a file or run a program, so it is not the read it looks like.  " +
+					"Read the output instead, or write the file yourself with the shell.")
+			}
+		}
+	}
+	return allow()
+}
+
+// execConfig are the -c keys that let a configuration value run a
+// program.  Setting one turns `git log` into arbitrary execution
+// wearing git's name.  The agent already has a shell, so refusing these
+// prevents CONCEALMENT rather than execution — a command that runs
+// should look like what it is in the transcript and the log.
+var execConfig = []string{
+	"core.pager", "core.editor", "core.sshcommand", "core.askpass",
+	"core.fsmonitor", "core.hookspath", "core.alternaterefscommand",
+	"diff.external", "sequence.editor", "gpg.program", "credential.helper",
+	"uploadpack.packobjectshook", "init.templatedir", "ssh.variant",
+	"alias.", "pager.", "browser.", "help.browser", "difftool.", "mergetool.",
+	"filter.", "protocol.", "remote.", "url.", "http.proxy", "safe.directory",
+}
+
+// globalSwitches are the pre-subcommand options that take no value and
+// change nothing we care about.
+var globalSwitches = map[string]bool{
+	"-p": true, "--paginate": true, "-P": true, "--no-pager": true,
+	"--no-replace-objects": true, "--literal-pathspecs": true,
+	"--glob-pathspecs": true, "--noglob-pathspecs": true,
+	"--icase-pathspecs": true, "--no-optional-locks": true,
+	"--version": true, "--help": true, "-h": true,
+	"--html-path": true, "--man-path": true, "--info-path": true,
+	"--exec-path": true, // valueless form prints the path; the =<path> form is refused below
+}
+
+// subcommand splits the global options off the front and returns the
+// subcommand, its arguments, and a refusal reason if the globals cannot
+// be understood.
+//
+// Every unrecognized leading token is a REFUSAL, never a skip.  This is
+// not fussiness: git has several value-taking global options, and
+// skipping one as though it were a switch makes its VALUE look like the
+// subcommand.  `git --namespace log commit -am x` then classifies as
+// `log`, passes as a read, and performs a real commit that no log
+// records.  A leading token we do not understand is a leading token
+// whose arity we do not know, so the only safe reading is to stop.
+func subcommand(argv []string) (sub string, args []string, refusal string) {
 	for i := 0; i < len(argv); i++ {
 		a := argv[i]
 		if !strings.HasPrefix(a, "-") {
-			return a, argv[i+1:]
+			return a, argv[i+1:], ""
 		}
-		// -C <path> and -c <cfg> take a value; the rest are switches.
-		if a == "-C" || a == "-c" {
-			i++
-		}
-	}
-	return "", nil
-}
-
-func classifyRm(args []string) plan {
-	for _, a := range args {
-		if a == "--cached" {
-			return plan{verdict: refuse, reason: "`--cached` un-stages without touching the file, and there is no staging area here.  " +
-				"Delete the file, then call " + tool("checkpoint") + "."}
-		}
-	}
-	return plan{verdict: pass} // a plain delete; the next checkpoint records it
-}
-
-// classifyCommit maps `git commit` onto checkpoint.  Strict: an
-// unrecognized flag refuses rather than being dropped, because a
-// dropped flag turns the agent's request into a different request.
-func classifyCommit(args []string) plan {
-	var message string
-	var paths []string
-	seenSep := false
-	for i := 0; i < len(args); i++ {
-		a := args[i]
 		switch {
-		case seenSep:
-			paths = append(paths, a)
-		case a == "--":
-			seenSep = true
-		case a == "-m" || a == "--message":
-			if i+1 >= len(args) {
-				return plan{verdict: refuse, reason: "`-m` needs a message."}
+		case a == "-C" || a == "-c":
+			// Value in the next token.
+			if i+1 >= len(argv) {
+				return "", nil, "`" + a + "` needs a value."
 			}
 			i++
-			message = args[i]
-		case strings.HasPrefix(a, "--message="):
-			message = strings.TrimPrefix(a, "--message=")
-		case strings.HasPrefix(a, "-m") && len(a) > 2:
-			message = a[2:]
-		case a == "-a" || a == "--all" || a == "-q" || a == "--quiet":
-			// Harmless: checkpoint records the whole tree anyway.
-		case a == "--amend":
-			return plan{verdict: refuse, reason: "history here is append-only — a published checkpoint must not change under a reviewer.  " +
-				"Make the correction and record it forward with " + tool("checkpoint") + "."}
-		case !strings.HasPrefix(a, "-"):
-			return plan{verdict: refuse, reason: "commit takes paths after `--`, e.g. `git commit -m msg -- file`.  " +
-				"Better still, omit them: recording the whole tree cannot capture half a rename."}
+			if a == "-c" {
+				if why := checkConfigPair(argv[i]); why != "" {
+					return "", nil, why
+				}
+			}
+		case strings.HasPrefix(a, "-C") && len(a) > 2:
+			// Attached path, e.g. -C/grange/tree.
+		case strings.HasPrefix(a, "-c") && len(a) > 2:
+			if why := checkConfigPair(a[2:]); why != "" {
+				return "", nil, why
+			}
+		case globalSwitches[a]:
+			// Valueless.
 		default:
-			return plan{verdict: refuse, reason: fmt.Sprintf("`%s` has no counterpart in %s, so honouring it is not possible.  "+
-				"Call that tool directly if you need something this git shim cannot express.", a, tool("checkpoint"))}
+			return "", nil, "`" + a + "` is not a git option this workspace understands, and options it cannot read " +
+				"may take a value — which would make that value look like the command.  Refused rather than guessed at."
 		}
 	}
-	if message == "" {
-		return plan{verdict: refuse, reason: "recording a checkpoint needs a message: `git commit -m \"what this records\"`, " +
-			"or call " + tool("checkpoint") + " with one.  There is no editor to open here."}
-	}
-	cargs := map[string]any{"message": message}
-	if len(paths) > 0 {
-		cargs["paths"] = paths
-	}
-	return plan{verdict: translate, verb: "checkpoint", args: cargs}
+	return "", nil, ""
 }
 
-// classifyPush maps `git push` onto publish, which takes no arguments:
-// it pushes the branch the archivist is already on.  Anything that
-// names a different target, or asks for force or deletion, refuses —
-// those are exactly the shapes the verb set deliberately cannot express.
-func classifyPush(args []string) plan {
-	for _, a := range args {
-		switch {
-		case a == "-u" || a == "--set-upstream" || a == "origin" || a == "-q" || a == "--quiet":
-			// publish sets the upstream and origin is the only remote.
-		case strings.HasPrefix(a, "-"):
-			return plan{verdict: refuse, reason: fmt.Sprintf("`%s` is not something %s can express.  "+
-				"Force-push and tag deletion are structurally absent from the archivist's tools — published work must not change under a reviewer.", a, tool("publish"))}
-		case strings.Contains(a, ":"):
-			return plan{verdict: refuse, reason: "refspecs are not available; " + tool("publish") + " pushes the line of work you are on."}
-		default:
-			// A branch name: publish only pushes the current branch, and
-			// the archivist checks that itself.
+// checkConfigPair vets one -c key=value setting.
+func checkConfigPair(pair string) string {
+	key := strings.ToLower(pair)
+	if i := strings.Index(key, "="); i >= 0 {
+		key = key[:i]
+	}
+	for _, bad := range execConfig {
+		if key == bad || (strings.HasSuffix(bad, ".") && strings.HasPrefix(key, bad)) {
+			return "`-c " + pair + "` sets a configuration value that can run a program, which would make this " +
+				"invocation arbitrary execution wearing git's name.  Run the command directly instead — " +
+				"the shell is yours, and a command that runs should look like what it is."
 		}
 	}
-	return plan{verdict: translate, verb: "publish", args: map[string]any{}}
-}
-
-func classifyCheckout(sub string, args []string, q gitQuery) plan {
-	var create bool
-	var target string
-	var paths []string
-	seenSep := false
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case seenSep:
-			paths = append(paths, a)
-		case a == "--":
-			seenSep = true
-		case a == "-b" || a == "-c" || a == "-B" || a == "-C":
-			create = true
-		case a == "-q" || a == "--quiet":
-		case strings.HasPrefix(a, "-"):
-			return plan{verdict: refuse, reason: fmt.Sprintf("`%s %s` has no counterpart; the archivist MCP tools start_work(), switch_work(), and restore() are what move between and within lines of work.", sub, a)}
-		case target == "":
-			target = a
-		default:
-			paths = append(paths, a)
-		}
-	}
-	switch {
-	case len(paths) > 0 && target == "":
-		return plan{verdict: translate, verb: "restore", args: map[string]any{"path": paths[0]}}
-	case create && target != "":
-		return plan{verdict: translate, verb: "start_work", args: map[string]any{"name": target}}
-	case target == "":
-		return plan{verdict: refuse, reason: fmt.Sprintf("`%s` needs a line of work to switch to; name one to %s.", sub, tool("switch_work"))}
-	case q.branchExists(target):
-		return plan{verdict: translate, verb: "switch_work", args: map[string]any{"name": target}}
-	}
-	return plan{verdict: refuse, reason: fmt.Sprintf("%q is not a branch here.  To start a line of work call %s "+
-		"(with no name, and it mints one); to discard edits to a file call %s.", target, tool("start_work"), tool("restore"))}
+	return ""
 }
 
 func classifyBranch(args []string) plan {
-	var del bool
-	var name string
 	for _, a := range args {
 		switch {
-		case a == "-d" || a == "-D" || a == "--delete":
-			del = true
-		case a == "-a" || a == "--all" || a == "-l" || a == "--list" || a == "-r" || a == "--remotes" || a == "-v" || a == "--verbose":
-			// listing forms
+		case a == "--list" || a == "-l" || a == "-a" || a == "--all" || a == "-r" || a == "--remotes" ||
+			a == "-v" || a == "-vv" || a == "--verbose" || a == "--show-current" ||
+			a == "--merged" || a == "--no-merged" || a == "--contains" || a == "--no-contains" ||
+			a == "--points-at" || a == "-i" || a == "--ignore-case" || a == "--color" || a == "--no-color" ||
+			a == "--column" || a == "--no-column" || a == "--sort" || a == "--format":
+		case strings.HasPrefix(a, "--sort=") || strings.HasPrefix(a, "--format=") ||
+			strings.HasPrefix(a, "--contains=") || strings.HasPrefix(a, "--merged=") ||
+			strings.HasPrefix(a, "--points-at="):
 		case strings.HasPrefix(a, "-"):
-			return plan{verdict: refuse, reason: fmt.Sprintf("`branch %s` has no counterpart; the archivist MCP tools start_work(), switch_work(), and abandon_work() own branches here.", a)}
+			return deny("`git branch " + a + "` changes branches, which is the archivist's.  " +
+				tool(verbs.StartWork) + " begins one, " + verbs.SwitchWork + "() moves to one, " +
+				tool(verbs.AbandonWork) + " deletes one.  Listing forms of `git branch` are available.")
 		default:
-			name = a
+			// A bare name: creation, or a filter value for one of the
+			// options above.  Cannot tell them apart safely, so refuse.
+			return deny("`git branch " + a + "` would create or operate on a branch, which is the archivist's.  " +
+				"Call " + tool(verbs.StartWork) + " with no name and it mints `agent/<codename>` for you.  " +
+				"`git branch` with no arguments lists what exists.")
+		}
+	}
+	return allow()
+}
+
+// configWriteFlags name a form of `git config` that changes something,
+// whatever else is on the line.
+var configWriteFlags = map[string]bool{
+	"--add": true, "--unset": true, "--unset-all": true, "--replace-all": true,
+	"--rename-section": true, "--remove-section": true, "--edit": true,
+	"-e": true, "--set-all": true, "--fixed-value": false,
+}
+
+// classifyConfig follows git's own grammar rather than a list of
+// blessed spellings: reading is `config <key>` or `config --get <key>`,
+// and writing is `config <key> <value>`.  The ARITY is what
+// distinguishes them.
+//
+// The bare one-operand read matters more than it looks — `git config
+// remote.origin.url` is exactly what Go's -buildvcs stamping runs
+// (cmd/go/internal/vcs.gitRemoteRepo), and build-scan and release
+// tooling reach for the same form.  An earlier version of this function
+// allowed only the explicit `--get` spelling and would have broken
+// every Go build in the cell.
+func classifyConfig(args []string) plan {
+	if len(args) == 0 {
+		return deny("`git config` with no arguments opens an editor, and there is none here.  " +
+			"To read a value: `git config <key>`.")
+	}
+	var operands int
+	var listing bool
+	for _, a := range args {
+		switch {
+		case configWriteFlags[a]:
+			return deny("`git config " + a + "` changes configuration.  The repository's identity and safety " +
+				"settings are set at provision, and changing them would alter how work is attributed or published.")
+		case a == "-l" || a == "--list" || a == "--get-regexp" || a == "--get-urlmatch":
+			listing = true
+		case a == "--get" || a == "--get-all":
+		case strings.HasPrefix(a, "-"):
+			// Scope and formatting switches (--local, --show-origin, -z,
+			// --type=…) are harmless on a read and meaningless without
+			// one; the write forms are caught above.
+		default:
+			operands++
 		}
 	}
 	switch {
-	case del && name != "":
-		return plan{verdict: translate, verb: "abandon_work", args: map[string]any{"name": name}}
-	case del:
-		return plan{verdict: refuse, reason: "name the line of work to abandon."}
-	case name != "":
-		return plan{verdict: refuse, reason: "creating a branch this way skips the naming rule; call " + tool("start_work") + " with no name and it mints `agent/<codename>`."}
+	case listing:
+		return allow() // --list takes none, --get-regexp takes a pattern
+	case operands == 1:
+		return allow() // `config <key>` or `--get <key>`: a read
+	case operands == 0:
+		return deny("`git config` needs a key to read, e.g. `git config remote.origin.url`.")
 	}
-	return plan{verdict: pass} // a listing
+	return deny("`git config <key> <value>` writes configuration.  The repository's identity and endpoint are set " +
+		"at provision and are not yours to change; " + tool(verbs.CurrentState) + " reports the branch and endpoint.")
+}
+
+func classifyRemote(args []string) plan {
+	if len(args) == 0 {
+		return allow() // lists remote names
+	}
+	switch args[0] {
+	case "-v", "--verbose", "show", "get-url":
+		return allow()
+	}
+	return deny("the remote is set at provision from the endpoint table; changing it would point published work " +
+		"somewhere unreviewed.  `git remote -v` and `git remote get-url` are available for reading.")
 }
 
 func classifyStash(args []string) plan {
-	if len(args) == 0 || args[0] == "push" || args[0] == "save" {
-		return plan{verdict: translate, verb: "set_aside", args: map[string]any{}}
+	if len(args) > 0 && (args[0] == "list" || args[0] == "show") {
+		return allow()
 	}
-	switch args[0] {
-	case "pop", "apply":
-		return plan{verdict: translate, verb: "resume", args: map[string]any{}}
-	case "list", "show":
-		return plan{verdict: pass}
-	}
-	return plan{verdict: refuse, reason: tool("set_aside") + " parks the tree and " + tool("resume") + " brings it back; the other stash forms have no counterpart."}
+	return deny("call " + tool(verbs.SetAside) + " to park the working tree and " + verbs.Resume + "() to bring it back.  " +
+		"`git stash list` and `git stash show` are available for reading.")
 }
 
-func classifyRestore(args []string) plan {
-	var paths []string
-	for _, a := range args {
-		if a == "--" {
-			continue
-		}
-		if strings.HasPrefix(a, "-") {
-			return plan{verdict: refuse, reason: fmt.Sprintf("`restore %s` has no counterpart; %s takes a path or a checkpoint.", a, tool("restore"))}
-		}
-		paths = append(paths, a)
+func classifyReflog(args []string) plan {
+	if len(args) == 0 || args[0] == "show" {
+		return allow()
 	}
-	if len(paths) == 0 {
-		return plan{verdict: refuse, reason: "name a path to restore."}
-	}
-	return plan{verdict: translate, verb: "restore", args: map[string]any{"path": paths[0]}}
+	return deny("only `git reflog show` is available here; expiring or deleting reflog entries is repository maintenance.")
 }
 
-func classifyPull(sub string, args []string) plan {
+func classifySymbolicRef(args []string) plan {
+	// Reading takes one ref name; writing takes two, or --delete.
+	var operands int
 	for _, a := range args {
-		if strings.HasPrefix(a, "-") && a != "-q" && a != "--quiet" && a != "--rebase" && a != "--ff-only" {
-			return plan{verdict: refuse, reason: fmt.Sprintf("`%s %s` has no counterpart; %s brings the default branch forward.", sub, a, tool("sync_from_upstream"))}
+		switch {
+		case a == "-q" || a == "--quiet" || a == "--short":
+		case strings.HasPrefix(a, "-"):
+			return deny("`git symbolic-ref " + a + "` moves a ref, which is the archivist's.")
+		default:
+			operands++
 		}
 	}
-	return plan{verdict: translate, verb: "sync_from_upstream", args: map[string]any{}}
+	if operands > 1 {
+		return deny("`git symbolic-ref <name> <ref>` moves a ref, which is the archivist's.  " +
+			"Reading one (`git symbolic-ref --short HEAD`) is available.")
+	}
+	return allow()
+}
+
+func classifyNotes(args []string) plan {
+	if len(args) == 0 || args[0] == "list" || args[0] == "show" {
+		return allow()
+	}
+	return deny("notes are not part of the archivist's model; they would not survive to the pull request.")
+}
+
+func classifyWorktree(args []string) plan {
+	if len(args) > 0 && args[0] == "list" {
+		return allow()
+	}
+	return deny("one workspace per session, by design — see \"Your workspace: the grange\" in your environment prompt.")
+}
+
+func classifySubmodule(args []string) plan {
+	if len(args) > 0 && (args[0] == "status" || args[0] == "summary") {
+		return allow()
+	}
+	return deny("submodules are not provisioned into the grange and cannot be fetched from here.")
+}
+
+func classifyBundle(args []string) plan {
+	if len(args) > 0 && (args[0] == "verify" || args[0] == "list-heads") {
+		return allow()
+	}
+	return deny("`git bundle create` writes a file and is a way to move history out of the cell; " +
+		"work leaves through " + tool(verbs.Publish) + " and the pull request.")
 }
