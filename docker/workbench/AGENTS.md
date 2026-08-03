@@ -35,11 +35,19 @@ archivist's own read verbs (`history`, `show_change`, `file_at`,
 `pending_changes`) are deliberately bounded for your context rather
 than complete.
 
-Every command that **changes** version-control state has an archivist
-verb that does the same job and enforces the rules this repository is
-under.  Use the verb, not the git command:
+**Every git command that changes anything is refused here**, and the
+refusal names what to call instead.  The `git` on your PATH runs only
+commands known to be read-only; it does not translate, guess, or
+partially apply.  So `git commit`, `git push`, `git checkout`, `git
+merge`, `git stash` and the rest will stop and tell you the tool to
+use — that is working as intended, not an environment fault.
 
-| instead of | call |
+Everything in the right-hand column is an **MCP tool on the archivist**
+— you invoke it as a tool, the way you would any other MCP tool.  None
+of them is a shell command, and typing one at a shell will only tell
+you there is no such command.
+
+| instead of this shell command | call this archivist MCP tool |
 |---|---|
 | `git checkout -b` / `git switch -c` | `start_work` |
 | `git switch <branch>` / `git checkout <branch>` | `switch_work` |
@@ -59,7 +67,12 @@ under.  Use the verb, not the git command:
   changes — the new path AND the old one — so naming only the new file
   records half the operation and leaves the old file in place.
 - Remote operations are archivist-ONLY, and there is no credential in
-  your container — `git push` cannot work and must not be attempted.
+  your container.
+- **A refusal from `git` is not a puzzle to route around.**  It names
+  the verb to use, or says why the operation does not exist here (there
+  is no staging area; history is append-only).  Read it and take the
+  named path — retrying with different flags will not find a way
+  through, and there is no second git.
 - The default branch is untouchable by design.  All work lands via a
   pull request a human approves on the forge; that review is the
   boundary — write code you would show a colleague.

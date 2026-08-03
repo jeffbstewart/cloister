@@ -97,7 +97,7 @@ func run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("%w\n  the archivist is the workspace's owner; without it there is no session to start", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	m := &manager{
 		arc:   c,

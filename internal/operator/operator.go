@@ -28,10 +28,13 @@ package operator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/jeffbstewart/cloister/internal/verbs"
 )
 
 // State is the workspace's disk-derived condition, mirroring
@@ -65,6 +68,11 @@ func (s Status) Provisioned() string {
 // answer was no.  The message is the archivist's own — it names the
 // failing requirement or the unpublished work, and is meant to be shown
 // to the operator verbatim rather than paraphrased.
+//
+// Keeping this distinct from a transport failure is the point: "the
+// archivist said no, and here is why" and "the archivist is
+// unreachable" call for opposite responses, and a client that flattened
+// both into error would push that judgement onto every call site.
 type RefusedError struct {
 	Verb    string
 	Message string
@@ -92,7 +100,7 @@ type Config struct {
 // Dial connects to the operator surface.  The caller closes the Client.
 func Dial(ctx context.Context, cfg Config) (*Client, error) {
 	if cfg.URL == "" {
-		return nil, fmt.Errorf("operator: no archivist URL")
+		return nil, errors.New("operator: no archivist URL")
 	}
 	if cfg.Name == "" {
 		cfg.Name = "cloister-operator"
@@ -111,7 +119,7 @@ func (c *Client) Close() error { return c.sess.Close() }
 // Status reports the workspace's condition.  Never acts.
 func (c *Client) Status(ctx context.Context) (Status, error) {
 	var st Status
-	err := c.call(ctx, "workspace_state", nil, &st)
+	err := c.call(ctx, verbs.WorkspaceState, nil, &st)
 	return st, err
 }
 
@@ -134,7 +142,7 @@ func (c *Client) Provision(ctx context.Context, repo, branch string) (ProvisionR
 		args["branch"] = branch
 	}
 	var res ProvisionResult
-	err := c.call(ctx, "provision", args, &res)
+	err := c.call(ctx, verbs.Provision, args, &res)
 	return res, err
 }
 
@@ -158,23 +166,38 @@ func (c *Client) Dispose(ctx context.Context, force bool) (DisposeResult, error)
 		args["force"] = true
 	}
 	var res DisposeResult
-	err := c.call(ctx, "dispose", args, &res)
+	err := c.call(ctx, verbs.Dispose, args, &res)
 	return res, err
 }
 
 // call invokes one tool and unmarshals its JSON answer, turning a
-// tool-level error into a *RefusedError.
+// tool-level error into a *RefusedError.  Every verb on this surface
+// answers JSON; a verb that answered prose would surface here as a
+// decode error, which is why the operator surface keeps to one shape.
 func (c *Client) call(ctx context.Context, name string, args map[string]any, out any) error {
 	res, err := c.sess.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
 	if err != nil {
 		return fmt.Errorf("operator: calling %s: %w", name, err)
 	}
-	text := firstText(res)
+	text, ok := firstText(res)
 	if res.IsError {
+		if !ok {
+			// A refusal with nothing in it would print as "refused:"
+			// followed by a blank line, which tells the reader nothing
+			// about what to do next.
+			return &RefusedError{Verb: name, Message: "refused, with no reason given"}
+		}
 		return &RefusedError{Verb: name, Message: text}
 	}
 	if out == nil {
 		return nil
+	}
+	if !ok {
+		// Distinct from a malformed payload: the difference between "the
+		// archivist sent nothing" and "the archivist sent something I
+		// cannot read" is the difference between a broken surface and a
+		// broken contract.
+		return fmt.Errorf("operator: %s returned no text content", name)
 	}
 	if err := json.Unmarshal([]byte(text), out); err != nil {
 		return fmt.Errorf("operator: unparseable %s answer %q: %w", name, text, err)
@@ -182,13 +205,15 @@ func (c *Client) call(ctx context.Context, name string, args map[string]any, out
 	return nil
 }
 
-func firstText(res *mcp.CallToolResult) string {
+// firstText reports the result's text content, and whether there was
+// any.
+func firstText(res *mcp.CallToolResult) (string, bool) {
 	for _, c := range res.Content {
 		if tc, ok := c.(*mcp.TextContent); ok {
-			return tc.Text
+			return tc.Text, true
 		}
 	}
-	return ""
+	return "", false
 }
 
 // ProvisionTimeout bounds a provision: a full clone through the relays

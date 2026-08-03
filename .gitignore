@@ -35,6 +35,7 @@ secrets/
 docker/workers/cloister-worker
 docker/toolchains/*/cloister-worker
 docker/workbench/cloister-workbench
+docker/workbench/cloister-git-proxy
 
 # Python bytecode from models/ build+eval tooling (qualify.py).
 __pycache__/
