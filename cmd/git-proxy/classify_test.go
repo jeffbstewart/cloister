@@ -15,6 +15,7 @@
 package main
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -241,6 +242,51 @@ func TestRefusalsNameTheAlternative(t *testing.T) {
 		}
 		if !strings.Contains(p.reason, tc.want) {
 			t.Errorf("git %s refusal %q does not mention %q", strings.Join(tc.argv, " "), p.reason, tc.want)
+		}
+	}
+}
+
+// TestVerbsAreNamedAsArchivistToolsNotShellCommands: a bare `checkpoint`
+// in a refusal reads like a git subcommand that happens not to exist
+// yet, and the reader's next move is to try spelling it differently.
+// Every mention has to say it is an MCP tool call on the archivist.
+func TestVerbsAreNamedAsArchivistToolsNotShellCommands(t *testing.T) {
+	q := withBranches("agent/x", "main")
+	verbs := []string{
+		"checkpoint", "publish", "start_work", "switch_work", "abandon_work",
+		"restore", "set_aside", "resume", "sync_from_upstream", "history", "show_change",
+	}
+	// Every refusal the proxy can produce, including the whole static table.
+	var reasons []string
+	for _, why := range refusals {
+		reasons = append(reasons, why)
+	}
+	for _, argv := range [][]string{
+		{"commit"}, {"commit", "-m", "x", "-S"}, {"commit", "--amend"},
+		{"push", "--force"}, {"push", "origin", "a:b"},
+		{"checkout", "--orphan", "x"}, {"checkout", "nonesuch"}, {"checkout"},
+		{"branch", "newthing"}, {"branch", "--set-upstream-to=origin/main"},
+		{"stash", "drop"}, {"restore", "--staged"}, {"pull", "--depth=1"},
+		{"rm", "--cached", "a.txt"}, {"nosuchcommand"},
+	} {
+		if p := classify(argv, q); p.verdict == refuse {
+			reasons = append(reasons, p.reason)
+		}
+	}
+
+	for _, reason := range reasons {
+		for _, v := range verbs {
+			// Word-bounded: "published work must not change" is English,
+			// not a reference to the publish() tool.
+			if !regexp.MustCompile(`\b` + v + `\b`).MatchString(reason) {
+				continue
+			}
+			// The verb appears; it must be marked as a tool — either by
+			// the tool() form, or by naming the tools collectively.
+			marked := strings.Contains(reason, v+"()") || strings.Contains(reason, "MCP tool")
+			if !marked {
+				t.Errorf("refusal names %q without saying it is an archivist MCP tool:\n  %s", v, reason)
+			}
 		}
 	}
 }

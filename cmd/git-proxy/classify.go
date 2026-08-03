@@ -62,26 +62,34 @@ var reads = map[string]bool{
 // there is nothing for them to desynchronize.
 var worktreeOnly = map[string]bool{"mv": true, "clean": true}
 
+// tool renders an archivist verb the way every message here must: as an
+// MCP TOOL CALL on the archivist, never as something to type at a
+// shell.  Without this the advice reads like a git subcommand that
+// happens not to exist yet, and the reader's next move is to try
+// spelling it differently.
+func tool(name string) string { return "the archivist MCP tool " + name + "()" }
+
 // refusals are the commands with no archivist counterpart, mapped to
 // the reason.  Being explicit here (rather than falling through to the
 // generic unknown-command message) is what makes the refusal useful:
 // it names why the operation is absent, which is usually a design
 // decision rather than an oversight.
 var refusals = map[string]string{
-	"add": "there is no staging area here — `checkpoint` records the working tree as it stands, " +
-		"so there is nothing to stage.  Just edit and checkpoint.",
-	"am":        "patch application is not part of the archivist's model; edit the files and checkpoint.",
-	"apply":     "patch application is not part of the archivist's model; edit the files and checkpoint.",
-	"bisect":    "bisect drives HEAD through a search; the archivist owns HEAD.  Use `history` and `show_change` to reason about changes instead.",
-	"clone":     "this workspace is provisioned for you and cannot be changed; there is no route to a forge from here either.",
-	"config":    "the repository's identity and safety settings are set at provision and are not yours to change.",
-	"fetch":     "remote access is the archivist's alone; `sync_from_upstream` brings the default branch forward.",
-	"gc":        "repository maintenance is not the agent's concern; the workspace is destroyed after the task.",
-	"init":      "this workspace is already a provisioned clone, and a second repository inside it would not be published.",
-	"rebase":    "the archivist's history is append-only: checkpoints accumulate and `restore` rolls back.  There is no rewrite verb, deliberately — published work must not change under a reviewer.",
+	"add": "there is no staging area here — " + tool("checkpoint") + " records the working tree as it stands, " +
+		"so there is nothing to stage.  Just edit the files and call it.",
+	"am":     "patch application is not part of the archivist's model; edit the files and call " + tool("checkpoint") + ".",
+	"apply":  "patch application is not part of the archivist's model; edit the files and call " + tool("checkpoint") + ".",
+	"bisect": "bisect drives HEAD through a search; the archivist owns HEAD.  Reason about changes with " + tool("history") + " and " + tool("show_change") + " instead.",
+	"clone":  "this workspace is provisioned for you and cannot be changed; there is no route to a forge from here either.",
+	"config": "the repository's identity and safety settings are set at provision and are not yours to change or inspect.",
+	"fetch":  "remote access is the archivist's alone; " + tool("sync_from_upstream") + " brings the default branch forward.",
+	"gc":     "repository maintenance is not the agent's concern; the workspace is destroyed after the task.",
+	"init":   "this workspace is already a provisioned clone, and a second repository inside it would not be published.",
+	"rebase": "the archivist's history is append-only: checkpoints accumulate and " + tool("restore") + " rolls back.  " +
+		"There is no rewrite verb, deliberately — published work must not change under a reviewer.",
 	"remote":    "the remote is set at provision from the endpoint table; changing it would point published work somewhere unreviewed.",
-	"reset":     "use `restore` to roll back — it knows whether the branch is published, and rewrites history only while it is still private.",
-	"revert":    "no revert verb: `restore` to an earlier checkpoint, then checkpoint the result forward.",
+	"reset":     "call " + tool("restore") + " to roll back — it knows whether the branch is published, and rewrites history only while it is still private.",
+	"revert":    "there is no revert verb: call " + tool("restore") + " to reach an earlier checkpoint, then " + tool("checkpoint") + " to record the result forward.",
 	"submodule": "submodules are not provisioned into the grange and cannot be fetched from here.",
 	"tag":       "tags are a release act, and releases are the human's, not the agent's.",
 	"worktree":  "one workspace per session, by design — see the grange rules in your environment prompt.",
@@ -130,7 +138,8 @@ func classify(argv []string, q gitQuery) plan {
 		return plan{verdict: refuse, reason: why}
 	}
 	return plan{verdict: refuse, reason: "not available in this workspace.  " +
-		"Version control here goes through the archivist's verbs; if a build genuinely needs this command, tell the operator."}
+		"Version control here goes through the archivist's MCP tools — they are listed in your environment prompt, " +
+		"and you call them as tools, not as shell commands.  If a BUILD genuinely needs this git command, tell the operator."}
 }
 
 // subcommand splits the global options off the front.  Only the global
@@ -155,7 +164,7 @@ func classifyRm(args []string) plan {
 	for _, a := range args {
 		if a == "--cached" {
 			return plan{verdict: refuse, reason: "`--cached` un-stages without touching the file, and there is no staging area here.  " +
-				"Delete the file and `checkpoint`."}
+				"Delete the file, then call " + tool("checkpoint") + "."}
 		}
 	}
 	return plan{verdict: pass} // a plain delete; the next checkpoint records it
@@ -189,18 +198,18 @@ func classifyCommit(args []string) plan {
 			// Harmless: checkpoint records the whole tree anyway.
 		case a == "--amend":
 			return plan{verdict: refuse, reason: "history here is append-only — a published checkpoint must not change under a reviewer.  " +
-				"Make the correction and `checkpoint` it forward."}
+				"Make the correction and record it forward with " + tool("checkpoint") + "."}
 		case !strings.HasPrefix(a, "-"):
 			return plan{verdict: refuse, reason: "commit takes paths after `--`, e.g. `git commit -m msg -- file`.  " +
-				"Better still, omit them: a checkpoint of the whole tree cannot record half a rename."}
+				"Better still, omit them: recording the whole tree cannot capture half a rename."}
 		default:
-			return plan{verdict: refuse, reason: fmt.Sprintf("`%s` has no counterpart in `checkpoint`, so honouring it is not possible.  "+
-				"Call the archivist's `checkpoint` directly if you need something this proxy cannot express.", a)}
+			return plan{verdict: refuse, reason: fmt.Sprintf("`%s` has no counterpart in %s, so honouring it is not possible.  "+
+				"Call that tool directly if you need something this git shim cannot express.", a, tool("checkpoint"))}
 		}
 	}
 	if message == "" {
-		return plan{verdict: refuse, reason: "a checkpoint needs a message: `git commit -m \"what this records\"`.  " +
-			"There is no editor to open here."}
+		return plan{verdict: refuse, reason: "recording a checkpoint needs a message: `git commit -m \"what this records\"`, " +
+			"or call " + tool("checkpoint") + " with one.  There is no editor to open here."}
 	}
 	cargs := map[string]any{"message": message}
 	if len(paths) > 0 {
@@ -219,10 +228,10 @@ func classifyPush(args []string) plan {
 		case a == "-u" || a == "--set-upstream" || a == "origin" || a == "-q" || a == "--quiet":
 			// publish sets the upstream and origin is the only remote.
 		case strings.HasPrefix(a, "-"):
-			return plan{verdict: refuse, reason: fmt.Sprintf("`%s` is not something publish can express.  "+
-				"Force-push and tag deletion are structurally absent from the archivist's verbs — published work must not change under a reviewer.", a)}
+			return plan{verdict: refuse, reason: fmt.Sprintf("`%s` is not something %s can express.  "+
+				"Force-push and tag deletion are structurally absent from the archivist's tools — published work must not change under a reviewer.", a, tool("publish"))}
 		case strings.Contains(a, ":"):
-			return plan{verdict: refuse, reason: "refspecs are not available; `publish` pushes the line of work you are on."}
+			return plan{verdict: refuse, reason: "refspecs are not available; " + tool("publish") + " pushes the line of work you are on."}
 		default:
 			// A branch name: publish only pushes the current branch, and
 			// the archivist checks that itself.
@@ -247,7 +256,7 @@ func classifyCheckout(sub string, args []string, q gitQuery) plan {
 			create = true
 		case a == "-q" || a == "--quiet":
 		case strings.HasPrefix(a, "-"):
-			return plan{verdict: refuse, reason: fmt.Sprintf("`%s %s` has no counterpart; use `start_work`, `switch_work`, or `restore`.", sub, a)}
+			return plan{verdict: refuse, reason: fmt.Sprintf("`%s %s` has no counterpart; the archivist MCP tools start_work(), switch_work(), and restore() are what move between and within lines of work.", sub, a)}
 		case target == "":
 			target = a
 		default:
@@ -260,12 +269,12 @@ func classifyCheckout(sub string, args []string, q gitQuery) plan {
 	case create && target != "":
 		return plan{verdict: translate, verb: "start_work", args: map[string]any{"name": target}}
 	case target == "":
-		return plan{verdict: refuse, reason: fmt.Sprintf("`%s` needs a line of work to switch to; `switch_work` names one.", sub)}
+		return plan{verdict: refuse, reason: fmt.Sprintf("`%s` needs a line of work to switch to; name one to %s.", sub, tool("switch_work"))}
 	case q.branchExists(target):
 		return plan{verdict: translate, verb: "switch_work", args: map[string]any{"name": target}}
 	}
-	return plan{verdict: refuse, reason: fmt.Sprintf("%q is not a branch here.  To start a line of work use `start_work` "+
-		"(with no name, and it mints one); to discard edits to a file use `restore`.", target)}
+	return plan{verdict: refuse, reason: fmt.Sprintf("%q is not a branch here.  To start a line of work call %s "+
+		"(with no name, and it mints one); to discard edits to a file call %s.", target, tool("start_work"), tool("restore"))}
 }
 
 func classifyBranch(args []string) plan {
@@ -278,7 +287,7 @@ func classifyBranch(args []string) plan {
 		case a == "-a" || a == "--all" || a == "-l" || a == "--list" || a == "-r" || a == "--remotes" || a == "-v" || a == "--verbose":
 			// listing forms
 		case strings.HasPrefix(a, "-"):
-			return plan{verdict: refuse, reason: fmt.Sprintf("`branch %s` has no counterpart; `start_work`, `switch_work`, and `abandon_work` are the branch verbs.", a)}
+			return plan{verdict: refuse, reason: fmt.Sprintf("`branch %s` has no counterpart; the archivist MCP tools start_work(), switch_work(), and abandon_work() own branches here.", a)}
 		default:
 			name = a
 		}
@@ -289,7 +298,7 @@ func classifyBranch(args []string) plan {
 	case del:
 		return plan{verdict: refuse, reason: "name the line of work to abandon."}
 	case name != "":
-		return plan{verdict: refuse, reason: "creating a branch this way skips the naming rule; `start_work` with no name mints `agent/<codename>`."}
+		return plan{verdict: refuse, reason: "creating a branch this way skips the naming rule; call " + tool("start_work") + " with no name and it mints `agent/<codename>`."}
 	}
 	return plan{verdict: pass} // a listing
 }
@@ -304,7 +313,7 @@ func classifyStash(args []string) plan {
 	case "list", "show":
 		return plan{verdict: pass}
 	}
-	return plan{verdict: refuse, reason: "`set_aside` parks the tree and `resume` brings it back; the other stash forms have no counterpart."}
+	return plan{verdict: refuse, reason: tool("set_aside") + " parks the tree and " + tool("resume") + " brings it back; the other stash forms have no counterpart."}
 }
 
 func classifyRestore(args []string) plan {
@@ -314,7 +323,7 @@ func classifyRestore(args []string) plan {
 			continue
 		}
 		if strings.HasPrefix(a, "-") {
-			return plan{verdict: refuse, reason: fmt.Sprintf("`restore %s` has no counterpart; the archivist's `restore` takes a path or a checkpoint.", a)}
+			return plan{verdict: refuse, reason: fmt.Sprintf("`restore %s` has no counterpart; %s takes a path or a checkpoint.", a, tool("restore"))}
 		}
 		paths = append(paths, a)
 	}
@@ -327,7 +336,7 @@ func classifyRestore(args []string) plan {
 func classifyPull(sub string, args []string) plan {
 	for _, a := range args {
 		if strings.HasPrefix(a, "-") && a != "-q" && a != "--quiet" && a != "--rebase" && a != "--ff-only" {
-			return plan{verdict: refuse, reason: fmt.Sprintf("`%s %s` has no counterpart; `sync_from_upstream` brings the default branch forward.", sub, a)}
+			return plan{verdict: refuse, reason: fmt.Sprintf("`%s %s` has no counterpart; %s brings the default branch forward.", sub, a, tool("sync_from_upstream"))}
 		}
 	}
 	return plan{verdict: translate, verb: "sync_from_upstream", args: map[string]any{}}

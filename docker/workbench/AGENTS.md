@@ -43,7 +43,12 @@ commands with no counterpart are refused with the reason.  Calling the
 verb yourself is still better — one step instead of two, and the full
 answer rather than a rendering of it:
 
-| instead of | call |
+Everything in the right-hand column is an **MCP tool on the archivist**
+— you invoke it as a tool, the way you would any other MCP tool.  None
+of them is a shell command, and typing one at a shell will only tell
+you there is no such command.
+
+| instead of this shell command | call this archivist MCP tool |
 |---|---|
 | `git checkout -b` / `git switch -c` | `start_work` |
 | `git switch <branch>` / `git checkout <branch>` | `switch_work` |

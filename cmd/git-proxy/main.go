@@ -81,13 +81,18 @@ func run(argv []string) int {
 	case refuse:
 		logEvent("refused", argv, "")
 		fmt.Fprintf(os.Stderr, "cloister: `git %s` is not available here.\n\n%s\n\n"+
-			"Your environment prompt lists the archivist's verbs and what each replaces.\n",
+			"Those are MCP tools on the archivist — invoke them as tools, not as shell\n"+
+			"commands.  Your environment prompt lists the full set.\n",
 			strings.Join(argv, " "), wrap(p.reason))
 		return 1
 
 	case translate:
 		logEvent("translated", argv, p.verb)
-		fmt.Fprintf(os.Stderr, "[cloister] git %s  →  archivist %s\n", strings.Join(argv, " "), p.verb)
+		// Name the surface, not just the verb: "archivist checkpoint"
+		// reads like a git subcommand, and the point of announcing at all
+		// is that the agent knows what really happened.
+		fmt.Fprintf(os.Stderr, "[cloister] `git %s` is not what ran — this called the archivist MCP tool %s() for you.\n",
+			strings.Join(argv, " "), p.verb)
 		return callArchivist(p)
 	}
 	return 1
@@ -116,7 +121,7 @@ func callArchivist(p plan) int {
 	if err := c.Call(ctx, p.verb, p.args, &answer); err != nil {
 		var ref *mcpclient.RefusedError
 		if errors.As(err, &ref) {
-			fmt.Fprintf(os.Stderr, "cloister: the archivist refused %s:\n%s\n", p.verb, wrap(ref.Message))
+			fmt.Fprintf(os.Stderr, "cloister: the archivist MCP tool %s() refused:\n%s\n", p.verb, wrap(ref.Message))
 			return 1
 		}
 		fmt.Fprintf(os.Stderr, "cloister: %v\n", err)
