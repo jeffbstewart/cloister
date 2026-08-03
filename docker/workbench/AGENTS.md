@@ -26,13 +26,46 @@ assuming anything works the way an open laptop does.
 - `/grange/staging` and `.git/cloister-grange` are lifecycle machinery.
   Leave them alone.
 
-## Version control: local git is yours, the remote is the archivist's
+## Version control: read with git, write with the archivist
 
-- You may run `git` freely for local inspection and scratch work.
-- Everything that matters goes through the **archivist** MCP tools:
-  `start_work` / `switch_work` for branches, `checkpoint` to record the
-  tree, `restore` / `set_aside` / `resume` for rollback and parking,
-  `sync_from_upstream` to update from the default branch.
+`git` is a **reading** tool here.  `git log`, `git show`, `git diff`,
+`git blame`, `git grep`, `git rev-parse` — use them freely; they are
+better at history archaeology than anything else on offer, and the
+archivist's own read verbs (`history`, `show_change`, `file_at`,
+`pending_changes`) are deliberately bounded for your context rather
+than complete.
+
+Every command that **changes** version-control state has an archivist
+verb that does the same job and enforces the rules this repository is
+under.  Use the verb, not the git command:
+
+| instead of | call |
+|---|---|
+| `git checkout -b` / `git switch -c` | `start_work` |
+| `git switch <branch>` / `git checkout <branch>` | `switch_work` |
+| `git branch -D <branch>` | `abandon_work` |
+| `git commit` | `checkpoint` |
+| `git checkout -- <paths>` / `git restore` | `restore` |
+| `git stash` / `git stash pop` | `set_aside` / `resume` |
+| `git pull` / `git merge origin/<default>` | `sync_from_upstream` |
+| `git push` | `publish` |
+
+- **There is no staging area.**  `checkpoint` records the working tree
+  as it stands, so `git add` has nothing to mean here and `git diff
+  --cached` has nothing to show.  Just edit and `checkpoint`.
+- **A rename or a delete is a change like any other**, and `checkpoint`
+  with no `paths` records the whole tree, which is what you almost
+  always want.  If you *do* pass `paths`, remember a rename is two
+  changes — the new path AND the old one — so naming only the new file
+  records half the operation and leaves the old file in place.
+- Remote operations are archivist-ONLY, and there is no credential in
+  your container — `git push` cannot work and must not be attempted.
+- The default branch is untouchable by design.  All work lands via a
+  pull request a human approves on the forge; that review is the
+  boundary — write code you would show a colleague.
+
+### Naming a line of work
+
 - **Don't coin branch names.**  Call `start_work` with no name and it
   mints one — `agent/brisk-otter`.  A codename is a handle for talking
   about the work, and it can't age badly the way `agent/quick-fix`
@@ -42,18 +75,39 @@ assuming anything works the way an open laptop does.
   forge refuses to create any other branch from this account, so a
   wrong name is discovered at publish, after the work is already
   committed to it; `start_work` refuses it up front for that reason.
-- The normal order is: `start_work` → edit and build → `checkpoint` →
-  `publish` → `propose` → `await_review`.  `publish` pushes the branch
-  the archivist is already on; it does not create one, so `start_work`
-  comes first.
-- Remote operations are archivist-ONLY, and there is no credential in
-  your container — `git push` cannot work and must not be attempted.
-  Use `publish` to push your branch, `propose` to open the PR,
-  `check_progress` / `read_reviews` / `reply_to_review` for the review
-  conversation, and `await_review` to block until the human reviews.
-- The default branch is untouchable by design.  All work lands via a
-  pull request a human approves on the forge; that review is the
-  boundary — write code you would show a colleague.
+
+### The task loop, start to finish
+
+```
+current_state                 orient: repo, branch, what's already pending
+start_work                    mints agent/<codename>
+  edit, build, test
+  checkpoint "…"              record the tree; repeat as the work grows
+publish                       push the branch
+propose                       open the pull request
+check_progress                CONFIRM the PR shows what you think it does
+await_review                  block until a human reviews
+
+then, for EVERY round of review:
+  read_reviews                what the human asked for
+  edit, build, test
+  checkpoint "…"
+  publish                     ← a revision is not on the forge until
+                                you publish AGAIN.  This is the step
+                                most often forgotten.
+  check_progress              confirm the new commits are on the PR
+  reply_to_review             answer the comments you addressed
+  await_review                back to waiting
+```
+
+- **You cannot see the forge.**  `check_progress` is your only mirror
+  of what actually landed, so call it after `publish` rather than
+  assuming.  A `checkpoint` that was refused, or a `publish` you
+  skipped, looks exactly like success from inside this container until
+  you look.
+- If a verb refuses, **read the refusal and fix the cause** — the
+  archivist names it.  Don't retry the same call, don't route around it
+  with raw `git`, and don't report the work as done.
 
 ## The cell is structurally offline
 
@@ -80,6 +134,12 @@ not scaffold solutions that need them.  Build systems: each repo's
 
 - Never commit agent context files (your home directory's `QWEN.md`)
   or anything under `/grange` that the repository does not track.
+- **Don't write this cell into the repository.**  `/grange/tree`, the
+  archivist's verbs, and the fact that an agent authored the change are
+  facts about *where you are working*, not about the project.  Anyone
+  reading the repository normally has none of them, so a path, a
+  workflow, or a release process described in those terms is simply
+  wrong for the reader.
 - Project-specific guidance lives in the repository itself (its own
   `CLAUDE.md`/`AGENTS.md`, if present) and adds to — never replaces —
   the rules here.
