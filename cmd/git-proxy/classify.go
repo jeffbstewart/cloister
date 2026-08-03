@@ -153,18 +153,34 @@ var splitPersonality = map[string]func(args []string) plan{
 var refusals = map[string]string{
 	"add": "there is no staging area here — " + tool(verbs.Checkpoint) + " records the working tree as it stands, " +
 		"so there is nothing to stage.  Just edit the files and call it.",
-	"am":     "patch application is not part of the archivist's model; edit the files and call " + tool(verbs.Checkpoint) + ".",
-	"apply":  "patch application is not part of the archivist's model; edit the files and call " + tool(verbs.Checkpoint) + ".",
+	"am":    "patch application is not part of the archivist's model; edit the files and call " + tool(verbs.Checkpoint) + ".",
+	"apply": "patch application is not part of the archivist's model; edit the files and call " + tool(verbs.Checkpoint) + ".",
+	// git 2.49+.  Modifies no refs, HEAD, index, or working tree — but it
+	// downloads objects from the remote, and remote access is the
+	// archivist's alone.  Moot in practice: a grange is a full clone, so
+	// there are no missing blobs to fetch.
+	"backfill": "this downloads objects from the remote, and remote access is the archivist's alone.  " +
+		"Your workspace is a full clone in any case, so there is nothing missing to fetch.",
 	"bisect": "bisect drives HEAD through a search, and the archivist owns HEAD.  Reason about changes with " + tools(verbs.History, verbs.ShowChange) + " instead.",
 	"checkout": "checkout means three different things depending on its arguments, and guessing wrong moves HEAD.  Say which you mean with " +
 		tools(verbs.StartWork, verbs.SwitchWork, verbs.Restore) + ": begin a line of work, move to an existing one, or put a file back.",
-	"cherry-pick":     "no cherry-pick verb: the archivist's history is append-only.  Make the change and record it with " + tool(verbs.Checkpoint) + ".",
-	"clean":           "use plain `rm` — the working tree is yours to edit directly, and " + tool(verbs.Checkpoint) + " records whatever it finds.",
-	"clone":           "this workspace is provisioned for you and cannot be changed; there is no route to a forge from here either.",
-	"commit":          "call " + tool(verbs.Checkpoint) + " instead — it records the whole working tree, refuses the default branch, and validates the message.",
-	"fetch":           "remote access is the archivist's alone; " + tool(verbs.SyncFromUpstream) + " brings the default branch forward.",
-	"filter-branch":   "history rewriting has no counterpart here, deliberately — published work must not change under a reviewer.",
-	"gc":              "repository maintenance is not the agent's concern; the workspace is destroyed after the task.",
+	"cherry-pick":   "no cherry-pick verb: the archivist's history is append-only.  Make the change and record it with " + tool(verbs.Checkpoint) + ".",
+	"clean":         "use plain `rm` — the working tree is yours to edit directly, and " + tool(verbs.Checkpoint) + " records whatever it finds.",
+	"clone":         "this workspace is provisioned for you and cannot be changed; there is no route to a forge from here either.",
+	"commit":        "call " + tool(verbs.Checkpoint) + " instead — it records the whole working tree, refuses the default branch, and validates the message.",
+	"fetch":         "remote access is the archivist's alone; " + tool(verbs.SyncFromUpstream) + " brings the default branch forward.",
+	"filter-branch": "history rewriting has no counterpart here, deliberately — published work must not change under a reviewer.",
+	"gc":            "repository maintenance is not the agent's concern; the workspace is destroyed after the task.",
+	// git 2.54+, experimental: `history reword` and `history split`
+	// rewrite commits and move every descendant branch onto the rewrite.
+	// Gentler than rebase -i, and refused for the same reason.
+	// Note the collision: this git command REWRITES, while the archivist
+	// tool of the same name READS.  Say so, or an agent reading the
+	// refusal concludes the tool it already has is forbidden too.
+	"history": "`git history` rewrites commits — reword and split both replace them and carry the branches over.  " +
+		"The archivist keeps history append-only: checkpoints accumulate and " + tool(verbs.Restore) + " rolls back, " +
+		"because published work must not change under a reviewer.  To fix a message, record the correction forward.  " +
+		"(Unrelated to " + verbs.History + "(), the archivist tool of the same name, which only reads.)",
 	"init":            "this workspace is already a provisioned clone, and a second repository inside it would not be published.",
 	"merge":           "merging an arbitrary branch has no counterpart.  " + tool(verbs.SyncFromUpstream) + " is the one integration the archivist performs: it brings the default branch forward under your line of work.",
 	"mv":              "use plain `mv` — the working tree is yours to edit directly, and " + tool(verbs.Checkpoint) + " records the rename as it finds it.",

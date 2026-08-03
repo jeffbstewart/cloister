@@ -174,6 +174,12 @@ func TestEveryMutatingCommandIsRefused(t *testing.T) {
 		{"rm", []string{"clean", "-fd"}},
 		{"release", []string{"tag", "v1.0"}},
 		{"sync_from_upstream", []string{"fetch"}},
+		// Newer git.  Absent from the image's 2.39 and from many dev
+		// machines, so classification is asserted here rather than left
+		// to TestPorcelainCoverage, which only sees the local git.
+		{"remote access", []string{"backfill"}},        // 2.49+: downloads objects from the remote
+		{"append-only", []string{"history", "reword"}}, // 2.54+: rewrites commits
+		{"append-only", []string{"history", "split"}},
 		{"provisioned", []string{"clone", "https://example.com/x"}},
 	} {
 		denied(t, tc.want, tc.argv...)

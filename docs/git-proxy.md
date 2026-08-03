@@ -181,6 +181,28 @@ nothing.  The check runs in the **last** layer, because a later
 `apt-get install --reinstall git` would otherwise satisfy any earlier
 one.
 
+## Three gits, on purpose
+
+`TestPorcelainCoverage` asks the real `git` what commands it has and
+fails when one reaches the catch-all unclassified.  The gits differ,
+and that is the point rather than a problem:
+
+| where | git | role |
+|---|---|---|
+| CI | whatever is current | the early-warning system |
+| a developer's machine | whatever they have | incidental |
+| the image | bookworm's 2.39 | what actually runs |
+
+CI runs **ahead** of the image, so a new command arrives as a red test
+months before a base-image bump would ship it.  That is how `backfill`
+(2.49) and `history` (2.54) were classified — CI saw them; neither
+exists in the image's git yet.
+
+Because of the skew, the test fails only on commands **this** git has
+that nobody has classified.  A pinned entry the local git lacks is
+logged, not failed — otherwise the test would only be runnable on one
+exact git version.
+
 ## What breaks first, and how you find out
 
 Not a new git command — an *existing read that was never listed*, and
