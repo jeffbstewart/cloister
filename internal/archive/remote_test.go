@@ -120,3 +120,58 @@ func TestAuthEnvNeverTouchesArgv(t *testing.T) {
 		t.Error("the raw token appears unencoded in the environment value")
 	}
 }
+
+// TestWouldAdvanceDistinguishesRealPushFromNoOp is the answer to "did my
+// work actually reach the endpoint".  git push exits 0 for "Everything
+// up-to-date", so without this the agent — which cannot see the forge —
+// gets the same word whether its checkpoints travelled or not.  That is
+// how a pull request ends up missing a revision the agent believes it
+// published.
+func TestWouldAdvanceDistinguishesRealPushFromNoOp(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	r.startWork("agent/advance")
+
+	// Never published: the push would create the branch.
+	if adv, err := r.a.wouldAdvance(ctx, "agent/advance"); err != nil || !adv {
+		t.Fatalf("unpublished branch: wouldAdvance = %v, %v; want true", adv, err)
+	}
+
+	r.write("a.txt", "one\n")
+	r.checkpoint("first")
+	r.publish("agent/advance")
+
+	// Everything local is at the origin: a push now moves nothing.
+	if adv, err := r.a.wouldAdvance(ctx, "agent/advance"); err != nil || adv {
+		t.Errorf("up-to-date branch: wouldAdvance = %v, %v; want false", adv, err)
+	}
+
+	// One more checkpoint and there is something to carry again.
+	r.write("a.txt", "two\n")
+	r.checkpoint("second")
+	if adv, err := r.a.wouldAdvance(ctx, "agent/advance"); err != nil || !adv {
+		t.Errorf("branch ahead: wouldAdvance = %v, %v; want true", adv, err)
+	}
+}
+
+// TestWouldAdvanceWhenTheEndpointLostTheBranch: an upstream can be
+// configured and gone (deleted at the forge).  Pushing then recreates
+// it, which is motion — treating a missing tracking ref as "nothing to
+// do" would report success for a branch that is not there.
+func TestWouldAdvanceWhenTheEndpointLostTheBranch(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	r.startWork("agent/vanished")
+	r.write("a.txt", "one\n")
+	r.checkpoint("first")
+	r.publish("agent/vanished")
+
+	// Delete it at the origin, and drop the stale tracking ref the way a
+	// pruning fetch would.
+	r.git(r.origin, "update-ref", "-d", "refs/heads/agent/vanished")
+	r.git(r.dir, "update-ref", "-d", "refs/remotes/origin/agent/vanished")
+
+	if adv, err := r.a.wouldAdvance(ctx, "agent/vanished"); err != nil || !adv {
+		t.Errorf("branch missing at the endpoint: wouldAdvance = %v, %v; want true", adv, err)
+	}
+}

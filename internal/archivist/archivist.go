@@ -324,7 +324,9 @@ func (s *Server) registerTools() {
 		Name: "checkpoint",
 		Description: "Record the working tree — all of it, or just the named paths — as one checkpoint.  " +
 			"There is no staging: the tree is what gets recorded.  Refused on the default branch (start_work first), " +
-			"on a detached HEAD, and when nothing changed.",
+			"on a detached HEAD, and when nothing changed.  " +
+			"Prefer recording the whole tree: a rename is TWO changes, so paths naming only the new file records half of one.  " +
+			"The answer's uncommitted field lists whatever this checkpoint did NOT record.",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
@@ -655,7 +657,36 @@ func (s *Server) checkpoint(ctx context.Context, req *mcp.CallToolRequest, arc *
 	if err != nil {
 		return mcpserve.ErrResult(err.Error()), nil
 	}
-	return mcpserve.JSONResult(map[string]any{"checkpoint": id.String()}), nil
+	out := map[string]any{"checkpoint": id.String()}
+	// Say what this checkpoint did NOT record.  A checkpoint that
+	// records less than the agent meant looks identical to one that
+	// records everything, and the leftovers surface only much later —
+	// as a pull request missing half a rename.  Best-effort: the
+	// checkpoint already happened, so a failed read here is not its
+	// failure.
+	if st, err := arc.CurrentState(ctx); err == nil && !st.Clean() {
+		out["uncommitted"] = leftovers(st)
+		out["note"] = "this checkpoint did not record everything — the paths above are still uncommitted.  " +
+			"A rename is TWO changes (the new path and the old one), so a checkpoint limited to paths " +
+			"records only half of one; checkpoint again with no paths to record the rest."
+	}
+	return mcpserve.JSONResult(out), nil
+}
+
+// leftovers renders what the working tree still holds, bounded like
+// every other listing the agent reads.
+func leftovers(st archive.State) []string {
+	var out []string
+	for _, f := range st.Dirty {
+		out = append(out, f.Path+" ("+f.Status+")")
+	}
+	for _, u := range st.Untracked {
+		out = append(out, u+" (untracked)")
+	}
+	if len(out) > MaxUntracked {
+		out = append(out[:MaxUntracked], "… truncated")
+	}
+	return out
 }
 
 func (s *Server) restore(ctx context.Context, req *mcp.CallToolRequest, arc *archive.Archive) (*mcp.CallToolResult, error) {
