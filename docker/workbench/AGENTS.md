@@ -37,7 +37,11 @@ than complete.
 
 Every command that **changes** version-control state has an archivist
 verb that does the same job and enforces the rules this repository is
-under.  Use the verb, not the git command:
+under.  The `git` on your PATH knows this: the commands below are
+**translated into the verb and say so on stderr**, and mutating
+commands with no counterpart are refused with the reason.  Calling the
+verb yourself is still better — one step instead of two, and the full
+answer rather than a rendering of it:
 
 | instead of | call |
 |---|---|
@@ -59,7 +63,12 @@ under.  Use the verb, not the git command:
   changes — the new path AND the old one — so naming only the new file
   records half the operation and leaves the old file in place.
 - Remote operations are archivist-ONLY, and there is no credential in
-  your container — `git push` cannot work and must not be attempted.
+  your container.
+- **A refusal from `git` is not a puzzle to route around.**  It names
+  the verb to use, or says why the operation does not exist here (there
+  is no staging area; history is append-only).  Read it and take the
+  named path — retrying with different flags will not find a way
+  through, and there is no second git.
 - The default branch is untouchable by design.  All work lands via a
   pull request a human approves on the forge; that review is the
   boundary — write code you would show a colleague.

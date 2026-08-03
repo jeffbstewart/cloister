@@ -27,11 +27,10 @@ package operator
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/jeffbstewart/cloister/internal/mcpclient"
 )
 
 // State is the workspace's disk-derived condition, mirroring
@@ -61,20 +60,14 @@ func (s Status) Provisioned() string {
 	return s.Repo + " on " + s.Branch
 }
 
-// RefusedError is a tool-level refusal: the archivist answered, and the
-// answer was no.  The message is the archivist's own — it names the
-// failing requirement or the unpublished work, and is meant to be shown
-// to the operator verbatim rather than paraphrased.
-type RefusedError struct {
-	Verb    string
-	Message string
-}
-
-func (e *RefusedError) Error() string { return e.Verb + ": " + e.Message }
+// RefusedError is a tool-level refusal — the archivist answered, and
+// the answer was no.  Aliased from the shared client core so callers
+// can errors.As against either name and mean the same thing.
+type RefusedError = mcpclient.RefusedError
 
 // Client speaks to one archivist's operator surface.
 type Client struct {
-	sess *mcp.ClientSession
+	c *mcpclient.Client
 }
 
 // Config wires a Client.
@@ -97,16 +90,15 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 	if cfg.Name == "" {
 		cfg.Name = "cloister-operator"
 	}
-	c := mcp.NewClient(&mcp.Implementation{Name: cfg.Name, Version: cfg.Version}, nil)
-	sess, err := c.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: cfg.URL}, nil)
+	c, err := mcpclient.Dial(ctx, mcpclient.Config{URL: cfg.URL, Name: cfg.Name, Version: cfg.Version})
 	if err != nil {
-		return nil, fmt.Errorf("operator: dialing %s: %w", cfg.URL, err)
+		return nil, fmt.Errorf("operator: %w", err)
 	}
-	return &Client{sess: sess}, nil
+	return &Client{c: c}, nil
 }
 
 // Close ends the session.
-func (c *Client) Close() error { return c.sess.Close() }
+func (c *Client) Close() error { return c.c.Close() }
 
 // Status reports the workspace's condition.  Never acts.
 func (c *Client) Status(ctx context.Context) (Status, error) {
@@ -162,33 +154,9 @@ func (c *Client) Dispose(ctx context.Context, force bool) (DisposeResult, error)
 	return res, err
 }
 
-// call invokes one tool and unmarshals its JSON answer, turning a
-// tool-level error into a *RefusedError.
+// call invokes one tool and unmarshals its JSON answer.
 func (c *Client) call(ctx context.Context, name string, args map[string]any, out any) error {
-	res, err := c.sess.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
-	if err != nil {
-		return fmt.Errorf("operator: calling %s: %w", name, err)
-	}
-	text := firstText(res)
-	if res.IsError {
-		return &RefusedError{Verb: name, Message: text}
-	}
-	if out == nil {
-		return nil
-	}
-	if err := json.Unmarshal([]byte(text), out); err != nil {
-		return fmt.Errorf("operator: unparseable %s answer %q: %w", name, text, err)
-	}
-	return nil
-}
-
-func firstText(res *mcp.CallToolResult) string {
-	for _, c := range res.Content {
-		if tc, ok := c.(*mcp.TextContent); ok {
-			return tc.Text
-		}
-	}
-	return ""
+	return c.c.Call(ctx, name, args, out)
 }
 
 // ProvisionTimeout bounds a provision: a full clone through the relays

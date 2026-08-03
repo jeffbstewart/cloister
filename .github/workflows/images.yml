@@ -84,6 +84,16 @@ jobs:
             -ldflags "-s -w -X main.version=${{ steps.ver.outputs.version }}" \
             -o docker/workbench/cloister-workbench ./cmd/workbench
 
+      # The git proxy, installed as `git` in the agent image: reads pass
+      # to the real binary, ref-moving commands translate to archivist
+      # verbs, the rest refuse (docs/git-proxy.md).
+      - name: Build the static git proxy
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath \
+            -ldflags "-s -w -X main.version=${{ steps.ver.outputs.version }}" \
+            -o docker/workbench/cloister-git-proxy ./cmd/git-proxy
+
       # Buildx now so the platform list below is the only thing to touch
       # when arm64 joins (a Mac-hosted scholar, a D20 cell).
       - uses: docker/setup-buildx-action@v3

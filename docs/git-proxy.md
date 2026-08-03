@@ -1,8 +1,8 @@
 # The git proxy
 
-*Status: DESIGNED, not built.  The prompt-level rule it will enforce
-ships first (docker/workbench/AGENTS.md, "read with git, write with the
-archivist").*
+*Status: BUILT — `cmd/git-proxy`, installed as `/usr/bin/git` in the
+agent image.  The prompt-level rule it enforces is
+docker/workbench/AGENTS.md, "read with git, write with the archivist".*
 
 ## Why
 
@@ -127,14 +127,24 @@ will find the proxy too.
 
 ## Not a boundary
 
-The real binary is moved somewhere the proxy alone names.  This is
-**obscurity, not enforcement**: `dpkg -L git`, a `find` for executables,
-or `/usr/lib/git-core/` all lead back to it in seconds, and a determined
-process in this container can call it.  What it buys is that the wrong
-move is no longer the reflexive one — the same claim, with the same
-limits, as the two-surface split.  The load-bearing boundaries are
-elsewhere and unchanged: the forge ruleset, the endpoint allowlist, and
-the bot credential living only in the archivist.
+The real binary moves to `/usr/lib/cloister/libexec/gx`, a path only the
+proxy names.  This is **obscurity, not enforcement**, and one detail
+makes that concrete rather than theoretical: Debian's
+`/usr/lib/git-core/git` is a *hardlink to the same inode*, and it has to
+stay — git needs `GIT_EXEC_PATH` to find `git-remote-https` and the
+other helpers.  So the real binary remains reachable at a well-known
+path by anything that looks, and `dpkg -L git` or a `find` for
+executables would find it anyway.
+
+What the move buys is that the wrong move is no longer the *reflexive*
+one — the same claim, with the same limits, as the two-surface split.
+The load-bearing boundaries are elsewhere and unchanged: the forge
+ruleset, the endpoint allowlist, and the bot credential living only in
+the archivist.
+
+The image build fails if `git` does not resolve to the proxy, or if the
+moved binary will not run.  A silently-unproxied cell would look
+identical from outside, so that check is worth its line.
 
 ## Open questions
 

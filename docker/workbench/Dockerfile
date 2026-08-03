@@ -229,6 +229,30 @@ EOF
 COPY cloister-workbench /usr/local/bin/workbench
 RUN chmod 0755 /usr/local/bin/workbench
 
+# The git proxy (docs/git-proxy.md): reads run the real binary
+# unchanged, the closed core of ref-moving commands is translated into
+# archivist verbs and ANNOUNCED on stderr, everything else is refused
+# with a reason.  Visible translation, never illusion — an agent that
+# thought `commit --amend` had rewritten history would reason from that
+# for the rest of the session.
+#
+# The real binary moves to an unadvertised path only the proxy names.
+# That is obscurity, not enforcement: /usr/lib/git-core/git is a
+# hardlink to the same inode and must stay (git needs GIT_EXEC_PATH to
+# find git-remote-https and friends), so a determined process still
+# finds it.  What it buys is that the wrong move is no longer the
+# reflexive one.
+COPY cloister-git-proxy /usr/local/bin/cloister-git-proxy
+RUN mkdir -p /usr/lib/cloister/libexec \
+    && mv /usr/bin/git /usr/lib/cloister/libexec/gx \
+    && mv /usr/local/bin/cloister-git-proxy /usr/bin/git \
+    && chmod 0755 /usr/bin/git /usr/lib/cloister/libexec/gx \
+    # Fail the build if the proxy is not what `git` resolves to, or if
+    # the real binary did not survive the move.  A silently-unproxied
+    # cell would look identical from outside.
+    && [ "$(command -v git)" = /usr/bin/git ] \
+    && /usr/lib/cloister/libexec/gx --version > /dev/null
+
 # The how-do-I-drive-this banner.  /etc/motd alone only greets PAM
 # LOGIN shells, and a `docker exec -it ... bash` is not one — so the
 # same banner is also shown by /etc/bash.bashrc, which Debian's bash
