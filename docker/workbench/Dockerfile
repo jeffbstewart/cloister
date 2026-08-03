@@ -280,8 +280,9 @@ cloister workbench — jailed agent cell
                land in ~agent/.cloister/git-proxy.log — read it to see
                what the agent reached for and could not have.  To stand
                the proxy down for a build that needs a refused command:
-                 docker exec -u 0 <project>-agent \
-                   sh -c 'mkdir -p /etc/cloister && touch /etc/cloister/git-passthrough'
+                 docker exec -u 0 <project>-agent touch /etc/cloister/git-passthrough
+               (/etc/cloister is a root-owned tmpfs, so only you can
+               write it, and it clears on restart.)
 
 EOF
 RUN cat <<'EOF' >> /etc/bash.bashrc

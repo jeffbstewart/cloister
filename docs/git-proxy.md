@@ -114,13 +114,30 @@ a parser eventually.
 operator's out for the first build that trips on a command we did not
 anticipate.
 
-It is a file **the agent cannot create**: the cell runs `read_only` with
-`cap_drop: [ALL]` as uid 1000 (docker/cell.yaml), so `/etc` is not
-writable from inside, while the operator sets it with a bind mount or
-`docker exec -u 0`.  An environment variable — the first design — was
-settable by the agent itself, documented in the very repository the
-agent is often granted, and inherited by every subprocess: one `export`
-in a build script and supervision was off for the session.
+It is a file **the agent cannot create**.  An environment variable —
+the first design — was settable by the agent itself, documented in the
+very repository the agent is often granted, and inherited by every
+subprocess: one `export` in a build script and supervision was off for
+the session.
+
+The mechanics matter, and the first attempt got them wrong.  The cell
+runs `read_only: true`, which is read-only for **root as well**, so
+`docker exec -u 0 … touch /etc/cloister/git-passthrough` fails and the
+hatch is inert.  `docker/cell.yaml` therefore gives `/etc/cloister` its
+own tmpfs at `mode=0755`: root owns the mount, so the operator can
+write it and the agent (uid 1000) cannot.  A default tmpfs is mode
+1777, which would hand the agent the power to switch off its own
+supervision — precisely what moving off the environment variable was
+meant to prevent.
+
+To use it:
+
+```sh
+docker exec -u 0 <project>-agent touch /etc/cloister/git-passthrough
+```
+
+It is tmpfs, so it does not survive a container restart — which is the
+right default for a temporary loosening.
 
 When it is in force, the proxy says so on stderr and logs it.  This is
 the one path where the proxy stands aside, so it is the last place that
