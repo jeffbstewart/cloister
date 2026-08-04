@@ -123,8 +123,8 @@ func TestReportPromptSaysSomethingUsableInEveryCase(t *testing.T) {
 	if !m.reportPrompt() {
 		t.Fatal("a usable prompt was refused")
 	}
-	if s := out.String(); !strings.Contains(s, "system prompt") || !strings.Contains(s, "cloister ready") {
-		t.Errorf("said %q; want how it is delivered and the line to watch for", s)
+	if s := out.String(); !strings.Contains(s, "system prompt") || !strings.Contains(s, "git commit") {
+		t.Errorf("said %q; want how it is delivered and how to check it is heeded", s)
 	}
 
 	// A leftover copy from an older image is reported as it is removed.
