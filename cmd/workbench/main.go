@@ -57,6 +57,12 @@ type options struct {
 	repos     string
 	agentCmd  string
 	grange    string
+	// stockPrompt is the environment prompt as baked into the image —
+	// the file the agent wrapper hands to --append-system-prompt.  The
+	// session manager verifies it before every session; see prompt.go
+	// for what goes wrong when it is missing, and for why it must not
+	// live in the agent's memory file.
+	stockPrompt string
 }
 
 func main() {
@@ -74,8 +80,10 @@ func run(args []string) error {
 	fs.StringVar(&o.session, "session", env("WORKBENCH_SESSION", "agent"), "tmux session name")
 	fs.StringVar(&o.repos, "repos", env("WORKBENCH_REPOS", defaultReposPath()),
 		"the recent-repositories list; per user, shared across projects")
-	fs.StringVar(&o.agentCmd, "agent", env("WORKBENCH_AGENT", "qwen"), "the agent CLI to run in the session")
+	fs.StringVar(&o.agentCmd, "agent", env("WORKBENCH_AGENT", "qwen-cloister"), "the agent CLI to run in the session")
 	fs.StringVar(&o.grange, "grange", env("GRANGE_ROOT", "/grange"), "the grange root; tree/ is the checkout")
+	fs.StringVar(&o.stockPrompt, "prompt", env("CLOISTER_PROMPT", stockPromptPath),
+		"the environment prompt the agent wrapper delivers as a system prompt")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -194,6 +202,12 @@ func (m *manager) provisionedMenu(ctx context.Context, st operator.Status) (bool
 	case choice == "q":
 		return true, nil
 	case choice == "" || choice == "1":
+		// Immediately before the agent starts — and it does not start if
+		// its rules cannot be delivered.  An agent without them looks
+		// entirely normal right up until it does something expensive.
+		if !m.reportPrompt() {
+			return false, nil
+		}
 		return m.start(m.o, m.o.agentCmd)
 	case choice == "2":
 		return m.start(m.o, "bash")

@@ -73,11 +73,14 @@ FROM debian:bookworm-slim
 # protoc is the protobuf compiler alone — the per-language
 # codegen plugins (protoc-gen-go, grpc) are repo-level tools an agent
 # builds offline from the warmed module cache, not image freight.
-# emacs-nox by operator decree (no X stack rides in with -nox).
+# emacs-nox by operator decree (no X stack rides in with -nox).  vim-tiny
+# provides vi, which the agent CLI spawns for its own memory editing and
+# which reported ENOENT without it — a small break in the CLI's UI that
+# looked like a bigger problem than it was.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates git gcc libc6-dev make zip unzip tmux \
       gawk procps less file patch tree xz-utils ripgrep jq curl \
-      protobuf-compiler emacs-nox \
+      protobuf-compiler emacs-nox vim-tiny \
     && rm -rf /var/lib/apt/lists/*
 
 # UTF-8 locale: Kotlin emits .class files whose NAMES carry backtick
@@ -235,6 +238,44 @@ EOF
 COPY cloister-workbench /usr/local/bin/workbench
 RUN chmod 0755 /usr/local/bin/workbench
 
+# How the environment prompt actually reaches the model.
+#
+# It used to be copied into ~/.qwen/QWEN.md, which was the wrong file:
+# that is the agent's own USER MEMORY.  Memory is loaded into
+# conversation context, and it is managed by the CLI's auto-memory,
+# auto-skill, and auto-dream features — so the cell's rules arrived as a
+# note-to-self the agent could reweigh or consolidate away, sitting in a
+# store the agent itself rewrites.  That matches every symptom we saw:
+# rules ignored, MCP tools attempted as shell commands, correction not
+# sticking.
+#
+# `--append-system-prompt` is the real hook.  APPEND, never
+# `--system-prompt`: the built-in prompt carries the CLI's own agent
+# scaffolding, including how to emit tool calls, and replacing it would
+# break the very thing we need working.
+#
+# A wrapper rather than a flag on the launcher's command line, because
+# the prompt is ~10 KB of prose containing quotes, backticks and dollar
+# signs, and it would otherwise have to survive tmux's shell-command
+# quoting.  Here it is quoted exactly once, correctly.
+#
+# Fail-closed: no prompt, no agent.  An agent running without its rules
+# looks entirely normal until it does something expensive.
+COPY <<'EOF' /usr/local/bin/qwen-cloister
+#!/bin/sh
+set -eu
+prompt=/usr/local/share/cloister/AGENTS.md
+if [ ! -s "$prompt" ]; then
+  echo "cloister: FATAL the environment prompt ($prompt) is missing or empty." >&2
+  echo "cloister: refusing to start the agent without its rules — it would not know" >&2
+  echo "cloister: that git is read-only here, that the archivist owns writes, or that" >&2
+  echo "cloister: this cell is offline.  Rebuild or repair the image." >&2
+  exit 1
+fi
+exec qwen --append-system-prompt "$(cat "$prompt")" "$@"
+EOF
+RUN chmod 0755 /usr/local/bin/qwen-cloister
+
 # The git proxy (docs/git-proxy.md): reads run the real binary
 # unchanged, the closed core of ref-moving commands is translated into
 # archivist verbs and ANNOUNCED on stderr, everything else is refused
@@ -338,7 +379,11 @@ WORKDIR /home/agent
 # fail-CLOSED — a reachable internet or live external DNS refuses the
 # boot outright; everything after it (prompt copy, MCP registration) is
 # best-effort, because a config hiccup must not stop the CLI.
-ENTRYPOINT ["/bin/sh", "-c", "node /usr/local/bin/jail-probe.mjs || exit 1; mkdir -p \"$HOME/.qwen\" 2>/dev/null || true; cp /usr/local/share/cloister/AGENTS.md \"$HOME/.qwen/QWEN.md\" 2>/dev/null || true; node /usr/local/bin/qwen-mcp-init.mjs || true; exec \"$@\"", "sh"]
+# The prompt is NOT copied into $HOME/.qwen/QWEN.md any more — that is
+# the agent's own memory store, and writing the cell's rules there both
+# under-weighted them and put them where the CLI's auto-memory rewrites.
+# They now ride --append-system-prompt via /usr/local/bin/qwen-cloister.
+ENTRYPOINT ["/bin/sh", "-c", "node /usr/local/bin/jail-probe.mjs || exit 1; mkdir -p \"$HOME/.qwen\" || echo 'cloister: WARNING cannot create $HOME/.qwen' >&2; node /usr/local/bin/qwen-mcp-init.mjs || true; exec \"$@\"", "sh"]
 # The container idles; work starts when the operator runs `workbench` in
 # an exec shell — it provisions the workspace and launches the agent into
 # a tmux session that outlives the shell that started it.
