@@ -47,3 +47,11 @@ Bearer ignored-for-local-use
 # Public gist ID cited in COMPETITION.md's sources — a URL path segment,
 # not a token.
 2752d8d97727577050c043e4ff9e386e
+
+# Placeholder the jailed-claude cell sets so Claude Code finds a credential
+# and skips a browser login flow that cannot complete inside a jail.  The
+# abbey's egress hop strips it and injects the real one, so this literal is
+# the only thing that ever rides the in-cell wire — the design depends on it
+# being worthless (docs/JAILED_CLAUDE.md).  Same shape as the OPENAI_API_KEY
+# placeholder above.
+ANTHROPIC_AUTH_TOKEN=placeholder-the-door-replaces-this

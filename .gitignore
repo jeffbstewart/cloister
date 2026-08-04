@@ -41,6 +41,22 @@ docker/workbench/cloister-git-proxy
 __pycache__/
 *.pyc
 
+# Decrypted traffic captures from the jailed-claude proxy
+# (docs/JAILED_CLAUDE.md).  A capture is a plaintext dump of everything the
+# harness sent — including the Authorization header on every request — and a
+# TLS keylog decrypts any capture taken beside it.  These are short-lived
+# diagnostics the operator switches on to answer one question, never an audit
+# log and never committed; the durable record of agent actions is the state
+# service's trail.  Listed here before the first capture exists, because the
+# entry that gets added after the leak is the one that was needed before it.
+*.pcap
+*.pcapng
+*.har
+*.flow
+*.flows
+*.keylog
+captures/
+
 # Editor/IDE
 .idea/
 .vscode/
