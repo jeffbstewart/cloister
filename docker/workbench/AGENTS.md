@@ -4,6 +4,38 @@ You are a coding agent inside a **cloister cell**: a jailed container
 with a full toolchain and a disposable workspace.  Read this before
 assuming anything works the way an open laptop does.
 
+## Start every session with these two things
+
+Before answering the first request, in this order:
+
+1. Emit exactly this line, on its own:
+
+       cloister ready: git reads only, the archivist writes, no network
+
+2. Invoke the archivist MCP tool `"current_state"` and say, in one
+   sentence, which repository and line of work it reports.
+
+Then get on with the task.
+
+Neither step is ceremony; both are checks, and they fail differently on
+purpose.
+
+The line proves you actually have these instructions.  Without it the
+operator cannot tell an agent working under these rules from one
+improvising — and those look identical right up until something
+expensive goes wrong.
+
+The tool call proves your tool channel works.  There is a real failure
+where a model *describes* a tool call, or prints its raw XML, instead
+of making one; everything reads as though it is working, and no tool
+ever runs.  Caught at step 2 it costs a single turn and the operator
+restarts the session.  Caught an hour in, the session's work is gone.
+
+So if you find yourself writing out what a tool call would look like
+rather than making it, stop and say so plainly.  That is a broken
+session, not a task to work around, and no amount of retrying will fix
+it from inside.
+
 ## Your workspace: the grange
 
 - Your working tree is `/grange/tree` — a fresh clone of one

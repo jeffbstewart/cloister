@@ -116,12 +116,17 @@ func TestAgentsPromptNamesRealTools(t *testing.T) {
 	//
 	// Elsewhere, only lower_snake_case is safely distinguishable from
 	// English, so prose mentions are checked by shape.
-	// The optional inner quotes matter: the table renders tool names as
-	// `"start_work"` so they cannot be read as shell commands, and a
-	// pattern that missed the quoting would silently stop checking the
-	// table — which is exactly what happened once.
-	backticked := regexp.MustCompile("`\"?([a-z][a-z0-9_]*)\"?`")
-	snakeCase := regexp.MustCompile("`([a-z][a-z0-9]*(?:_[a-z0-9]+)+)`")
+	// Match ANY backticked span and normalize afterwards, rather than
+	// trying to spell the decoration into the pattern.  The decoration
+	// changes: tool names are rendered `"start_work"` now, quoted so
+	// they cannot be read as shell commands, and a pattern that encoded
+	// the old shape silently stopped checking — twice, once for the
+	// table and once for prose.  A guard that quietly matches nothing is
+	// worse than no guard, so this one cannot be blinded by punctuation.
+	span := regexp.MustCompile("`([^`]+)`")
+	isName := regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+	isSnake := regexp.MustCompile(`^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$`)
+	clean := func(s string) string { return strings.Trim(strings.TrimSpace(s), `"'`) }
 	// Snake-case things in the prompt that are not tools.
 	notTools := map[string]bool{"agent_home": true, "cloister_grange": true}
 
@@ -149,8 +154,12 @@ func TestAgentsPromptNamesRealTools(t *testing.T) {
 					continue
 				}
 				if inTable {
-					for _, m := range backticked.FindAllStringSubmatch(last, -1) {
-						note(m[1])
+					// Inside the table's right column every entry IS a
+					// tool name, so a bare word counts.
+					for _, m := range span.FindAllStringSubmatch(last, -1) {
+						if n := clean(m[1]); isName.MatchString(n) {
+							note(n)
+						}
 					}
 					continue
 				}
@@ -158,8 +167,12 @@ func TestAgentsPromptNamesRealTools(t *testing.T) {
 		} else {
 			inTable = false
 		}
-		for _, m := range snakeCase.FindAllStringSubmatch(line, -1) {
-			note(m[1])
+		// In prose only lower_snake_case is safely distinguishable from
+		// ordinary English and from shell words like `git`.
+		for _, m := range span.FindAllStringSubmatch(line, -1) {
+			if n := clean(m[1]); isSnake.MatchString(n) {
+				note(n)
+			}
 		}
 	}
 	sort.Strings(unknown)

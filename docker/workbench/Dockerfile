@@ -268,6 +268,12 @@ cloister workbench — jailed agent cell
                disconnects: close this shell freely, the agent keeps
                working.  tmux prefix is Ctrl-Z (press it twice to send a
                literal Ctrl-Z through).
+  healthy?     a good session opens with:
+                 cloister ready: git reads only, the archivist writes, no network
+               followed by the agent calling current_state and naming
+               the repo and branch.  If either is missing — or if it
+               PRINTS a tool call instead of making one — the session
+               is broken: /clear and start over rather than working on.
   workspace    /grange/tree — absent until `workbench` provisions it.
                The agent CANNOT provision or dispose: the workspace's
                lifetime is yours, not the model's.  Its own rules are in
