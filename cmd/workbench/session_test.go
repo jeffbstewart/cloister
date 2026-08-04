@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -89,13 +90,22 @@ func rig(t *testing.T, arc *fakeArchivist, keys string) (*manager, *bytes.Buffer
 	t.Helper()
 	var out bytes.Buffer
 	started := []string{}
+	// A usable environment prompt: starting the agent now depends on
+	// one, because an agent without its rules is the failure this
+	// pre-flight exists to prevent.  Tests that want the failure point
+	// o.stockPrompt somewhere else.
+	stock := filepath.Join(t.TempDir(), "AGENTS.md")
+	if err := os.WriteFile(stock, []byte("the rules\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	m := &manager{
 		arc: arc,
 		o: options{
-			session:  "agent",
-			agentCmd: "qwen",
-			grange:   t.TempDir(),
-			repos:    filepath.Join(t.TempDir(), "repos"),
+			session:     "agent",
+			agentCmd:    "qwen",
+			grange:      t.TempDir(),
+			repos:       filepath.Join(t.TempDir(), "repos"),
+			stockPrompt: stock,
 		},
 		in:  bufio.NewReader(strings.NewReader(keys)),
 		out: &out,

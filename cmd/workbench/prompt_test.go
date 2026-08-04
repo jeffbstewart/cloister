@@ -21,115 +21,129 @@ import (
 	"testing"
 )
 
-func TestInstallPromptCopiesWhenAbsent(t *testing.T) {
+func TestCheckPromptAcceptsAUsablePrompt(t *testing.T) {
 	dir := t.TempDir()
 	stock := filepath.Join(dir, "AGENTS.md")
-	dest := filepath.Join(dir, "home", ".qwen", "QWEN.md")
+	if err := os.WriteFile(stock, []byte("the rules\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := checkPrompt(stock, filepath.Join(dir, "absent"))
+	if c.Err != nil || c.Bytes != len("the rules\n") {
+		t.Errorf("check = %+v, want a clean result", c)
+	}
+	if c.EvictedLegacy || c.LegacyDiffers {
+		t.Errorf("check = %+v, want nothing said about a legacy file that is not there", c)
+	}
+}
+
+// TestCheckPromptRefusesAnUnusablePrompt: an agent with no rules looks
+// exactly like an agent with rules until it does something expensive,
+// so this is the one pre-flight that stops a session.
+func TestCheckPromptRefusesAnUnusablePrompt(t *testing.T) {
+	dir := t.TempDir()
+	if c := checkPrompt(filepath.Join(dir, "gone"), filepath.Join(dir, "x")); c.Err == nil {
+		t.Error("a missing prompt was accepted")
+	}
+	empty := filepath.Join(dir, "empty.md")
+	if err := os.WriteFile(empty, []byte("   \n\t\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := checkPrompt(empty, filepath.Join(dir, "x"))
+	if c.Err == nil || !strings.Contains(c.Err.Error(), "empty") {
+		t.Errorf("whitespace-only prompt = %+v, want an empty-file refusal", c)
+	}
+}
+
+// TestCheckPromptEvictsOnlyOurOwnCopy is the careful half.  Older
+// images copied the prompt into the agent's memory file; that copy is
+// now wrong and should go.  But the same file is where the agent keeps
+// its OWN memory, and deleting a model's accumulated notes costs far
+// more than leaving a stale duplicate — so the test is exact equality
+// and nothing looser.
+func TestCheckPromptEvictsOnlyOurOwnCopy(t *testing.T) {
+	dir := t.TempDir()
+	stock := filepath.Join(dir, "AGENTS.md")
 	if err := os.WriteFile(stock, []byte("the rules\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	st := installPrompt(stock, dest)
-	if st.Err != nil || !st.Installed {
-		t.Fatalf("install = %+v, want a clean install", st)
-	}
-	got, err := os.ReadFile(dest)
-	if err != nil || string(got) != "the rules\n" {
-		t.Errorf("dest = %q, %v", got, err)
-	}
-}
-
-// TestInstallPromptRefreshesAStaleFile is the case that matters: the
-// agent's context file lives on a named volume, which docker seeds from
-// the image once and never again.  An image upgrade leaves last
-// month's rules in place, and nothing about that looks wrong from
-// outside.
-func TestInstallPromptRefreshesAStaleFile(t *testing.T) {
-	dir := t.TempDir()
-	stock := filepath.Join(dir, "AGENTS.md")
-	dest := filepath.Join(dir, "QWEN.md")
-	if err := os.WriteFile(stock, []byte("new rules\n"), 0o644); err != nil {
+	// Byte-identical: ours, and it goes.
+	ours := filepath.Join(dir, "QWEN-ours.md")
+	if err := os.WriteFile(ours, []byte("the rules\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(dest, []byte("last month's rules\n"), 0o644); err != nil {
-		t.Fatal(err)
+	c := checkPrompt(stock, ours)
+	if !c.EvictedLegacy || c.LegacyDiffers {
+		t.Errorf("identical copy = %+v, want it evicted", c)
+	}
+	if _, err := os.Stat(ours); !os.IsNotExist(err) {
+		t.Error("our stale copy survived")
 	}
 
-	st := installPrompt(stock, dest)
-	if st.Err != nil || !st.Installed {
-		t.Fatalf("install = %+v, want a refresh", st)
-	}
-	if got, _ := os.ReadFile(dest); string(got) != "new rules\n" {
-		t.Errorf("stale content survived: %q", got)
-	}
-}
-
-func TestInstallPromptLeavesACurrentFileAlone(t *testing.T) {
-	dir := t.TempDir()
-	stock := filepath.Join(dir, "AGENTS.md")
-	dest := filepath.Join(dir, "QWEN.md")
-	for _, p := range []string{stock, dest} {
-		if err := os.WriteFile(p, []byte("same\n"), 0o644); err != nil {
+	// Anything else is the agent's memory, and is left alone.
+	for _, content := range []string{
+		"the rules\nplus something the agent remembered\n",
+		"the user prefers tabs\n",
+		"",
+	} {
+		theirs := filepath.Join(dir, "QWEN-theirs.md")
+		if err := os.WriteFile(theirs, []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
-	}
-	st := installPrompt(stock, dest)
-	if st.Err != nil || st.Installed {
-		t.Errorf("install = %+v, want no write and no error", st)
-	}
-	if st.Bytes != len("same\n") {
-		t.Errorf("bytes = %d", st.Bytes)
-	}
-}
-
-// TestInstallPromptReportsFailureRatherThanSwallowingIt: the previous
-// mechanism was `cp … 2>/dev/null || true`, which is why a missing
-// prompt was invisible until an agent improvised its way through a
-// task.
-func TestInstallPromptReportsFailureRatherThanSwallowingIt(t *testing.T) {
-	dir := t.TempDir()
-	st := installPrompt(filepath.Join(dir, "no-such-file"), filepath.Join(dir, "QWEN.md"))
-	if st.Err == nil {
-		t.Fatal("a missing stock prompt reported success")
-	}
-	if !strings.Contains(st.Err.Error(), "no-such-file") {
-		t.Errorf("error %q does not name the missing file", st.Err)
-	}
-	if st.Installed {
-		t.Error("reported an install that did not happen")
+		c := checkPrompt(stock, theirs)
+		if c.EvictedLegacy {
+			t.Errorf("deleted the agent's own memory (%q)", content)
+		}
+		if !c.LegacyDiffers {
+			t.Errorf("content %q: want it reported as the agent's own", content)
+		}
+		if _, err := os.Stat(theirs); err != nil {
+			t.Errorf("content %q was removed: %v", content, err)
+		}
 	}
 }
 
-// TestReportPromptSaysSomethingUseableInEveryCase — the operator reads
-// this line to decide whether to trust the session.
-func TestReportPromptSaysSomethingUseableInEveryCase(t *testing.T) {
+// TestReportPromptSaysSomethingUsableInEveryCase — the operator reads
+// these lines to decide whether to trust the session.
+func TestReportPromptSaysSomethingUsableInEveryCase(t *testing.T) {
 	dir := t.TempDir()
 	stock := filepath.Join(dir, "AGENTS.md")
 	if err := os.WriteFile(stock, []byte("the rules\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("HOME", filepath.Join(dir, "home"))
+	home := filepath.Join(dir, "home")
+	if err := os.MkdirAll(filepath.Join(home, ".qwen"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
 
-	arc := &fakeArchivist{}
-	m, out, _ := rig(t, arc, "")
+	m, out, _ := rig(t, &fakeArchivist{}, "")
 	m.o.stockPrompt = stock
 
-	m.reportPrompt()
-	if s := out.String(); !strings.Contains(s, "installed") || !strings.Contains(s, "cloister ready") {
-		t.Errorf("first install said %q; want the install and the line to watch for", s)
+	if !m.reportPrompt() {
+		t.Fatal("a usable prompt was refused")
+	}
+	if s := out.String(); !strings.Contains(s, "system prompt") || !strings.Contains(s, "cloister ready") {
+		t.Errorf("said %q; want how it is delivered and the line to watch for", s)
 	}
 
+	// A leftover copy from an older image is reported as it is removed.
 	out.Reset()
+	if err := os.WriteFile(filepath.Join(home, ".qwen", "QWEN.md"), []byte("the rules\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	m.reportPrompt()
-	if s := out.String(); !strings.Contains(s, "current") {
-		t.Errorf("second call said %q; want it to report the prompt already current", s)
+	if s := out.String(); !strings.Contains(s, "stale copy") {
+		t.Errorf("said %q; want the eviction reported", s)
 	}
 
-	// And the loud case.
+	// And the case that stops the session.
 	out.Reset()
 	m.o.stockPrompt = filepath.Join(dir, "gone")
-	m.reportPrompt()
-	if s := out.String(); !strings.Contains(s, "could NOT be installed") || !strings.Contains(s, "improvise") {
-		t.Errorf("failure said %q; want it unmissable and to say what follows", s)
+	if m.reportPrompt() {
+		t.Error("started an agent with no rules")
+	}
+	if s := out.String(); !strings.Contains(s, "Refusing to start") {
+		t.Errorf("said %q; want it unmissable and final", s)
 	}
 }
