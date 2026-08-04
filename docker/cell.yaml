@@ -142,6 +142,19 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=2g                     # build scratch (gradle/go/cargo temp)
+      # The git proxy's escape hatch lives here (docs/git-proxy.md): the
+      # operator drops /etc/cloister/git-passthrough to stand the proxy
+      # down for a build that needs a refused command.  It needs its own
+      # tmpfs because the rootfs is read_only — which is read-only for
+      # ROOT too, so without this even `docker exec -u 0` cannot create
+      # the file and the hatch is inert.
+      #
+      # mode=0755 is the load-bearing part: root owns the mount, so the
+      # operator can write it via `docker exec -u 0` and the agent (uid
+      # 1000) cannot.  A default tmpfs is mode 1777, which would let the
+      # agent disable its own supervision — the exact reason the hatch
+      # stopped being an environment variable.
+      - /etc/cloister:size=1m,mode=0755
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     pids_limit: 1024
