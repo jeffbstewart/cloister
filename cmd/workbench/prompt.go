@@ -122,6 +122,12 @@ func (m *manager) reportPrompt() bool {
 	if c.LegacyDiffers {
 		m.println("note: ~/.qwen/QWEN.md holds the agent's own memory; left untouched")
 	}
-	m.println("the agent should open with: cloister ready: git reads only, the archivist writes, no network")
+	// What the operator can do with this.  Delivery is now provable
+	// mechanically — the line above, plus --append-system-prompt in the
+	// agent's command line — but delivery is not adherence, and the
+	// cheapest check for adherence is a question only these rules can
+	// answer.
+	m.println(`to check the agent is heeding it, ask: what happens if you run git commit -m "x" here?`)
+	m.println("(it should say refused, and name the archivist's checkpoint tool)")
 	return true
 }
