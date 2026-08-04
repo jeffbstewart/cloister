@@ -338,7 +338,7 @@ WORKDIR /home/agent
 # fail-CLOSED — a reachable internet or live external DNS refuses the
 # boot outright; everything after it (prompt copy, MCP registration) is
 # best-effort, because a config hiccup must not stop the CLI.
-ENTRYPOINT ["/bin/sh", "-c", "node /usr/local/bin/jail-probe.mjs || exit 1; mkdir -p \"$HOME/.qwen\" 2>/dev/null || true; cp /usr/local/share/cloister/AGENTS.md \"$HOME/.qwen/QWEN.md\" 2>/dev/null || true; node /usr/local/bin/qwen-mcp-init.mjs || true; exec \"$@\"", "sh"]
+ENTRYPOINT ["/bin/sh", "-c", "node /usr/local/bin/jail-probe.mjs || exit 1; mkdir -p \"$HOME/.qwen\" || echo 'cloister: WARNING cannot create $HOME/.qwen' >&2; cp /usr/local/share/cloister/AGENTS.md \"$HOME/.qwen/QWEN.md\" || echo 'cloister: WARNING the environment prompt could not be installed; the agent will run without its rules' >&2; node /usr/local/bin/qwen-mcp-init.mjs || true; exec \"$@\"", "sh"]
 # The container idles; work starts when the operator runs `workbench` in
 # an exec shell — it provisions the workspace and launches the agent into
 # a tmux session that outlives the shell that started it.

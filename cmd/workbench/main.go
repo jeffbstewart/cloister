@@ -57,6 +57,10 @@ type options struct {
 	repos     string
 	agentCmd  string
 	grange    string
+	// stockPrompt is the environment prompt as baked into the image.
+	// The session manager copies it into the agent's context file at
+	// every start — see prompt.go for why nothing else can.
+	stockPrompt string
 }
 
 func main() {
@@ -76,6 +80,8 @@ func run(args []string) error {
 		"the recent-repositories list; per user, shared across projects")
 	fs.StringVar(&o.agentCmd, "agent", env("WORKBENCH_AGENT", "qwen"), "the agent CLI to run in the session")
 	fs.StringVar(&o.grange, "grange", env("GRANGE_ROOT", "/grange"), "the grange root; tree/ is the checkout")
+	fs.StringVar(&o.stockPrompt, "prompt", env("CLOISTER_PROMPT", stockPromptPath),
+		"the environment prompt to install into the agent's context file")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -194,6 +200,10 @@ func (m *manager) provisionedMenu(ctx context.Context, st operator.Status) (bool
 	case choice == "q":
 		return true, nil
 	case choice == "" || choice == "1":
+		// Immediately before the agent starts, which is the only moment
+		// the answer is both knowable and useful: the named volume
+		// holding the context file does not refresh with the image.
+		m.reportPrompt()
 		return m.start(m.o, m.o.agentCmd)
 	case choice == "2":
 		return m.start(m.o, "bash")
