@@ -71,23 +71,34 @@ type plan struct {
 func allow() plan             { return plan{verdict: pass} }
 func deny(reason string) plan { return plan{reason: reason} }
 
-// tool renders an archivist verb the way every message here must: as an
-// MCP TOOL CALL on the archivist, never as something to type at a
-// shell.  Without this the advice reads like a git subcommand that
-// happens not to exist yet, and the reader's next move is to try
-// spelling it differently.
+// tool renders an archivist verb as a NAME, never as anything that
+// could be typed.
+//
+// The first version of this wrote `checkpoint()`, and that was a real
+// mistake with a real cost.  These messages arrive on stderr, in the
+// shell channel — where every line an agent reads is the output of
+// something it just ran.  A function-call spelling in that frame is an
+// invitation, and "call checkpoint()" is an imperative whose only
+// available reading is "run it".  A live session did exactly that:
+// refused `git commit`, then tried `checkpoint` at the shell, then
+// `file_at`, then `start_work`, burning turns until its context filled
+// with failures and the model came apart.
+//
+// So: quoted name, no parentheses, and no verb that means "execute".
+// The refusal frame (see main.go) carries one emphatic sentence saying
+// these are not programs — which belongs there, once, rather than
+// repeated into every reason.
 //
 // Names come from internal/verbs, so a renamed tool is a compile error
 // here rather than a refusal pointing at something that no longer
 // exists.
-func tool(name string) string { return "the archivist MCP tool " + name + "()" }
+func tool(name string) string { return `the archivist MCP tool "` + name + `"` }
 
-// Convention for the messages below: the FIRST mention in a sentence
-// uses tool() or tools(); later mentions in the same sentence are the
-// bare `name()` form.  Repeating the full phrase reads as boilerplate
-// and buries the names it exists to highlight — the register only has
-// to be established once.
-//
+// bare is a later mention in a sentence whose first mention already
+// used tool(): the quoted name alone, once the register is established.
+// Still quoted, never parenthesized — see tool() for what that cost.
+func bare(name string) string { return `"` + name + `"` }
+
 // tools renders several at once, for the cases where the names share a
 // clause rather than each taking their own.
 func tools(names ...string) string {
@@ -99,7 +110,7 @@ func tools(names ...string) string {
 	}
 	parts := make([]string, len(names))
 	for i, n := range names {
-		parts[i] = n + "()"
+		parts[i] = `"` + n + `"`
 	}
 	return "the archivist MCP tools " + strings.Join(parts[:len(parts)-1], ", ") + " and " + parts[len(parts)-1]
 }
@@ -153,8 +164,8 @@ var splitPersonality = map[string]func(args []string) plan{
 var refusals = map[string]string{
 	"add": "there is no staging area here — " + tool(verbs.Checkpoint) + " records the working tree as it stands, " +
 		"so there is nothing to stage.  Just edit the files and call it.",
-	"am":    "patch application is not part of the archivist's model; edit the files and call " + tool(verbs.Checkpoint) + ".",
-	"apply": "patch application is not part of the archivist's model; edit the files and call " + tool(verbs.Checkpoint) + ".",
+	"am":    "patch application is not part of the archivist's model; edit the files and use " + tool(verbs.Checkpoint) + ".",
+	"apply": "patch application is not part of the archivist's model; edit the files and use " + tool(verbs.Checkpoint) + ".",
 	// git 2.49+.  Modifies no refs, HEAD, index, or working tree — but it
 	// downloads objects from the remote, and remote access is the
 	// archivist's alone.  Moot in practice: a grange is a full clone, so
@@ -167,7 +178,7 @@ var refusals = map[string]string{
 	"cherry-pick":   "no cherry-pick verb: the archivist's history is append-only.  Make the change and record it with " + tool(verbs.Checkpoint) + ".",
 	"clean":         "use plain `rm` — the working tree is yours to edit directly, and " + tool(verbs.Checkpoint) + " records whatever it finds.",
 	"clone":         "this workspace is provisioned for you and cannot be changed; there is no route to a forge from here either.",
-	"commit":        "call " + tool(verbs.Checkpoint) + " instead — it records the whole working tree, refuses the default branch, and validates the message.",
+	"commit":        "use " + tool(verbs.Checkpoint) + " instead — it records the whole working tree, refuses the default branch, and validates the message.",
 	"fetch":         "remote access is the archivist's alone; " + tool(verbs.SyncFromUpstream) + " brings the default branch forward.",
 	"filter-branch": "history rewriting has no counterpart here, deliberately — published work must not change under a reviewer.",
 	"gc":            "repository maintenance is not the agent's concern; the workspace is destroyed after the task.",
@@ -180,20 +191,20 @@ var refusals = map[string]string{
 	"history": "`git history` rewrites commits — reword and split both replace them and carry the branches over.  " +
 		"The archivist keeps history append-only: checkpoints accumulate and " + tool(verbs.Restore) + " rolls back, " +
 		"because published work must not change under a reviewer.  To fix a message, record the correction forward.  " +
-		"(Unrelated to " + verbs.History + "(), the archivist tool of the same name, which only reads.)",
+		"(Unrelated to " + bare(verbs.History) + ", the archivist tool of the same name, which only reads.)",
 	"init":            "this workspace is already a provisioned clone, and a second repository inside it would not be published.",
 	"merge":           "merging an arbitrary branch has no counterpart.  " + tool(verbs.SyncFromUpstream) + " is the one integration the archivist performs: it brings the default branch forward under your line of work.",
 	"mv":              "use plain `mv` — the working tree is yours to edit directly, and " + tool(verbs.Checkpoint) + " records the rename as it finds it.",
 	"pull":            "remote access is the archivist's alone; " + tool(verbs.SyncFromUpstream) + " brings the default branch forward.",
-	"push":            "call " + tool(verbs.Publish) + " instead — it pushes the line of work you are on, and there is no credential in this container for git to use.",
+	"push":            "use " + tool(verbs.Publish) + " instead — it pushes the line of work you are on, and there is no credential in this container for git to use.",
 	"rebase":          "the archivist's history is append-only: checkpoints accumulate and " + tool(verbs.Restore) + " rolls back.  There is no rewrite verb, deliberately — published work must not change under a reviewer.",
 	"replace":         "object replacement has no counterpart here.",
-	"reset":           "call " + tool(verbs.Restore) + " to roll back — it knows whether the branch is published, and rewrites history only while it is still private.",
-	"restore":         "call " + tool(verbs.Restore) + " instead: it takes one path, or a checkpoint to roll the tree back to.",
-	"revert":          "there is no revert verb: call " + tool(verbs.Restore) + " to reach an earlier checkpoint, then " + verbs.Checkpoint + "() to record the result forward.",
+	"reset":           "use " + tool(verbs.Restore) + " to roll back — it knows whether the branch is published, and rewrites history only while it is still private.",
+	"restore":         "use " + tool(verbs.Restore) + " instead: it takes one path, or a checkpoint to roll the tree back to.",
+	"revert":          "there is no revert verb: use " + tool(verbs.Restore) + " to reach an earlier checkpoint, then " + bare(verbs.Checkpoint) + " to record the result forward.",
 	"rm":              "use plain `rm` — the working tree is yours to edit directly, and " + tool(verbs.Checkpoint) + " records the deletion as it finds it.",
 	"sparse-checkout": "the grange is a full checkout; narrowing it would hide files from the checkpoint that records them.",
-	"switch":          "call " + tool(verbs.StartWork) + " to begin a line of work (with no name it mints one), or " + verbs.SwitchWork + "() to move to an existing one.",
+	"switch":          "use " + tool(verbs.StartWork) + " to begin a line of work (with no name it mints one), or " + bare(verbs.SwitchWork) + " to move to an existing one.",
 	"tag":             "tags are a release act, and releases are the human's, not the agent's.",
 	"update-ref":      "refs are the archivist's to move; see " + tools(verbs.StartWork, verbs.SwitchWork, verbs.Checkpoint) + ".",
 }
@@ -346,7 +357,7 @@ func classifyBranch(args []string) plan {
 			strings.HasPrefix(a, "--points-at="):
 		case strings.HasPrefix(a, "-"):
 			return deny("`git branch " + a + "` changes branches, which is the archivist's.  " +
-				tool(verbs.StartWork) + " begins one, " + verbs.SwitchWork + "() moves to one, " +
+				tool(verbs.StartWork) + " begins one, " + bare(verbs.SwitchWork) + " moves to one, " +
 				tool(verbs.AbandonWork) + " deletes one.  Listing forms of `git branch` are available.")
 		default:
 			// A bare name: creation, or a filter value for one of the
@@ -429,7 +440,7 @@ func classifyStash(args []string) plan {
 	if len(args) > 0 && (args[0] == "list" || args[0] == "show") {
 		return allow()
 	}
-	return deny("call " + tool(verbs.SetAside) + " to park the working tree and " + verbs.Resume + "() to bring it back.  " +
+	return deny("use " + tool(verbs.SetAside) + " to park the working tree and " + bare(verbs.Resume) + " to bring it back.  " +
 		"`git stash list` and `git stash show` are available for reading.")
 }
 

@@ -143,10 +143,18 @@ func run(argv []string) int {
 
 	case refuse:
 		logEvent("refused", argv)
+		// The order here is deliberate.  A live session read a refusal,
+		// saw a tool name, and typed it at the shell — then the next one,
+		// and the next, until the context filled with "command not found"
+		// and the model came apart.  The names are quoted rather than
+		// parenthesized (see tool()), and the sentence saying they are
+		// NOT programs sits immediately under the reason that names them,
+		// not at the bottom where it was being read too late.
 		fmt.Fprintf(os.Stderr, "cloister: %s is refused in this workspace.\n\n%s\n\n"+
-			"Only git commands known to be read-only run here; everything that changes the\n"+
-			"repository goes through the archivist's MCP tools, which you invoke as tools\n"+
-			"rather than as shell commands.  Your environment prompt lists the full set.\n",
+			"The quoted names above are MCP tools on the archivist.  They are NOT programs:\n"+
+			"there is nothing to type at a shell, no such command exists, and trying costs\n"+
+			"you a turn.  Invoke them the way you invoke any MCP tool.  Only read-only git\n"+
+			"commands run here; your environment prompt lists what replaces the rest.\n",
 			display(argv), wrap(p.reason))
 		return 1
 

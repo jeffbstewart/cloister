@@ -116,7 +116,11 @@ func TestAgentsPromptNamesRealTools(t *testing.T) {
 	//
 	// Elsewhere, only lower_snake_case is safely distinguishable from
 	// English, so prose mentions are checked by shape.
-	backticked := regexp.MustCompile("`([a-z][a-z0-9_]*)`")
+	// The optional inner quotes matter: the table renders tool names as
+	// `"start_work"` so they cannot be read as shell commands, and a
+	// pattern that missed the quoting would silently stop checking the
+	// table — which is exactly what happened once.
+	backticked := regexp.MustCompile("`\"?([a-z][a-z0-9_]*)\"?`")
 	snakeCase := regexp.MustCompile("`([a-z][a-z0-9]*(?:_[a-z0-9]+)+)`")
 	// Snake-case things in the prompt that are not tools.
 	notTools := map[string]bool{"agent_home": true, "cloister_grange": true}

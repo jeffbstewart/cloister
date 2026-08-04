@@ -18,7 +18,16 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/jeffbstewart/cloister/internal/verbs"
 )
+
+// verbNames is every archivist tool the refusals may mention.  Drawn
+// from internal/verbs so a renamed tool cannot slip past these guards
+// by no longer matching a hand-copied string.
+func verbNames() []string {
+	return append(append([]string{}, verbs.Agent...), verbs.Operator...)
+}
 
 // allowed asserts a command runs the real git.
 func allowed(t *testing.T, argv ...string) {
@@ -300,11 +309,7 @@ func TestVerbsAreNamedAsArchivistToolsNotShellCommands(t *testing.T) {
 	// actually looked like, is a verb offered to the reader as a thing
 	// to invoke: backticked, or the object of "call"/"use".  Those must
 	// carry the tool() form; the same word used as English is fine.
-	verbs := []string{
-		"checkpoint", "publish", "start_work", "switch_work", "abandon_work",
-		"restore", "set_aside", "resume", "sync_from_upstream", "history",
-		"show_change", "current_state",
-	}
+	verbs := verbNames()
 	res := make(map[string]*regexp.Regexp, len(verbs))
 	for _, v := range verbs {
 		res[v] = regexp.MustCompile("(`" + v + "`|\\b(?:call|calls|calling|use|uses|using)\\s+" + v + "\\b)")
@@ -330,7 +335,38 @@ func TestVerbsAreNamedAsArchivistToolsNotShellCommands(t *testing.T) {
 	for _, reason := range reasons {
 		for v, re := range res {
 			if m := re.FindString(reason); m != "" && !strings.Contains(m, v+"()") {
-				t.Errorf("refusal offers %q as something to invoke, without the tool() form:\n  in: %s\n  saw: %s", v, reason, m)
+				t.Errorf("refusal offers %q as something to invoke, unquoted:\n  in: %s\n  saw: %s", v, reason, m)
+			}
+		}
+	}
+}
+
+// TestNoRefusalSpellsAToolLikeAnInvocation guards the shape that cost a
+// live session.  Refusals arrive on stderr, in the shell channel, where
+// everything the agent reads is output from something it just ran.
+// `checkpoint()` there reads as a thing to type — and the agent typed
+// it, then `file_at`, then `start_work`, until its context was full of
+// "command not found" and the model came apart.
+//
+// So no message may spell a tool as a call.  Quoted names only.
+func TestNoRefusalSpellsAToolLikeAnInvocation(t *testing.T) {
+	var reasons []string
+	for _, why := range refusals {
+		reasons = append(reasons, why)
+	}
+	for _, argv := range [][]string{
+		{"commit", "-m", "x"}, {"push"}, {"checkout", "main"}, {"switch", "x"},
+		{"branch", "newthing"}, {"config", "a", "b"}, {"stash"}, {"stash", "pop"},
+		{"restore", "a"}, {"nosuchcommand"}, {"log", "--output=x"},
+	} {
+		if p := classify(argv); p.verdict == refuse {
+			reasons = append(reasons, p.reason)
+		}
+	}
+	for _, reason := range reasons {
+		for _, v := range verbNames() {
+			if strings.Contains(reason, v+"()") {
+				t.Errorf("refusal spells %q as an invocation, which reads as a shell command:\n  %s", v+"()", reason)
 			}
 		}
 	}

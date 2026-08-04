@@ -42,21 +42,22 @@ partially apply.  So `git commit`, `git push`, `git checkout`, `git
 merge`, `git stash` and the rest will stop and tell you the tool to
 use — that is working as intended, not an environment fault.
 
-Everything in the right-hand column is an **MCP tool on the archivist**
-— you invoke it as a tool, the way you would any other MCP tool.  None
-of them is a shell command, and typing one at a shell will only tell
-you there is no such command.
+The names in the right-hand column are **MCP tools, not programs.**
+You invoke them the way you invoke any other MCP tool.  There is no
+executable behind any of them: typing one at a shell answers "command
+not found" and costs you a turn for nothing.  They are quoted below to
+keep that distinction visible.
 
-| instead of this shell command | call this archivist MCP tool |
+| shell command, refused | MCP tool to invoke instead |
 |---|---|
-| `git checkout -b` / `git switch -c` | `start_work` |
-| `git switch <branch>` / `git checkout <branch>` | `switch_work` |
-| `git branch -D <branch>` | `abandon_work` |
-| `git commit` | `checkpoint` |
-| `git checkout -- <paths>` / `git restore` | `restore` |
-| `git stash` / `git stash pop` | `set_aside` / `resume` |
-| `git pull` / `git merge origin/<default>` | `sync_from_upstream` |
-| `git push` | `publish` |
+| `git checkout -b` / `git switch -c` | `"start_work"` |
+| `git switch <branch>` / `git checkout <branch>` | `"switch_work"` |
+| `git branch -D <branch>` | `"abandon_work"` |
+| `git commit` | `"checkpoint"` |
+| `git checkout -- <paths>` / `git restore` | `"restore"` |
+| `git stash` / `git stash pop` | `"set_aside"` / `"resume"` |
+| `git pull` / `git merge origin/<default>` | `"sync_from_upstream"` |
+| `git push` | `"publish"` |
 
 - **There is no staging area.**  `checkpoint` records the working tree
   as it stands, so `git add` has nothing to mean here and `git diff
@@ -135,6 +136,39 @@ then, for EVERY round of review:
   Answers are grounded in retrieved sources; there is no general
   fetch/browse capability.
 
+## What you write into the repository
+
+Two mistakes keep happening, both of them in documentation, and both
+have shipped in real pull requests.  Check for them before you record
+anything you have written.
+
+**1. Never describe this cell.**  Where you are working is not a fact
+about the project.  The workspace path, the tools you were handed, and
+the fact that an agent authored the change are all facts about *here*.
+Real examples that reached review:
+
+- a project layout diagram rooted at `/grange/tree` — a path that
+  exists in this container and nowhere else, and that is destroyed when
+  your task ends;
+- a "Release Process" section instructing the reader to use
+  `start_work`, `checkpoint`, `publish`, and `propose` — MCP tools that
+  exist only inside this cell, so the documented process was one that
+  essentially no reader could perform.
+
+The test: **would this sentence make sense to someone who cloned the
+repository onto a laptop?**  If not, it is about your environment, and
+it does not belong in a file you record.  A contributor has `git`, a
+branch, and the forge's web interface.  Describe that.
+
+**2. Never describe code you have not read.**  A file listing comes
+from the tree, not from what the structure ought to look like; a claim
+about test coverage comes from the tests that exist.  A layout diagram
+naming files that are not there is worse than one that omits them —
+the reader trusts it, goes looking, and concludes their checkout is
+broken.  If you are unsure whether something exists, look: `ls`,
+`git ls-files`, and `git grep` are all available to you, and cost one
+turn against a false statement that survives into the repository.
+
 ## Toolchains on board
 
 Go, Rust, and the JVM (Java 25; Kotlin builds via each repo's Gradle
@@ -146,13 +180,9 @@ not scaffold solutions that need them.  Build systems: each repo's
 ## Housekeeping
 
 - Never commit agent context files (your home directory's `QWEN.md`)
-  or anything under `/grange` that the repository does not track.
-- **Don't write this cell into the repository.**  `/grange/tree`, the
-  archivist's verbs, and the fact that an agent authored the change are
-  facts about *where you are working*, not about the project.  Anyone
-  reading the repository normally has none of them, so a path, a
-  workflow, or a release process described in those terms is simply
-  wrong for the reader.
+  or anything under `/grange` that the repository does not track.  See
+  "What you write into the repository" above for the two mistakes that
+  keep reaching review.
 - Project-specific guidance lives in the repository itself (its own
   `CLAUDE.md`/`AGENTS.md`, if present) and adds to — never replaces —
   the rules here.
