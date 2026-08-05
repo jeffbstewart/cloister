@@ -8,36 +8,46 @@ any of it.*
 
 ## Why
 
-Two motivations, one diagnostic and one operational.
+Three motivations, in priority order.  The first is the prize; the other
+two are things this work is well placed to answer on the way.
 
-**Diagnostic.**  The qwen agent overruns its context window and degrades
-in ways that are hard to attribute: it emits Chinese glyphs, stops
-honoring the system prompt, and mishandles the archivist's MCP surface.
-We cannot currently tell whether that is a bug in the archivist's
-surface, a limitation of the qwen-code harness, or a limitation of the
-model.  Every fix we attempt is a guess.  Putting a known-good harness
-and a known-capable model behind the *same* MCP surface collapses the
-ambiguity: if Claude Code drives the archivist cleanly, the surface is
-fine and the problem is upstream of it.  This changes both harness and
-model at once, which is accepted — the follow-up (qwen-code harness
-against a Claude model, if Anthropic's terms permit it) separates them.
-Claude harness plus Claude model is the *blessed* configuration, and it
-is the one worth testing the tooling against first.
+**1. Move daily development into the jail.**  Not overnight autonomy as
+a special occasion — *ordinary work*, done in a contained workspace, in
+YOLO mode, because the blast radius is bounded.  That is already a
+significant win over the status quo whether or not anything else here
+pans out.  Throughput should go up: the operator stops policing classes
+of risk that the jail makes structurally unavailable, and the agent
+stops waiting for consent it no longer needs.  The plausible failure
+mode is not damage, it is *friction* — the mediated surface being worse
+to work through than plain tools on the host.  Measuring that friction
+honestly is what [Success criteria](#success-criteria) is for.
 
-**Operational.**  The real prize is overnight autonomy.  The cell's
-supervision model — a jail that is a containment boundary rather than a
-consent dialog — only pays off with an agent capable enough to be worth
-turning loose on a complex, long-running task without a human in the
-loop.  With that agent, `--dangerously-skip-permissions` inside the jail
-stops being reckless and starts being the point: the harness's own
-consent gate is redundant when the jail is the boundary, and the PR gate
-is still the only path to `main`.  Today that posture is not available
-on the dev server at any price, because the only way to run a frontier
-model over this tree is to run it on the host, unjailed, with the
-operator's whole home directory in reach.  The trade this design makes
-is: give up *network* containment, keep *filesystem*, *credential*, and
-*version-control* containment, and gain the ability to leave a capable
-agent running unattended.
+**2. Find out whether the system works together.**  The qwen agent
+overruns its context window and degrades in ways that are hard to
+attribute: Chinese glyphs, a system prompt it stops honoring, a
+mishandled archivist surface.  We cannot tell whether that is the
+archivist's surface, the qwen-code harness, or the model.  Driving the
+*same* MCP surface with a known-good harness and a capable model
+narrows it — with the caveat that a capable model routes around bad
+interfaces, so a clean pass is weaker evidence than it looks.  That is
+why the grading below counts *how much help the agent needed*, not just
+whether it finished.
+
+**3. Build the hedge.**  Qwen's role is not cost optimization.  The
+concern is that current subscription pricing does not reflect what the
+capacity costs to provide, and that the correction arrives as either
+unavailability or a step change in price.  Qwen is insurance against
+that day, and insurance only pays if it is kept warm.  The consequence
+for this design is concrete: **the cell must not quietly become
+Claude-shaped.**  The archivist surface stays harness-agnostic, the
+environment prompt stays portable across both CLIs, and the qwen path
+keeps getting exercised after Claude works — because that is exactly
+when it would otherwise rot, and exactly when nobody would notice.
+
+The trade this design makes to get all three: give up *network*
+containment, keep *filesystem*, *credential*, and *version-control*
+containment.  Today the alternative is running a frontier model on the
+host, unjailed, with the operator's whole home directory in reach.
 
 ## What this costs
 
@@ -528,6 +538,57 @@ The image entrypoint's stock-prompt materialization needs a Claude arm
 (`~/.claude/CLAUDE.md` alongside `~/.qwen/QWEN.md`); the Dockerfile
 already anticipates this ("future agent variants add theirs").
 
+### The disclosure gate
+
+Source from the workspace goes to Anthropic.  That is not a defect and
+for most trees it is not even interesting — but it is a decision, and a
+decision made once and then inherited silently by every later cell is
+not a decision.  The gate exists to make the operator touch it **per
+repository**.
+
+**A boolean is the wrong shape.**  `DISCLOSURE_ACK=1` survives a
+copy-paste of a working cell's environment into a new one, which is
+precisely the case worth catching: not a careless operator, but a
+careful one reusing a config that already worked.  A flag that is
+already set cannot ask a question.
+
+So both the variable's **name** and its **value** are derived from the
+repository:
+
+```
+CLOISTER_DISCLOSURE_JEFFBSTEWART_EXAMPLEREPO=
+    "source from jeffbstewart/examplerepo is sent to anthropic"
+```
+
+The name carries a slug of the repo (`owner/name`, uppercased,
+non-alphanumerics to `_`).  The value is a sentence naming the same
+repo.  Copying a working stanza to a new cell therefore fails twice
+over: the required variable is absent entirely, and the inherited one
+names the wrong repository.  There is no value that satisfies the gate
+for two different trees, which is the property a boolean cannot have.
+
+**Enforced by the archivist's provision gate**, which is the only place
+that authoritatively knows the repository — it is the thing doing the
+clone — and provision is the once-per-workspace moment.  It already
+re-verifies the forge ruleset there; this is the same shape of check.
+A compose `${VAR:?message}` guard cannot do it, because compose has no
+nested interpolation and so cannot construct a variable name from
+`${PROJECT}`.
+
+**On what the failure message should print.**  Naming the expected
+*variable* is necessary or the gate is merely obstructive.  Printing the
+expected *value* verbatim is more arguable: it makes the acknowledgment
+satisfiable by copying from the error, which is most of the deliberation
+gone.  The recommendation is to print the variable name and describe the
+required sentence — "the value must state that source from
+`<owner>/<name>` is sent to Anthropic" — leaving the operator to compose
+it.  Marginally more friction, meaningfully more read.
+
+This is the same idea as the git-passthrough escape hatch: a control
+whose safety comes from being deliberately awkward to satisfy, in a
+tree that otherwise optimizes for the operator's convenience.  Both are
+cheap because they fire once.
+
 ### What blocks the build
 
 - **compose-lint.**  It pins every internal network's membership and
@@ -836,14 +897,28 @@ not a diagnostic.
 CLAUDE.md says invariants are "topology + tests, NOT prompt text."
 Several mitigations here are prose: *frame the mutation capability
 carefully*, *decide `autoMemoryDirectory` deliberately*, *captures are
-not documentation*, and — the load-bearing one — *a per-cell decision
-for anything not public*.
+not documentation*, and *acknowledge that source from this tree goes to
+Anthropic*.
 
-Nothing currently prevents this stack being pointed at a private repo
-under consumer retention terms.  That one deserves a real gate in the
-house style: a `${VAR:?message}` guard, or a provision-time refusal
-unless the target repo is public or an explicit acknowledgment variable
-is set.  Cheap, and it converts a sentence into a control.
+That last one is now **designed but unbuilt** — see
+[The disclosure gate](#the-disclosure-gate), which specifies a
+per-repository acknowledgment the archivist's provision gate enforces.
+Two earlier shapes were considered and rejected, both worth recording
+because they are the obvious ones:
+
+- **Keyed on repository visibility** — refuse unless the target repo is
+  public.  Wrong axis.  Private does not imply sensitive; a repo can be
+  private to avoid *public attention* rather than to protect
+  confidentiality, its contents perfectly fine to send to a vendor.  Nor
+  does public imply safe.  Keying on the GitHub flag blocks legitimate
+  work while catching nothing.
+- **A boolean acknowledgment** — `DISCLOSURE_ACK=1`.  Survives being
+  copy-pasted into the next cell, which is exactly the case that
+  matters.  A flag already set cannot ask a question.
+
+A separate, unrelated hygiene item — the consumer-plan training toggle
+governs 5-year versus 30-day retention — is worth checking once and is
+not what this gate is for.
 
 ### Operational
 
@@ -863,6 +938,95 @@ is set.  Cheap, and it converts a sentence into a control.
   runaway loop in one cell writes into shared storage with no quota, and
   the failure mode if it ever mattered would be fleet-wide rather than
   cell-local.
+
+## Success criteria
+
+The question is not "did the agent finish."  It is **how much help did
+it need, and who had to supply it.**  That framing matters because a
+capable model will complete a task through a bad interface by brute
+force, and an outcome-only measure records that as success.
+
+### The grading scale
+
+| Grade | The agent reached the right tool because… |
+|---|---|
+| **A** | the system prompt already told it — right tool, first try, and the first invocation did what was intended |
+| **B** | a **system** nudge corrected it on the second try — the git proxy's refusal, a proxy-side rejection, a CLI wrapper's error.  Not a human |
+| **C** | the **operator** had to steer it |
+| **F** | the MCP tools cannot perform the task at all |
+
+The axis is *who supplied the correction*, which is what makes the scale
+actionable rather than merely descriptive.
+
+- **F's must be ameliorated** for Claude.  A capability gap is a build
+  item, not a grade.
+- **C's must be minimized.**  Every C is a session that could not have
+  run unattended, and unattended is the entire point.
+- **B is a perfectly good resting place.**  A system that corrects
+  itself deterministically is not a lesser outcome than one that never
+  errs; it is usually a more durable one.
+
+Recording is exception-only: the operator notes **C's and F's as they
+occur** and nothing else.  A's and B's are the unremarkable default and
+counting them would cost attention the experiment is trying to save.
+Grades land in `notingithub/jail-grades.md` — untracked, because some
+workspaces are private.
+
+### Do not chase A's
+
+The instinct on a recurring C is to strengthen the prompt: restate the
+rule, add it to `CLAUDE.md`, reinforce the memory entry.  **This does not
+work, and the evidence is already in hand.**
+
+The standing preference against heredocs and page-long `sed` chains for
+simple edits has a memory entry, has been reinforced repeatedly across
+sessions, and still does not hold.  That is not a defect in the wording.
+An LLM does not execute a rules-based checklist, and context bloat is
+real — so a rule that must survive every session, at every context
+depth, against every competing instruction, is a rule that will
+eventually be dropped.  The same lesson arrived independently from
+`permissions.deny`: a config-shaped thing that looks like a rule turned
+out to enforce nothing.
+
+**So the move on a recurring C is to convert it to a B, not to promote
+it to an A.**  A deterministic gate — the git proxy's refusal is the
+existing example, a `PreToolUse` hook is the available mechanism, held
+in reserve until a specific C earns it — fires every time, regardless
+of context budget or model attention.  It retires the gripe permanently
+and for *both* models, which the hedge makes doubly valuable.
+
+This is also where the jail changes the economics.  On the host, a gate
+that refuses the operator's own tooling is an irritation.  Inside a cell
+where mediation is already the deal, it is free.
+
+### Friction is bidirectional
+
+Host mode is **not** an all-A baseline, and the comparison is not "how
+much friction does the jail add."  It is friction added versus friction
+removed.
+
+Host-mode Claude has its own recurring C's — stacking a PR onto one
+already merged, needing to be told that the PR it filed is not there,
+re-learning the same command.  And some host-mode friction simply
+*ceases to be worth attention* in a cell: the reason to police an
+over-elaborate edit on the host is fear of unexpected or unrecoverable
+effects, and the grange makes those hard to produce and easy to discard.
+Friction that the operator stops needing to apply is a win in the same
+ledger as friction the system stops imposing.
+
+### The bar
+
+| | |
+|---|---|
+| **Claude** | B-or-better on every task.  Any F is a build item.  C's tracked and driven down. |
+| **Qwen** | Graded on the same tasks and the same scale.  Not required to match — its result *is* the hedge's status report. |
+| **Signal** | Claude at B-or-better while qwen still shows C's and F's is a strong result: it says the surface is sound and the gap is model capability. |
+| **Scope** | Java/Kotlin, Go, and NPM workspaces.  No C++.  Ecosystems are named here; **repositories are not** — some are private, and a public design doc is not the place to enumerate them. |
+
+That last rule is standing, not incidental: grades, and the surfaces
+they indict, travel out of the untracked log into the tracked tree
+freely.  Workspace names do not — including in commit messages and PR
+descriptions, which is where such a thing leaks months later.
 
 ## Staging
 
