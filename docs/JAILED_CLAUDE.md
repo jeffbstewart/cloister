@@ -6,14 +6,16 @@ relaxation of the cell's network containment, taken to answer a question
 the current topology cannot answer.  Read
 [What this costs](#what-this-costs) before deploying any of it.*
 
-*Built: the door itself — `docker/abbey-claude.yaml`,
-`docker/cell-claude.yaml`, the request-gate addon
-(`docker/claude-door/proxy/cloister_door.py`), the injecting hop
-(`docker/claude-door/egress/`), and compose-lint's invariant set for both
-overlays.  Not yet built: the CA and its leaf certificate, the
-`cloister-workbench-claude` image variant, workbench's Claude launcher
-arm, and the archivist's [disclosure gate](#the-disclosure-gate).  Nothing
-here can run a session until those land.*
+*Built: the door (`docker/abbey-claude.yaml`, `docker/cell-claude.yaml`,
+the request-gate addon, the injecting hop, and compose-lint's invariant
+set for both overlays); the `cloister-workbench-claude` image variant and
+its launcher; and the certificate tooling
+(`lifecycle/claude-door-cert.sh`).  See [Deploying M1](#deploying-m1).*
+
+*Not yet built: the archivist's
+[disclosure gate](#the-disclosure-gate).  **Nothing here has been run end
+to end** — no image has been built, no session started.  The first deploy
+is the test.*
 
 ## Why
 
@@ -1249,6 +1251,76 @@ descriptions, which is where such a thing leaks months later.
    healthchecks, a kill switch, and a failure notification; a rehearsed
    credential rotation; a `.gitignore` covering captures; and a
    deliberate answer to the session-memory question.
+
+## Deploying M1
+
+Everything below is built.  Nothing below has been run end to end — the
+first deploy is the test, and the observation log is the point.
+
+**1. The certificate.**  Against the CA you already have, on the host
+that will mount the result (so the `chmod 0600` takes — under MSYS it
+silently does not):
+
+```
+bash lifecycle/claude-door-cert.sh assemble \
+  --leaf-cert leaf.crt --leaf-key leaf.key --ca-cert ca.crt \
+  --out /srv/cloister/claude-door
+```
+
+Use `mint` instead if you hold the CA key and want the script to issue
+the leaf.  Either way it ends by verifying the result, and those checks
+are the point: a certificate with the right CN and no `subjectAltName`
+looks correct in every viewer and is refused by every client.
+
+**2. The image.**  Set the repo variable, then let the pipeline build:
+
+```
+gh variable set CLOISTER_CA_PEM < /srv/cloister/claude-door/cloister-ca.crt
+```
+
+Without it the claude variant is **skipped** with a notice rather than
+published half-configured.  The package must stay **private**
+([Publishing the recipe](#publishing-the-recipe)).
+
+**3. The abbey door.**
+
+```
+CLAUDE_DOOR_CONFIG=<repo>/docker/claude-door \
+CLAUDE_LEAF_CERT=/srv/cloister/claude-door/claude-leaf.pem \
+ANTHROPIC_TOKEN_FILE=/srv/cloister/anthropic-token \
+docker compose -f docker/abbey.yaml -f docker/abbey-claude.yaml up -d
+```
+
+**4. The cell.**  `WORKBENCH_IMAGE` must name the **claude** variant.
+
+```
+docker compose -f docker/cell.yaml -f docker/cell-claude.yaml up -d
+```
+
+If the agent container refuses to boot, read why before changing
+anything: `jail-probe` and `claude-door-probe` are fail-closed and both
+say exactly what they found.  A `claude-door-probe` failure naming an
+untrusted certificate is the design working — it means the name resolved
+somewhere our CA did not sign.
+
+**5. Watch the door, because that is the experiment.**
+
+```
+docker logs -f claude-proxy
+```
+
+Every refusal is logged by name.  Expect some — `/v1/messages` is the
+only allowed path, and finding out what else the harness reaches for is
+the diagnostic.  `/v1/messages/count_tokens` is the likely first one;
+widen the allowlist against observations, not guesses.
+
+**6. Capture only when you have a question.**
+
+```
+COMPOSE_PROFILES=capture docker compose -f docker/abbey.yaml \
+  -f docker/abbey-claude.yaml up -d
+docker stop claude-tap && docker rm claude-tap    # turning it off is an ACT
+```
 
 ## References
 

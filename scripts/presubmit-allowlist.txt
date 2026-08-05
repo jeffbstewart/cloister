@@ -61,6 +61,14 @@ ANTHROPIC_AUTH_TOKEN=placeholder-the-door-replaces-this
 # ${ANTHROPIC_TOKEN_FILE} and never appears in the tree.
 /run/secrets/anthropic-token
 
+# The same indirection seen from the host side: the example HOST PATH in the
+# M1 deployment runbook (docs/JAILED_CLAUDE.md).  ANTHROPIC_TOKEN_FILE names
+# a file and never carries a value — that is the entire reason it exists,
+# and the same shape as the archivist's GITHUB_TOKEN_FILE.  Listed as the
+# exact literal rather than by variable name, per the rule at the top: a new
+# path in a future doc should come back here and be looked at.
+ANTHROPIC_TOKEN_FILE=/srv/cloister/anthropic-token
+
 # Synthetic value in composelint's tests, which prove the linter REFUSES a
 # cell whose token is not a placeholder.  Deliberately not token-shaped: the
 # rule under test is "the value must say placeholder", and dressing the
