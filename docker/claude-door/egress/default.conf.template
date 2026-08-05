@@ -1,0 +1,102 @@
+# Copyright 2026 Jeffrey B. Stewart
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# claude-egress — the last hop of the jailed-claude door
+# (docs/JAILED_CLAUDE.md).  Two jobs, and the ORDER of the hops is what
+# makes the design work:
+#
+#   1. Inject the real credential.  Everything upstream of here — the cell,
+#      claude-proxy, and the packet capture on the plaintext segment —
+#      carries only a placeholder.  The capture is credential-free because
+#      of WHERE this hop sits, not because anyone remembered to redact it.
+#   2. Originate real TLS and VERIFY it.  We MITM our own agent; we do not
+#      MITM Anthropic.  proxy_ssl_verify below is not decoration.
+#
+# The template is rendered at container start by the nginx image's
+# /docker-entrypoint.d/20-envsubst-on-templates.sh.  ${ANTHROPIC_TOKEN} is
+# exported by 10-anthropic-token.envsh, which reads it from a mounted file,
+# so the secret never has to be baked into an image or committed here.
+# NGINX_ENVSUBST_FILTER pins substitution to ANTHROPIC_* so no nginx runtime
+# variable below can be eaten by a same-named environment variable.
+
+server {
+    # nginx-unprivileged's port: this container runs as uid 101 and binds
+    # nothing privileged.  claude-proxy dials claude-egress:8080 over the
+    # internal claudeplain network — the plaintext segment, and the only
+    # thing claude-tap records.
+    listen 8080;
+    server_name _;
+
+    # Long generations produce large requests as well as long ones; the 1m
+    # default would reject a full agentic context outright, and the failure
+    # reads as a mysterious 413 from "Anthropic".
+    client_max_body_size 32m;
+    client_body_timeout 300s;
+
+    # Docker's embedded resolver.  Anthropic's addresses rotate, and a
+    # literal `proxy_pass https://api.anthropic.com` resolves ONCE at config
+    # load and then caches that answer for the life of the container.  The
+    # variable form below forces re-resolution on this TTL.
+    resolver 127.0.0.11 ipv6=off valid=30s;
+
+    # The container's own liveness, answered locally.  It must NOT proxy: a
+    # healthcheck that dials Anthropic would bill a request every interval
+    # and would report the door dead whenever the vendor had a bad minute,
+    # which is the opposite of what "did the door die at 2am" is asking.
+    location = /healthz {
+        access_log off;
+        add_header content-type text/plain always;
+        return 200 "ok\n";
+    }
+
+    location / {
+        set $anthropic_host "api.anthropic.com";
+        proxy_pass https://$anthropic_host$request_uri;
+
+        # Real TLS, really validated, against the public roots.  If this
+        # ever fails, it fails LOUDLY here rather than quietly succeeding
+        # against something that is not Anthropic.
+        proxy_ssl_server_name on;
+        proxy_ssl_name api.anthropic.com;
+        proxy_ssl_verify on;
+        proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+        proxy_ssl_verify_depth 3;
+        proxy_ssl_protocols TLSv1.2 TLSv1.3;
+
+        # The injection.  The cell's placeholder Authorization header is
+        # REPLACED, not appended to.  x-api-key is cleared as well: it is the
+        # other credential header this API accepts, and a cell that set one
+        # must not have it ride through.
+        proxy_set_header Host api.anthropic.com;
+        proxy_set_header Authorization "Bearer ${ANTHROPIC_TOKEN}";
+        proxy_set_header x-api-key "";
+
+        # Keep the plaintext hop READABLE.  Without this the response bodies
+        # on the captured segment are gzip, and the pcap that exists to show
+        # us what the harness sent shows us compressed noise instead.
+        proxy_set_header Accept-Encoding "";
+
+        # SSE.  proxy_buffering on (the default) holds the token stream until
+        # the whole response lands, which presents as the agent hanging for
+        # minutes and then producing everything at once.  The timeouts are
+        # the same class of problem as the archivist's 90-minute MCP window:
+        # a long generation is not a stalled connection.
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_connect_timeout 30s;
+        proxy_send_timeout 1800s;
+        proxy_read_timeout 1800s;
+    }
+}

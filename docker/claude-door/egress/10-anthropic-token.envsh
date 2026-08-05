@@ -1,0 +1,53 @@
+# Copyright 2026 Jeffrey B. Stewart
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Read the Anthropic credential from a mounted FILE into the environment the
+# config template is rendered against — the archivist's GITHUB_TOKEN_FILE
+# property, applied to the other credential in this repository: the secret
+# lives in one file on the host, mounted read-only into exactly one
+# container, and never enters an image, a compose file, or the tree.
+#
+# The nginx image's entrypoint SOURCES `/docker-entrypoint.d/*.envsh` (and
+# merely executes `*.sh`), which is why this is the .envsh extension and why
+# the export below survives into 20-envsubst-on-templates.sh.  Being sourced
+# is also why there is no `set -eu` here: it would apply to the entrypoint
+# itself for the rest of the boot.
+#
+# Fail-closed, and on purpose.  An empty or missing token file would render a
+# template with `Bearer ` and an empty value; nginx would start happily and
+# every request would come back 401 from Anthropic — a confusing failure two
+# hops away from its cause.  Refusing to boot names the cause here.
+
+: "${ANTHROPIC_TOKEN_FILE:=/run/secrets/anthropic-token}"
+
+if [ ! -s "$ANTHROPIC_TOKEN_FILE" ]; then
+    echo "claude-egress: FATAL the Anthropic credential file ($ANTHROPIC_TOKEN_FILE) is missing or empty." >&2
+    echo "claude-egress: this hop exists to INJECT that credential — the cell upstream carries only a" >&2
+    echo "claude-egress: placeholder, so without the real one nothing gets authenticated.  Mount the" >&2
+    echo "claude-egress: token file (ANTHROPIC_TOKEN_FILE in docker/abbey-claude.yaml) and redeploy." >&2
+    exit 1
+fi
+
+# tr, not $(cat): a token file written by an editor almost always ends in a
+# newline, and a trailing \r or \n inside an HTTP header value is a request
+# smuggling primitive before it is anything else.  Strip both.
+ANTHROPIC_TOKEN="$(tr -d '\r\n' < "$ANTHROPIC_TOKEN_FILE")"
+export ANTHROPIC_TOKEN
+
+# Pin substitution to our own variable.  Left unset, envsubst would replace
+# every ${...} in the template that happens to name an environment variable —
+# a template full of nginx runtime variables is one same-named env var away
+# from being silently rewritten.
+NGINX_ENVSUBST_FILTER="ANTHROPIC_"
+export NGINX_ENVSUBST_FILTER

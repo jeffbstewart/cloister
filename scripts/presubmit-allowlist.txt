@@ -55,3 +55,14 @@ Bearer ignored-for-local-use
 # being worthless (docs/JAILED_CLAUDE.md).  Same shape as the OPENAI_API_KEY
 # placeholder above.
 ANTHROPIC_AUTH_TOKEN=placeholder-the-door-replaces-this
+
+# The MOUNT PATH the real Anthropic credential lands on inside claude-egress
+# — a location, never a value.  The credential itself is a host file named by
+# ${ANTHROPIC_TOKEN_FILE} and never appears in the tree.
+/run/secrets/anthropic-token
+
+# Synthetic value in composelint's tests, which prove the linter REFUSES a
+# cell whose token is not a placeholder.  Deliberately not token-shaped: the
+# rule under test is "the value must say placeholder", and dressing the
+# fixture up as a real credential would add nothing but a scanner hit.
+ANTHROPIC_AUTH_TOKEN=a-real-credential-would-go-here

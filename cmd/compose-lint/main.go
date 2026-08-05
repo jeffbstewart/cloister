@@ -30,12 +30,21 @@
 //     state service owning the record and reading the agency's snapshot
 //     one-way; the deep-think path env-pinned (never a committed LAN
 //     address); and exactly three containers holding `egress`.
+//   - the jailed-claude OVERLAYS (docker/abbey-claude.yaml and
+//     docker/cell-claude.yaml, docs/JAILED_CLAUDE.md): the inspected
+//     Anthropic door.  Separate files because they trade away invariants
+//     the two above assert absolutely — merging one is meant to be an act,
+//     not an inheritance — so they carry their own set: exactly one new
+//     internet holder, exactly one new agent edge, the credential in
+//     exactly one container, the request-gate addon loaded, and a
+//     placeholder token in the cell.
 //
 // CI runs it on every PR:
 //
-//	go run ./cmd/compose-lint docker/cell.yaml docker/abbey.yaml
+//	go run ./cmd/compose-lint docker/cell.yaml docker/abbey.yaml \
+//	  docker/cell-claude.yaml docker/abbey-claude.yaml
 //
-// With no arguments it checks both committed files.
+// With no arguments it checks all four committed files.
 package main
 
 import (
@@ -47,14 +56,19 @@ import (
 
 // okSummary is the one-line clean verdict printed per stack kind.
 var okSummary = map[composelint.Stack]string{
-	composelint.StackCell:  "two services, no host tree, no egress, no shared doors re-declared; agent on the grange + workbench, archivist jailed on grange + gitegress",
-	composelint.StackInfra: "infer behind the agency on a closed modelnet, scholar contained, forge relays pinned, memory one-way, egress held by exactly the three relays",
+	composelint.StackCell:        "two services, no host tree, no egress, no shared doors re-declared; agent on the grange + workbench, archivist jailed on grange + gitegress",
+	composelint.StackInfra:       "infer behind the agency on a closed modelnet, scholar contained, forge relays pinned, memory one-way, egress held by exactly the three relays",
+	composelint.StackInfraClaude: "three hops, one new internet holder; the gate addon loaded, the plaintext segment two-ended, the credential in claude-egress alone, the tap profile-gated",
+	composelint.StackCellClaude:  "one new edge (claudenet), a placeholder credential, no base-URL redirect, the single-certificate trust store, no new mounts",
 }
 
 func main() {
 	paths := os.Args[1:]
 	if len(paths) == 0 {
-		paths = []string{"docker/cell.yaml", "docker/abbey.yaml"}
+		paths = []string{
+			"docker/cell.yaml", "docker/abbey.yaml",
+			"docker/cell-claude.yaml", "docker/abbey-claude.yaml",
+		}
 	}
 	exit := 0
 	for _, path := range paths {
@@ -74,6 +88,10 @@ func main() {
 			violations, err = composelint.Check(data)
 		case composelint.StackInfra:
 			violations, err = composelint.CheckInfra(data)
+		case composelint.StackInfraClaude:
+			violations, err = composelint.CheckInfraClaude(data)
+		case composelint.StackCellClaude:
+			violations, err = composelint.CheckCellClaude(data)
 		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "compose-lint: %s: %v\n", path, err)

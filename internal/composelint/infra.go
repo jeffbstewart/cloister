@@ -36,27 +36,51 @@ const (
 	// service.  The constant keeps its name: it is still "the shared
 	// stack" as far as callers are concerned.
 	StackInfra Stack = "infra"
+	// StackInfraClaude is the jailed-claude door's OVERLAY on the abbey
+	// (docker/abbey-claude.yaml, docs/JAILED_CLAUDE.md), recognized by its
+	// `claude-proxy` service.  It is a separate file, and therefore a
+	// separate invariant set, precisely so the base abbey's rules stay
+	// absolute: a host that does not merge this overlay still has exactly
+	// three egress holders and one inference door.
+	StackInfraClaude Stack = "infra-claude"
+	// StackCellClaude is the matching overlay on a cell
+	// (docker/cell-claude.yaml): one new network edge and the harness's
+	// environment.  Recognized by carrying `agent` with no `archivist`,
+	// which is a shape only an overlay has.
+	StackCellClaude Stack = "cell-claude"
 )
 
 // Identify reports which stack's invariants the compose document is subject
-// to.  It fails closed: a document that matches neither sentinel — or both —
-// is an error, never a silently unlinted file.
+// to.  It fails closed: a document matching no sentinel is an error, never a
+// silently unlinted file.
+//
+// The order is precedence, not preference.  The two BASE stacks are tested
+// first, so a claude-door service smuggled into docker/abbey.yaml identifies
+// as the abbey and is then refused by the abbey's own exactly-three-egress
+// rule — which is the answer we want.  An overlay is only ever an overlay
+// when it carries none of the base sentinels.
 func Identify(data []byte) (Stack, error) {
 	var c compose
 	if err := yaml.Unmarshal(data, &c); err != nil {
 		return "", fmt.Errorf("parse compose: %w", err)
 	}
-	_, cell := c.Services["archivist"]
-	_, infra := c.Services["infer"]
+	has := func(name string) bool {
+		_, ok := c.Services[name]
+		return ok
+	}
 	switch {
-	case cell && infra:
+	case has("archivist") && has("infer"):
 		return "", fmt.Errorf("compose file defines both `archivist` and `infer` — the cell and the abbey must not merge")
-	case cell:
-		return StackCell, nil
-	case infra:
+	case has("infer"):
 		return StackInfra, nil
+	case has("archivist"):
+		return StackCell, nil
+	case has("claude-proxy"):
+		return StackInfraClaude, nil
+	case has("agent"):
+		return StackCellClaude, nil
 	default:
-		return "", fmt.Errorf("compose file defines neither `archivist` nor `infer` — unknown stack, refusing to lint as clean")
+		return "", fmt.Errorf("compose file defines none of `archivist`, `infer`, `claude-proxy`, or `agent` — unknown stack, refusing to lint as clean")
 	}
 }
 

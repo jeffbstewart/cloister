@@ -1,0 +1,290 @@
+# Copyright 2026 Jeffrey B. Stewart
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# ── The jailed-claude door: an OVERLAY on the abbey ─────────────────────────
+# (docs/JAILED_CLAUDE.md, milestone M1)  An inspected, single-host, path-
+# pinned route from a cell to api.anthropic.com.  This is a deliberate,
+# scoped RELAXATION of the cell's network containment — read "What this
+# costs" in that document before deploying it.
+#
+# It is an overlay and not part of docker/abbey.yaml on purpose.  A host
+# that does not run jailed-claude keeps the invariants verbatim: exactly
+# three containers holding `egress`, and the agency as the sole inference
+# door.  Merging this file is the act that trades them away, and it should
+# be an act rather than an inheritance.
+#
+#   docker compose -f docker/abbey.yaml -f docker/abbey-claude.yaml up -d
+#   docker compose -f docker/abbey.yaml -f docker/abbey-claude.yaml \
+#     --profile capture up -d          # ...and switch the packet tap on
+#
+# The tap sits behind a PROFILE, so a plain `up` does not start it — verified
+# with `docker compose config --services`, which lists only the two hops.
+# Under Portainer (standalone stacks, which these are — mem_limit, pids_limit
+# and cap_drop are all keys a Swarm deploy would silently ignore) the
+# equivalent is a stack environment variable, COMPOSE_PROFILES=capture.
+#
+# TURNING IT OFF IS AN ACT, not an omission.  Removing the variable and
+# redeploying leaves a RUNNING claude-tap alone — it is simply not among the
+# services that pass is managing.  For a diagnostic whose entire risk profile
+# is its lifetime, that distinction matters:
+#
+#   docker stop claude-tap && docker rm claude-tap
+#
+# WHAT IT BREAKS, stated plainly (the full table is in JAILED_CLAUDE.md):
+#   - "All inference rides through the agency."  A second inference door
+#     now exists.  compose-lint enforces the rule on docker/abbey.yaml and
+#     docker/cell.yaml unchanged; this file gets its own invariant set.
+#   - "The cell holds no route to the internet."  A cell that also merges
+#     docker/cell-claude.yaml gains a mediated one.
+#   - Source confidentiality.  Workspace contents go to Anthropic.
+#
+# WHAT IT DOES NOT BREAK: the archivist still owns version control, the bot
+# credential still exists only there, the PR gate is untouched, and the
+# operator's host tree still never enters a cell.  Those are the guarantees
+# this whole exercise exists to TEST, not to relax.
+#
+#      CELL                              ABBEY
+#                                                     ┌── claude-tap
+#   agent ─claudenet─▶ claude-proxy ─claudeplain─▶ claude-egress ─egress─▶ api.anthropic.com
+#        TLS, our CA  │ terminate,    plain HTTP  │ inject the real
+#        SNI:         │ inspect,      (placeholder│ credential, originate
+#        api.anthropic.com             token only)│ TLS, verify the real cert
+#
+# Each hop earns its place:
+#   1. The agent believes it is talking to api.anthropic.com — claude-proxy
+#      carries that name as a network alias, the same trick github-relay
+#      uses, so the dead-DNS pin still resolves it authoritatively and no
+#      ANTHROPIC_BASE_URL redirection is needed.  That is fidelity: we test
+#      the blessed configuration, and calls that IGNORE the base URL get
+#      captured too instead of silently failing.
+#   2. The middle hop is PLAINTEXT, and that is the capture point.  A single
+#      TLS-terminating proxy re-originating TLS gives you flow logs, not
+#      packets; a cleartext segment makes `tcpdump -w` produce a pcapng
+#      Wireshark dissects as ordinary HTTP with no keys and no decryption.
+#   3. The credential is injected DOWNSTREAM of the capture, so the recorded
+#      segment carries only the placeholder.  Credential-free by hop
+#      ordering, not by redaction discipline.
+#   4. Real TLS validation still happens, at the last hop.  We MITM our own
+#      agent; we do not MITM Anthropic.
+#
+# Stack env vars (in addition to the abbey's):
+#   CLAUDE_DOOR_CONFIG  host path of this repo's docker/claude-door directory
+#                 (the mitmproxy addon and the nginx template).  Mounted
+#                 read-only: the addon is trusted code in the agent's
+#                 decision path, and it is the operator's, not the model's.
+#   CLAUDE_LEAF_CERT  host path of a PEM holding the api.anthropic.com LEAF
+#                 certificate, its private key, and the issuing cloister CA
+#                 chain.  A leaf and not the CA key: this door serves
+#                 exactly one hostname, so mitmproxy never needs to mint
+#                 anything, and the fleet-wide MITM key stays out of every
+#                 container.  See docs/JAILED_CLAUDE.md, "The CA".
+#   ANTHROPIC_TOKEN_FILE  host path of the Anthropic credential (a
+#                 `claude setup-token` OAuth token, or a Console API key).
+#                 Mounted read-only into claude-egress ALONE — the same
+#                 property as the archivist's GITHUB_TOKEN_FILE: the secret
+#                 never enters a container the model can reach.
+#   CLAUDE_DOOR_ALLOW_SERVER_TOOLS  (optional) set to 1 ONLY for on-host
+#                 evaluation runs, where no scholar exists to redirect
+#                 research to.  It stands the server-side-tool refusal down
+#                 and nothing else.  Never set it for a cell.
+
+x-tz: &tz "TZ=${TZ:-UTC}"
+
+services:
+  # ── the inspecting hop ────────────────────────────────────────────────
+  claude-proxy:
+    # mitmproxy is the only candidate whose PRIMARY PURPOSE is this job:
+    # reverse mode terminates TLS for a named upstream, Python addons give
+    # request/response hooks, and mitmdump is headless.  The tag is the
+    # version pin (docs/JAILED_CLAUDE.md, "Package nominations").
+    image: mitmproxy/mitmproxy:12.2.3
+    container_name: claude-proxy
+    user: "1000:1000"                    # the image's own mitmproxy user
+    restart: unless-stopped
+    init: true                           # a long-lived proxy wants a reaper
+    # DELIBERATELY UNWATCHED by watchtower (docker/watchtower.yaml), unlike
+    # the scholar and the archivist.  A proxy that can rewrite responses can
+    # inject arbitrary model output, which is arbitrary agent behaviour — so
+    # this container joins the small set of things whose compromise
+    # compromises everything, and an unattended image bump of it is not a
+    # bounded operation.  Upgrade it by hand, deliberately.
+    entrypoint: ["mitmdump"]
+    command:
+      # Reverse mode: accept the agent's connection and forward to the
+      # plaintext hop.  Client-side TLS is auto-detected from the
+      # ClientHello and served with the leaf certificate below; the UPSTREAM
+      # is http:// on purpose — that cleartext segment is the whole reason
+      # the capture needs no keys.
+      - "--mode"
+      - "reverse:http://claude-egress:8080"
+      - "--listen-host"
+      - "0.0.0.0"
+      - "--listen-port"
+      - "443"
+      # One hostname, one certificate.  Because the door serves only
+      # api.anthropic.com there is nothing to mint at runtime, so no CA
+      # PRIVATE KEY has to live in this container at all.
+      - "--certs"
+      - "api.anthropic.com=/etc/cloister/claude-door/leaf.pem"
+      # Keep the Host header the agent sent, so the addon can cross-check it
+      # against the SNI.  claude-egress overrides Host for the real request
+      # regardless, so this costs nothing downstream.
+      - "--set"
+      - "keep_host_header=true"
+      # The rootfs is read-only; mitmproxy wants a config dir it can write.
+      - "--set"
+      - "confdir=/tmp/mitmproxy"
+      # The request gate: host pin, path allowlist, server-side-tool
+      # refusal, and the M1 observation log.  Without it this is a bare MITM
+      # of one host, which is a much weaker thing than it looks — see the
+      # addon's docstring on the Files API.
+      - "-s"
+      - "/etc/cloister/claude-door/cloister_door.py"
+    environment:
+      - *tz
+      # Default-closed.  Set to 1 only for on-host evaluation; see the
+      # header note and the addon's docstring.
+      - CLOISTER_DOOR_ALLOW_SERVER_TOOLS=${CLAUDE_DOOR_ALLOW_SERVER_TOOLS:-0}
+    volumes:
+      - ${CLAUDE_DOOR_CONFIG:?set CLAUDE_DOOR_CONFIG to the host path of this repo's docker/claude-door directory}/proxy/cloister_door.py:/etc/cloister/claude-door/cloister_door.py:ro
+      - ${CLAUDE_LEAF_CERT:?set CLAUDE_LEAF_CERT to the host path of the api.anthropic.com leaf PEM (cert + key + cloister CA chain)}:/etc/cloister/claude-door/leaf.pem:ro
+    read_only: true
+    tmpfs:
+      - /tmp:uid=1000,gid=1000
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 512m
+    healthcheck:
+      # A TCP connect, not an HTTP request: any request this proxy would
+      # forward reaches Anthropic and bills against the plan.
+      test: ["CMD", "python3", "-c", "import socket; socket.create_connection(('127.0.0.1', 443), 3).close()"]
+      interval: 30s
+    dns: 127.0.0.1                       # dead upstream — see the agency's dns note in abbey.yaml
+    networks:
+      claudenet:
+        # Load-bearing, and the reason no ANTHROPIC_BASE_URL is set: the
+        # agent's dead-DNS pin still resolves this name authoritatively
+        # through the embedded resolver, so the harness dials its real
+        # endpoint and every hard-coded Anthropic call is captured rather
+        # than silently failing.  The same trick github-relay uses.
+        aliases: [api.anthropic.com]
+      claudeplain: {}                    # to the last hop; no internet here
+
+  # ── the injecting hop, and the only route out ─────────────────────────
+  claude-egress:
+    # nginx collapses both jobs into one well-understood component: header
+    # injection and a verified upstream TLS origination.  The unprivileged
+    # variant listens on 8080 as uid 101 and binds nothing privileged.
+    image: nginxinc/nginx-unprivileged:1.31.3-alpine3.24
+    container_name: claude-egress
+    restart: unless-stopped
+    # Unwatched, for the same reason as claude-proxy: this is the container
+    # that holds the credential.
+    environment:
+      - *tz
+      - ANTHROPIC_TOKEN_FILE=/run/secrets/anthropic-token
+    volumes:
+      - ${CLAUDE_DOOR_CONFIG}/egress/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ${CLAUDE_DOOR_CONFIG}/egress/10-anthropic-token.envsh:/docker-entrypoint.d/10-anthropic-token.envsh:ro
+      # THE credential, and the only container in the fleet that holds it.
+      # Everything upstream — the cell, claude-proxy, and the capture —
+      # carries a placeholder, which is what makes a pcap of the plaintext
+      # hop safe to take at all.
+      - ${ANTHROPIC_TOKEN_FILE:?set ANTHROPIC_TOKEN_FILE to the host path of the Anthropic credential file}:/run/secrets/anthropic-token:ro
+    read_only: true
+    tmpfs:
+      # envsubst renders the template into conf.d at start; nginx wants a
+      # cache dir and a place for its pid.  The tmpfs over conf.d also
+      # hides the image's stock default.conf, which would otherwise serve a
+      # second, unproxied site on the same port.
+      - /tmp
+      - /var/cache/nginx
+      - /etc/nginx/conf.d
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    mem_limit: 128m
+    healthcheck:
+      # /healthz answers locally and never proxies — see the template.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+    networks:
+      - claudeplain                      # reachable by claude-proxy ONLY
+      - egress                           # the abbey's FOURTH internet holder
+
+  # ── the capture sidecar ───────────────────────────────────────────────
+  claude-tap:
+    # A SHORT-LIVED DIAGNOSTIC, not an audit log — which is why it sits
+    # behind a profile and is off unless the operator asks for it.  The
+    # durable account of what the agent did is the state service's trail;
+    # do not let a pcap drift into that role.  A decrypted capture is the
+    # most sensitive artifact this design produces and its risk grows with
+    # its lifetime: capture per session, treat each file as scratch, and
+    # delete rather than archive.
+    image: nicolaka/netshoot:v0.16
+    container_name: claude-tap
+    profiles: ["capture"]
+    restart: unless-stopped
+    depends_on: [claude-proxy]
+    # Load-bearing, and the reason this is a sidecar rather than a fourth
+    # container on claudeplain: docker networks are switched bridges, so a
+    # sniffer merely ATTACHED to that network sees none of the unicast
+    # traffic between the two hops.  It has to be inside one of the
+    # endpoints' namespaces.  This also means claude-tap declares no
+    # networks of its own — it has claude-proxy's.
+    network_mode: "service:claude-proxy"
+    entrypoint: ["tcpdump"]
+    command:
+      - "-i"
+      - "any"
+      - "-s"
+      - "0"
+      - "-U"                             # flush per packet: a killed tap still leaves a readable file
+      - "-w"
+      - "/captures/claudeplain.pcap"
+      # Ring buffer.  Not for disk, which is not a real constraint on this
+      # host, but because an unsegmented overnight capture is a single
+      # multi-gigabyte pcap that Wireshark will choke on.
+      - "-C"
+      - "100"
+      - "-W"
+      - "20"
+      # ONLY the plaintext hop.  Sharing claude-proxy's namespace would
+      # otherwise also record the cell-side TLS on :443, which is
+      # ciphertext we have no keys for and no use for.
+      - "tcp port 8080"
+    volumes:
+      - claude_captures:/captures
+    read_only: true
+    # tcpdump needs the raw socket and nothing else.  It runs as root
+    # because that capability requires it; the container holds no
+    # credential, no workspace, and no writable path but /captures.
+    cap_drop: [ALL]
+    cap_add: [NET_RAW]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 32
+    mem_limit: 256m
+
+networks:
+  claudenet:
+    internal: true                       # the agent's edge to the door; no route out
+    name: claudenet                      # stable: cells join it by name (docker/cell-claude.yaml)
+  claudeplain:
+    internal: true                       # claude-proxy <-> claude-egress; THE capture segment
+  egress: {}                             # declared in abbey.yaml; claude-egress is the fourth holder
+
+volumes:
+  claude_captures:
+    name: abbey_claude_captures          # NOT the tree: a capture never lands in a repository
