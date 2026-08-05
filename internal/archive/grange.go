@@ -55,11 +55,12 @@ type Grange struct {
 	hooks   string // empty hooks dir for the unpinned clone
 	now     func() time.Time
 
-	table     *endpoint.Table
-	gate      ProvisionGate
-	openForge func(endpoint.Endpoint) (forge.Client, error)
-	cloner    Cloner
-	defBranch string
+	table      *endpoint.Table
+	gate       ProvisionGate
+	disclosure func(repo string) error
+	openForge  func(endpoint.Endpoint) (forge.Client, error)
+	cloner     Cloner
+	defBranch  string
 
 	// The live workspace, non-nil only while PROVISIONED.  The archivist
 	// serializes every verb behind one lock, so these need no lock of
@@ -123,6 +124,14 @@ type GrangeConfig struct {
 	Root  string
 	Table *endpoint.Table
 	Gate  ProvisionGate
+	// Disclosure gates provision on an acknowledgment that this cell's
+	// source leaves the machine (internal/disclosure).  Unlike Gate it is
+	// OPTIONAL and runs BEFORE the clone: it needs only the repository's
+	// name, and refusing here means a repository we have decided not to
+	// permit is never fetched at all — as well as failing in a second
+	// rather than after a multi-minute clone.  nil -> no such gate, which
+	// is every cell that sends its source nowhere.
+	Disclosure func(repo string) error
 	// OpenForge builds the endpoint's PR-verb client when a workspace
 	// opens; nil -> no forge client, and the PR verbs refuse.
 	OpenForge func(endpoint.Endpoint) (forge.Client, error)
@@ -170,17 +179,18 @@ func NewGrange(cfg GrangeConfig) (*Grange, error) {
 		return nil, fmt.Errorf("archive: grange hooks dir: %w", err)
 	}
 	g := &Grange{
-		root:      cfg.Root,
-		tree:      filepath.Join(cfg.Root, "tree"),
-		staging:   filepath.Join(cfg.Root, "staging"),
-		git:       orDefault(cfg.GitPath, "git"),
-		hooks:     hooks,
-		now:       cfg.Now,
-		table:     cfg.Table,
-		gate:      cfg.Gate,
-		openForge: cfg.OpenForge,
-		cloner:    cfg.Cloner,
-		defBranch: cfg.DefaultBranch,
+		root:       cfg.Root,
+		tree:       filepath.Join(cfg.Root, "tree"),
+		staging:    filepath.Join(cfg.Root, "staging"),
+		git:        orDefault(cfg.GitPath, "git"),
+		hooks:      hooks,
+		now:        cfg.Now,
+		table:      cfg.Table,
+		gate:       cfg.Gate,
+		disclosure: cfg.Disclosure,
+		openForge:  cfg.OpenForge,
+		cloner:     cfg.Cloner,
+		defBranch:  cfg.DefaultBranch,
 	}
 	if g.now == nil {
 		g.now = time.Now
@@ -404,6 +414,19 @@ func (g *Grange) Provision(ctx context.Context, repoURL string, branch BranchNam
 		return ProvisionInfo{}, err
 	}
 	info := ProvisionInfo{Repo: repo, Endpoint: ep.Name}
+
+	// Before the clone, deliberately.  The disclosure gate asks whether
+	// this repository's source may leave the machine, and the answer does
+	// not depend on anything inside the checkout — so a refusal should not
+	// have fetched it first, and should not cost the operator a
+	// multi-minute clone to learn.  It is also the last point at which
+	// nothing has been written: the forge gate below runs after, because
+	// it reads the repo's own config out of the staging tree.
+	if g.disclosure != nil {
+		if err := g.disclosure(repo); err != nil {
+			return info, err
+		}
+	}
 
 	if err := os.RemoveAll(g.staging); err != nil {
 		return info, fmt.Errorf("archive: provision: clearing staging: %w", err)

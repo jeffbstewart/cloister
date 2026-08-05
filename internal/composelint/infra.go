@@ -51,18 +51,36 @@ const (
 )
 
 // Identify reports which stack's invariants the compose document is subject
-// to.  It fails closed: a document matching no sentinel is an error, never a
+// to.  It fails closed: a document matching nothing is an error, never a
 // silently unlinted file.
 //
-// The order is precedence, not preference.  The two BASE stacks are tested
-// first, so a claude-door service smuggled into docker/abbey.yaml identifies
-// as the abbey and is then refused by the abbey's own exactly-three-egress
-// rule — which is the answer we want.  An overlay is only ever an overlay
-// when it carries none of the base sentinels.
+// The BASE stacks are inferred from a sentinel service, because they are
+// self-evidently what they are.  The OVERLAYS declare themselves, via the
+// `x-cloister-stack` extension field, and that difference is deliberate.
+//
+// Inference ran out of road once the cell overlay grew an `archivist`
+// stanza to arm the disclosure gate: it then looked exactly like the base
+// cell, and would have been linted by the base cell's rules.  Any
+// tie-breaker available — "no image key", "declares claudenet" — is a
+// property that could arrive in the base file by ordinary drift, and the
+// failure mode is a file silently earning the OTHER file's rules.  A
+// document that says which invariant set governs it cannot drift into a
+// different answer.
+//
+// Absent the marker, a file falls through to the base rules, which are the
+// stricter ones — so forgetting it is loud rather than permissive.
 func Identify(data []byte) (Stack, error) {
 	var c compose
 	if err := yaml.Unmarshal(data, &c); err != nil {
 		return "", fmt.Errorf("parse compose: %w", err)
+	}
+	switch declared := Stack(strings.TrimSpace(c.Marker)); declared {
+	case "":
+		// Not an overlay; fall through to the base inference below.
+	case StackCellClaude, StackInfraClaude:
+		return declared, nil
+	default:
+		return "", fmt.Errorf("x-cloister-stack: %q is not a stack this linter knows (%q or %q)", declared, StackCellClaude, StackInfraClaude)
 	}
 	has := func(name string) bool {
 		_, ok := c.Services[name]
@@ -75,12 +93,8 @@ func Identify(data []byte) (Stack, error) {
 		return StackInfra, nil
 	case has("archivist"):
 		return StackCell, nil
-	case has("claude-proxy"):
-		return StackInfraClaude, nil
-	case has("agent"):
-		return StackCellClaude, nil
 	default:
-		return "", fmt.Errorf("compose file defines none of `archivist`, `infer`, `claude-proxy`, or `agent` — unknown stack, refusing to lint as clean")
+		return "", fmt.Errorf("compose file defines neither `archivist` nor `infer` and declares no x-cloister-stack — unknown stack, refusing to lint as clean")
 	}
 }
 

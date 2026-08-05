@@ -12,7 +12,7 @@ set for both overlays); the `cloister-workbench-claude` image variant and
 its launcher; and the certificate tooling
 (`lifecycle/claude-door-cert.sh`).  See [Deploying M1](#deploying-m1).*
 
-*Not yet built: the archivist's
+*Every M1 component is now built, including the archivist's
 [disclosure gate](#the-disclosure-gate).  **Nothing here has been run end
 to end** — no image has been built, no session started.  The first deploy
 is the test.*
@@ -700,6 +700,36 @@ A compose `${VAR:?message}` guard cannot do it, because compose has no
 nested interpolation and so cannot construct a variable name from
 `${PROJECT}`.
 
+**Built** — `internal/disclosure`, wired into `archive.Provision`.  Three
+things about the implementation are worth recording, because each was a
+choice with a plausible alternative:
+
+- **It runs BEFORE the clone,** not alongside the forge gate that runs
+  after.  The question is about the repository, not about anything
+  inside it, so a refusal should not have fetched the tree it just
+  declined — and the operator should not wait out a multi-minute clone
+  to be told no.
+- **The gate is armed by `CLOISTER_DISCLOSURE_REQUIRED`,** set on the
+  archivist by `docker/cell-claude.yaml` — the same file that grants the
+  agent its edge to the door — and compose-lint requires the pairing.
+  That is what keeps an unarmed default from being fail-open in
+  practice: you cannot merge the overlay that sends source to Anthropic
+  without also merging the line that demands it be acknowledged.  The
+  archivist cannot detect the door itself; it holds no route to it.
+  A cell without the overlay sends its source nowhere and is ungated,
+  which is correct rather than a gap.
+- **The value is checked for two facts, not for exact prose**: it must
+  name the repository, and it must name the recipient.  Requiring a
+  specific sentence would be a guessing game precisely because the
+  expected text is deliberately never printed.  The point was never the
+  wording — it is that the operator had to name *this* tree and *this*
+  recipient rather than inherit someone else's answer.
+
+One consequence worth stating plainly: compose-lint also refuses an
+acknowledgment **committed to the tree**.  A `CLOISTER_DISCLOSURE_<REPO>`
+value in `cell-claude.yaml` would be inherited by every cell that ever
+deploys that file — the boolean failure mode wearing a different name.
+
 **On what the failure message should print.**  Naming the expected
 *variable* is necessary or the gate is merely obstructive.  Printing the
 expected *value* verbatim is more arguable: it makes the acknowledgment
@@ -1093,9 +1123,10 @@ carefully*, *decide `autoMemoryDirectory` deliberately*, *captures are
 not documentation*, and *acknowledge that source from this tree goes to
 Anthropic*.
 
-That last one is now **designed but unbuilt** — see
-[The disclosure gate](#the-disclosure-gate), which specifies a
-per-repository acknowledgment the archivist's provision gate enforces.
+That last one is now **built** — see
+[The disclosure gate](#the-disclosure-gate): a per-repository
+acknowledgment the archivist's provision gate enforces, before the clone.
+The other three remain prose, and remain honestly labelled as such.
 Two earlier shapes were considered and rejected, both worth recording
 because they are the obvious ones:
 

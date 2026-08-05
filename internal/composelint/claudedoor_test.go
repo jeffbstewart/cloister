@@ -286,10 +286,48 @@ func TestCatchesClaudeCellViolations(t *testing.T) {
 			want: "must be `external: true`",
 		},
 		{
-			name: "the overlay reaches past the agent",
+			name: "the overlay reaches past the agent and the archivist",
 			old:  "networks:\n  claudenet:",
-			new:  "  archivist:\n    dns: 127.0.0.1\nnetworks:\n  claudenet:",
-			want: "may touch the `agent` alone",
+			new:  "  scholar:\n    dns: 127.0.0.1\nnetworks:\n  claudenet:",
+			want: "may touch the `agent` and the `archivist` alone",
+		},
+		// The disclosure gate.  It is armed by an environment variable on the
+		// archivist, and an archivist that never got it would simply never
+		// ask — with nothing at runtime able to notice, since it has no route
+		// to the claude door and cannot tell one exists.  The pairing is
+		// enforced HERE, on the file that grants the agent its edge.
+		{
+			name: "source goes to Anthropic with no gate armed",
+			old:  "      - CLOISTER_DISCLOSURE_REQUIRED=anthropic",
+			new:  "      - TZ=UTC",
+			want: "CLOISTER_DISCLOSURE_REQUIRED",
+		},
+		{
+			name: "the archivist stanza vanishes entirely",
+			old:  "  archivist:\n    environment:",
+			new:  "  unused-anchor:\n    environment:",
+			want: "does not arm the disclosure gate",
+		},
+		{
+			// A committed acknowledgment is the boolean failure wearing a
+			// different name: every cell deploying this file inherits it,
+			// which is precisely what per-repository naming exists to catch.
+			name: "the acknowledgment itself is committed to the tree",
+			old:  "      - CLOISTER_DISCLOSURE_REQUIRED=anthropic",
+			new:  "      - CLOISTER_DISCLOSURE_REQUIRED=anthropic\n      - CLOISTER_DISCLOSURE_ACME_WIDGET=source from acme/widget is sent to anthropic",
+			want: "is committed to the tree",
+		},
+		{
+			name: "the overlay re-wires the archivist's edges",
+			old:  "  archivist:\n    environment:",
+			new:  "  archivist:\n    networks: [claudenet]\n    environment:",
+			want: "gives the archivist networks",
+		},
+		{
+			name: "the overlay changes what the archivist runs",
+			old:  "  archivist:\n    environment:",
+			new:  "  archivist:\n    entrypoint: [\"/bin/sh\"]\n    environment:",
+			want: "changes what the archivist RUNS",
 		},
 		{
 			name: "the overlay adds a mount the cell's lint never saw",
@@ -330,13 +368,13 @@ func TestIdentifiesTheClaudeOverlays(t *testing.T) {
 	}{
 		{"the abbey overlay", "abbey-claude.yaml", StackInfraClaude},
 		{"the cell overlay", "cell-claude.yaml", StackCellClaude},
-		// Precedence, not preference: the base sentinels win.  A claude-door
-		// service smuggled into the abbey must identify as the ABBEY, so the
-		// abbey's own exactly-three-egress rule is what refuses it — rather
-		// than the file quietly earning the overlay's weaker membership
-		// rules by carrying the right service name.
-		{"the base abbey still wins", "abbey.yaml", StackInfra},
-		{"the base cell still wins", "cell.yaml", StackCell},
+		// The base files carry no marker and are inferred, as they always
+		// were.  A claude-door service smuggled into the abbey therefore
+		// still identifies as the ABBEY and is refused by the abbey's own
+		// exactly-three-egress rule, rather than earning the overlay's
+		// membership rules by carrying the right service name.
+		{"the base abbey", "abbey.yaml", StackInfra},
+		{"the base cell", "cell.yaml", StackCell},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := Identify([]byte(readDoc(t, tc.file)))
@@ -347,6 +385,42 @@ func TestIdentifiesTheClaudeOverlays(t *testing.T) {
 				t.Errorf("Identify(%s) = %q, want %q", tc.file, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestForgettingTheMarkerFailsClosed is the property that makes declaring
+// safe.  The cell overlay is service-for-service indistinguishable from the
+// base cell — both carry an agent and an archivist — so if a dropped marker
+// meant "guess", it would guess wrong.  Instead the file falls through to
+// the BASE rules, which are the stricter ones, and says so loudly.
+func TestForgettingTheMarkerFailsClosed(t *testing.T) {
+	doc := readDoc(t, "cell-claude.yaml")
+	unmarked := strings.Replace(doc, "x-cloister-stack: cell-claude", "# marker dropped", 1)
+	if unmarked == doc {
+		t.Fatal("the marker anchor was not found — update this test")
+	}
+	got, err := Identify([]byte(unmarked))
+	if err != nil {
+		t.Fatalf("Identify: %v", err)
+	}
+	if got != StackCell {
+		t.Fatalf("an unmarked overlay identified as %q; it must fall through to the stricter base rules, not be guessed at", got)
+	}
+	// ...and those rules must actually reject it, or "fails closed" is a
+	// claim about nothing.
+	v, err := Check([]byte(unmarked))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v) == 0 {
+		t.Error("an unmarked overlay passed the base cell rules clean — the fall-through has to be loud, or a dropped marker is silent")
+	}
+}
+
+func TestUnknownMarkerIsRefused(t *testing.T) {
+	_, err := Identify([]byte("x-cloister-stack: cell-of-my-own\nservices:\n  archivist: {}\n"))
+	if err == nil {
+		t.Error("an unrecognized x-cloister-stack was accepted — a typo would silently pick whichever rules the inference landed on")
 	}
 }
 

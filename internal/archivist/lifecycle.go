@@ -24,6 +24,7 @@ import (
 
 	"github.com/jeffbstewart/cloister/internal/archive"
 	"github.com/jeffbstewart/cloister/internal/audit"
+	"github.com/jeffbstewart/cloister/internal/disclosure"
 	"github.com/jeffbstewart/cloister/internal/endpoint"
 	"github.com/jeffbstewart/cloister/internal/mcpserve"
 	"github.com/jeffbstewart/cloister/internal/runid"
@@ -163,6 +164,17 @@ func lifecycleDetail(repo, branch string, err error) audit.LifecycleDetail {
 			d.Repo = gr.Repo
 		}
 	}
+	// A disclosure refusal names itself the same way, so the audit trail
+	// records WHY a provision was refused rather than merely that it was —
+	// and an unacknowledged repository is exactly the kind of thing worth
+	// being able to find in the record months later.
+	var dr *disclosure.RefusedError
+	if errors.As(err, &dr) {
+		d.Requirement = dr.Requirement()
+		if d.Repo == "" {
+			d.Repo = dr.Repo
+		}
+	}
 	return d
 }
 
@@ -184,12 +196,14 @@ func lifecycleDecision(err error, success audit.Decision) audit.Decision {
 func isLifecycleRefusal(err error) bool {
 	var unpublished *archive.UnpublishedError
 	var gate *GateRefusedError
+	var undisclosed *disclosure.RefusedError
 	return errors.Is(err, archive.ErrNotEmpty) ||
 		errors.Is(err, archive.ErrCorruptWorkspace) ||
 		errors.Is(err, endpoint.ErrNotAllowed) ||
 		errors.Is(err, ErrNotGrangeReady) ||
 		errors.As(err, &unpublished) ||
-		errors.As(err, &gate)
+		errors.As(err, &gate) ||
+		errors.As(err, &undisclosed)
 }
 
 // auditLifecycle appends one lifecycle record.  Append failure is logged,

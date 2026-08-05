@@ -12,6 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Declares which invariant set compose-lint applies to this file.  An
+# overlay says what it is rather than being inferred from its service names:
+# this one carries an `archivist` stanza and would otherwise be
+# indistinguishable from the base cell, and any tie-breaker subtle enough to
+# work is subtle enough to drift.  Compose ignores `x-` keys.
+x-cloister-stack: cell-claude
+
 # ── The cell's edge onto the jailed-claude door: an OVERLAY on cell.yaml ────
 # (docs/JAILED_CLAUDE.md, milestone M1)  One new edge and a handful of
 # environment variables.  Everything else about the cell is unchanged, and
@@ -127,6 +134,34 @@ services:
       # fast-mode availability check, the WebFetch domain-safety preflight —
       # arrive at the door instead of silently failing.
       - claudenet
+
+  archivist:
+    environment:
+      # ARMS THE DISCLOSURE GATE (docs/JAILED_CLAUDE.md, internal/disclosure).
+      # Source from the workspace goes to Anthropic under this overlay, and
+      # that is a decision — one which, made once and then inherited silently
+      # by every later cell, stops being a decision at all.  So provision
+      # refuses until the operator acknowledges THIS repository by name.
+      #
+      # It lives in the archivist because that is the one component which
+      # authoritatively knows the repository — it is the thing doing the
+      # clone — and provision is the once-per-workspace moment.  It already
+      # re-verifies the forge ruleset there; this is the same shape of check.
+      #
+      # It is armed HERE, in the same file that grants the agent its edge to
+      # the door, and compose-lint requires the pairing.  That is what keeps
+      # the default from being fail-open in practice: you cannot merge the
+      # overlay that sends source to Anthropic without also merging the line
+      # that demands it be acknowledged.  A cell without this overlay sends
+      # its source nowhere and is completely ungated, which is correct.
+      - CLOISTER_DISCLOSURE_REQUIRED=anthropic
+      # The acknowledgment itself is NOT here, and cannot be: its variable
+      # NAME is derived from the repository (CLOISTER_DISCLOSURE_<OWNER>_<NAME>)
+      # and its value must be a sentence naming that same repository.  The
+      # operator sets it on the stack per repository.  Provision names the
+      # exact variable when it refuses, and deliberately does not print the
+      # sentence — an acknowledgment satisfiable by pasting it out of the
+      # error message is most of the deliberation gone.
 
 networks:
   claudenet:
