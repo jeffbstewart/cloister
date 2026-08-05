@@ -79,6 +79,40 @@ services:
       - CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1
       - ENABLE_CLAUDEAI_MCP_SERVERS=false
       - CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1
+      # Which CLI `workbench` launches.  The session manager already took
+      # the agent command as a flag, so the Claude arm is a wrapper name
+      # rather than a second code path — and the qwen wrapper is still in
+      # this image and still works, which is the hedge staying warm.
+      - WORKBENCH_AGENT=claude-cloister
+      # The archivist's verbs run long: a clone takes minutes and
+      # await_review blocks for up to an hour.  Same 90 minutes the qwen MCP
+      # registration carries, for the same reason — it must exceed
+      # await_review's 1 h maxWait cap or the tool times out while the
+      # archivist is doing exactly what it was asked to.
+      - MCP_TOOL_TIMEOUT=5400000
+      # WHERE CLAUDE CODE KEEPS ITS STATE — and the answer to the design's
+      # "session memory outlives the grange" worry, which it left as a
+      # decision to be made deliberately.  Made here, and structurally.
+      #
+      # The tempting answer is the `autoMemoryDirectory` setting.  It is not
+      # trustworthy: unrecognized settings keys are silently ignored by this
+      # CLI (measured), so a key that does nothing looks exactly like a key
+      # that works.  CLAUDE_CONFIG_DIR is verifiable in one command — point
+      # it somewhere new and the whole state tree appears there: sessions,
+      # projects, backups, and .claude.json.
+      #
+      # Paired with the tmpfs below, that puts every byte Claude Code
+      # persists on a filesystem that dies with the container instead of on
+      # the per-project home volume, which survives `dispose` — the exact
+      # persistence channel the design was worried about.
+      - CLAUDE_CONFIG_DIR=/home/agent/.claude-session
+    tmpfs:
+      # Ephemeral by construction.  Residual gap, stated rather than papered
+      # over: this dies with the CONTAINER, not with the TASK, so state does
+      # still cross a dispose/provision cycle within one container run.
+      # Closing that properly means the archivist clearing it at dispose;
+      # until then, restart the cell between unrelated tasks.
+      - /home/agent/.claude-session:size=256m,uid=1000,gid=1000,mode=0700
     # Restated, not inherited.  cell.yaml already pins it, and compose would
     # carry it through — but this is the file that adds a network, and the
     # dead-DNS pin is exactly what keeps that addition from turning name

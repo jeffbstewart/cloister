@@ -302,8 +302,30 @@ func CheckCellClaude(data []byte) ([]string, error) {
 	}
 
 	v = append(v, claudeCellEnvViolations(agent)...)
+	v = append(v, claudeSessionStateViolations(agent)...)
 	v = append(v, dnsPinViolations(c)...)
 	return v, nil
+}
+
+// claudeSessionStateViolations keeps the harness's state off the per-project
+// home volume.  `~/.claude` there would survive `dispose`, turning
+// transcripts and auto-memory into a persistence channel that outlives the
+// workspace destruction this whole design turns on — which is the one risk
+// in JAILED_CLAUDE.md with no invariant of its own to name.
+//
+// It is checked HERE, in topology, rather than trusted to the
+// `autoMemoryDirectory` setting, because this CLI silently ignores settings
+// keys it does not recognize: a key that does nothing and a key that works
+// are indistinguishable from the outside.  A tmpfs is neither.
+func claudeSessionStateViolations(agent service) []string {
+	dir, set := agent.env("CLAUDE_CONFIG_DIR")
+	if !set {
+		return []string{"agent must set CLAUDE_CONFIG_DIR — left unset, Claude Code keeps sessions, projects and .claude.json under $HOME, which is a per-project volume that survives `dispose`"}
+	}
+	if !agent.hasTmpfsAt(dir) {
+		return []string{fmt.Sprintf("CLAUDE_CONFIG_DIR is %q but no tmpfs is mounted there — without one the harness's whole state tree lands on the home volume and outlives the workspace; a settings key is not a substitute, since unrecognized keys are silently ignored", dir)}
+	}
+	return nil
 }
 
 // claudeCellEnvViolations checks the harness environment.  Three of these

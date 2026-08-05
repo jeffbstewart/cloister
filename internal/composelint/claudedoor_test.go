@@ -303,6 +303,22 @@ func TestCatchesClaudeCellViolations(t *testing.T) {
 			new:  "    # dns pin dropped",
 			want: "pin `dns: 127.0.0.1`",
 		},
+		// Session state.  Both of these put transcripts, projects and
+		// .claude.json back on the per-project home volume, where they
+		// survive `dispose` — a persistence channel outliving the very
+		// workspace destruction this design turns on.
+		{
+			name: "the harness state directory is not relocated",
+			old:  "      - CLAUDE_CONFIG_DIR=/home/agent/.claude-session",
+			new:  "      # state dir left at the default",
+			want: "must set CLAUDE_CONFIG_DIR",
+		},
+		{
+			name: "the state directory is relocated but not made ephemeral",
+			old:  "      - /home/agent/.claude-session:size=256m,uid=1000,gid=1000,mode=0700",
+			new:  "      - /home/agent/somewhere-else:size=256m",
+			want: "no tmpfs is mounted there",
+		},
 	})
 }
 

@@ -208,7 +208,7 @@ cell fetches images or code.
 | Volume | Mounted by | Holds |
 |---|---|---|
 | `grange` | agent (rw), archivist (rw) | the workspace: the grange ROOT — `tree/` (the exported checkout) and `staging/` (the pre-promote clone).  `provision` fills it, `dispose` empties it; NEVER the operator's host tree ([grange.md](grange.md)) |
-| `agent_home` | agent | the agent's per-project HOME, so dotfiles and shell state never cross cells; the per-user shared surface is only the `AGENT_CACHES` bind at `~/caches` |
+| `agent_home` | agent | the agent's per-project HOME, so dotfiles and shell state never cross cells; the per-user shared surface is only the `AGENT_CACHES` bind at `~/caches`.  **Cleared by `workbench` at `dispose`** — the volume exists for SCOPING (project A's dotfiles must not reach project B), and its durability across tasks was a side effect of that mechanism rather than a decision.  It was also a live one: `~/.bashrc` is seeded from `/etc/skel` into the volume, is agent-writable thereafter, and is *executed* by every later interactive shell, so an agent that wrote a dotfile had code running in every subsequent task in that cell — outliving the workspace destruction the design turns on.  The mounts nested inside it (`~/caches`, `~/.qwen`) are discovered from the mount table and spared |
 | `qwen_home` | agent | qwen-code settings/history (`/home/agent/.qwen`); survives image swaps and `agent_home` resets |
 | `state` (`abbey_state`) | state | the FLEET's durable record: logs, audit, approvals — one trail for every cell |
 | `scholar_burn` (`abbey_scholar_burn`) | scholar | restart-surviving spend ledger (bare timestamps), so a crash loop cannot reset the daily caps — one ledger, so the caps are a fleet number |

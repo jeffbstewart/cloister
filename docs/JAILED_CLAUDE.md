@@ -117,12 +117,41 @@ Measured against the security invariants in [CLAUDE.md](../CLAUDE.md):
   is arbitrary agent behavior.  The mutation addon and the CA private
   key join the archivist's bot token in the small set of things whose
   compromise compromises everything.
-- **Session memory outlives the grange.**  `~/.claude` on the per-project
-  home volume persists across `dispose`, so transcripts and auto-memory
-  become a persistence channel that survives the workspace destruction
-  the design turns on.  Decide deliberately: point `autoMemoryDirectory`
-  *into the grange* so memory dies with the task, or at home so it
-  doesn't.  Do not let the default decide.
+- ~~**Session memory outlives the grange.**~~  **Closed, structurally, and
+  it turned out to be the smaller half of a bigger hole.**
+
+  The risk as first written was that `~/.claude` on the per-project home
+  volume persists across `dispose`, making transcripts and auto-memory a
+  persistence channel that survives the workspace destruction the design
+  turns on.  The proposed fix was the `autoMemoryDirectory` setting.
+  **That fix would not have been verifiable:** Claude Code silently
+  ignores settings keys it does not recognize — feed it
+  `{"totallyBogusKeyXyz":1}` and it succeeds without a murmur — so a key
+  that does nothing looks exactly like a key that works.  The same trap
+  as `permissions.deny`, one layer down.
+
+  What is verifiable is `CLAUDE_CONFIG_DIR`: point it somewhere new and
+  the entire state tree appears there — `sessions`, `projects`,
+  `backups`, and `.claude.json`.  The cell sets it to a **tmpfs**, so
+  every byte the harness persists dies with the container.  compose-lint
+  enforces the pairing; a settings key could not have been enforced at
+  all.
+
+  Asking *why* the home volume survived `dispose` found no design
+  rationale for it.  `docs/ARCHITECTURE.md` argues only for **scoping**
+  — project A's dotfiles must not reach project B — and durability came
+  along because a named volume is how you get scoping.  The consequence
+  was wider than session memory: `~/.bashrc` is seeded from `/etc/skel`
+  into that volume, is agent-writable from then on, and is *executed* by
+  every later interactive shell.  An agent that wrote a dotfile had code
+  running in every subsequent task in that cell.  `workbench` now resets
+  HOME to the image skeleton at `dispose`, sparing the nested mounts it
+  discovers from the kernel's mount table rather than from a hard-coded
+  list — because the failure mode of that list drifting is deleting the
+  operator's warmed dependency caches.
+
+  This one predated jailed-claude and applied to the qwen cell exactly
+  as much.  It is fixed for both.
 
 ## Topology
 
@@ -731,28 +760,30 @@ a launcher.**  `workbench` already passes `--append-system-prompt` to
 qwen and prints the prompt size, and Claude Code takes the same flag with
 the same signature — `--append-system-prompt <prompt>`, a string.
 
-**There is no `--append-system-prompt-file`.**  Confirmed against
-`claude --help`; an earlier documentation reference to a file variant was
-secondhand and wrong.  So workbench reads the mounted file and passes its
-contents as argv, exactly as it does for qwen — one launcher arm, no new
-mechanism.  The containment property is unchanged: the file is a
-root-owned read-only mount the agent cannot edit, and the flag is set by
-a launcher the agent cannot name.
+**`--append-system-prompt-file <path>` exists**, despite not appearing in
+`claude --help`'s flag list — see
+[The flag that `--help` denies](#the-flag-that---help-denies), which
+corrects an earlier finding here.  So the launcher passes the mounted
+file's **path**, and the prompt never enters argv at all.
 
-Two consequences of it being argv rather than a path:
+The containment property is what it always was, and does not depend on
+which of the two flags is used: the file is a root-owned read-only path
+the agent cannot edit, and the flag is set by a launcher the agent cannot
+name.
 
-- **Build the argv in Go, never through a shell.**  `cmd/workbench` uses
-  `exec.Command`, which passes arguments directly — a multi-kilobyte
-  markdown blob with quotes, backticks, and `$` in it is inert.  The same
-  content through `bash -c` is a quoting minefield and an injection
-  surface pointed straight at the system prompt.
-- **There is a ceiling.**  Linux caps a single argument at 128 KiB
-  (`MAX_ARG_STRLEN`), with total argv plus environment bounded by
-  `ARG_MAX`.  128 KiB is roughly 30k tokens, so this is not a near-term
-  constraint — but the section below argues for pushing *more* content
-  into the system prompt, and that advice does have a hard stop.  Have
-  workbench check the size and fail loudly rather than let `exec` return
-  `E2BIG` at launch.
+Two consequences of it being a path rather than argv, both of them
+things that stop being problems:
+
+- **No quoting surface.**  A multi-kilobyte markdown blob full of
+  quotes, backticks and `$` never crosses a shell or an argument
+  boundary.  (`cmd/workbench` uses `exec.Command` regardless, which
+  passes arguments directly — but the wrapper script in the image would
+  otherwise have had to quote `$(cat …)` exactly right, forever.)
+- **No ceiling.**  Linux caps a single argument at 128 KiB
+  (`MAX_ARG_STRLEN`); a path is a few dozen bytes.  This matters more
+  than it sounds, because the section below argues for pushing *more*
+  content into the system prompt — that advice previously ran into a
+  hard stop at roughly 30k tokens, and now does not.
 
 **The third row is disqualified for anything load-bearing.**
 `~/.claude/CLAUDE.md` sits on a volume the agent owns, so an agent that
@@ -902,24 +933,78 @@ Three things to keep an eye on, none of them blocking:
 
 ## Verified against the binary
 
-Claims here are checked against `claude --help` and observed behaviour,
-not against the documentation.  That distinction earned itself: the docs
-page references an `--append-system-prompt-file` flag the binary does not
-have.  **Trust the binary.**
+Claims here are checked against **observed behaviour** — the binary
+invoked, not the binary's help text and not the documentation.  That
+wording is deliberate and was paid for twice.  The docs page describes a
+`permissions.deny` control that turns out to be inert under
+`bypassPermissions`; `claude --help` omits a flag that turns out to work.
+Documentation overstated a control, help output understated a
+capability, and only invocation caught either.  **Trust the binary, and
+"the binary" means running it.**
 
 Findings are **version-scoped** — reproduce them with
 `lifecycle/probe-claude-harness.sh` after any Claude Code upgrade that
 lands before the cell is built.
 
-Tested against **Claude Code 2.1.221**.
+Tested against **Claude Code 2.1.221**, and re-checked against
+**2.1.222** where noted.
 
 | Claim | Result | Consequence |
 |---|---|---|
-| `--append-system-prompt-file <path>` exists | **No.**  The flag is `--append-system-prompt <prompt>`, a string. | Workbench reads the mounted file and passes contents as argv — one launcher arm, no new mechanism.  Containment property unchanged. |
+| `--append-system-prompt-file <path>` exists | **Yes — this reverses an earlier finding.**  Present and functional in 2.1.222, and `--help` still does not list it.  See [The flag that `--help` denies](#the-flag-that---help-denies). | Workbench passes a PATH, not contents.  The 128 KiB `MAX_ARG_STRLEN` ceiling stops being a constraint, and a multi-kilobyte prompt leaves argv entirely. |
 | `permissions.deny` applies under `bypassPermissions` | **No.**  Verifiably inert. | The grounding mitigation moves from config to a structural refusal at the proxy.  Deny rules stay as documentation of intent. |
 | Rate-limit header names readable from `--debug` | **No.**  The debug log is produced but carries no rate-limit or retry headers. | Deferred to the Phase 1 host proxy, which sees every header in cleartext by construction. |
 | Managed-policy `CLAUDE.md` survives `/compact` | **Yes, at least once.**  Post-compaction the canary was recalled directly, with no observed tool call — so the content was in context, not fetched on demand.  Whether it got there by re-injection or by the compaction summary carrying it is **unresolved**. | The split stands — but managed policy is *best-effort*, not guaranteed.  Anything that must hold for a whole overnight run still belongs in the appended system prompt. |
 | `--setting-sources user` excludes project-tree rules | **Yes.**  A project rule that fires under default sources does not fire with the flag — same rule file, same prompt, one flag added. | The cell's lever against agent-authored config in the checkout is real.  Launch with it. |
+
+### The flag that `--help` denies
+
+`--append-system-prompt-file <path>` **exists and works.**  This document
+previously recorded that it does not, and used that to justify passing a
+multi-kilobyte prompt through argv.  Both the finding and the reasoning
+built on it were wrong.
+
+What makes it worth more than a correction is *how* the wrong answer was
+reached, because it was reached by following this section's own rule.
+The earlier check greppped `claude --help`, found no such flag, and
+concluded — reasonably — that the binary does not have it.  It still does
+not appear in the flag list in 2.1.222.  It is nonetheless accepted, and
+honoured:
+
+```
+$ claude --append-system-prompt-file /tmp/nope.md -p x
+Error: Append system prompt file not found: /tmp/nope.md
+```
+
+That is the parser reading the flag and reaching for the file.  A canary
+run settles that the contents actually arrive: a phrase present only in
+the file, asked for in a session that never mentions it, comes back
+verbatim — and does not without the flag.
+
+**"Trust the binary" is not the same as "trust `--help`."**  Help output
+is documentation that happens to ship inside the binary, and it is
+incomplete in both directions here: it omits this flag from the flag
+list while *mentioning* `--append-system-prompt[-file]` in the prose of a
+different flag's description.  A grep found the absence and missed the
+mention.  The only test that settles a flag is invoking it, which is the
+same lesson `permissions.deny` taught from the opposite direction —
+there, a control that looked real was inert; here, a control that looked
+absent was live.  `lifecycle/probe-claude-harness.sh` step 5 now runs the
+invocation.
+
+Consequences, all of them simplifications:
+
+- Workbench passes a **path**, not contents.  The 128 KiB
+  `MAX_ARG_STRLEN` ceiling is no longer a constraint on how much the
+  appended system prompt may carry, so the argument for pushing content
+  into managed policy to save argv space disappears.
+- The prompt leaves argv, so it no longer appears in `ps`, and the
+  shell-quoting hazard that argued for a wrapper script is moot on this
+  path (the wrapper stays for other reasons — fail-closed if the prompt
+  is missing).
+- The containment property is unchanged either way: the file is a
+  root-owned read-only path the agent cannot edit, and the flag is set by
+  a launcher the agent cannot name.
 
 ### How the deny result was established
 
@@ -1172,7 +1257,7 @@ descriptions, which is where such a thing leaks months later.
 - [Data usage](https://code.claude.com/docs/en/data-usage) — telemetry opt-outs, WebFetch domain safety check, retention
 - [Web search tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool) — server-side execution
 - [Memory](https://code.claude.com/docs/en/memory) — CLAUDE.md precedence, the managed-policy path, `claudeMdExcludes`, auto memory, `/context`
-- [CLI reference](https://code.claude.com/docs/en/cli-reference) — `--append-system-prompt`, `--setting-sources`, `--strict-mcp-config`, `--permission-mode`.  Note the page's reference to a `--append-system-prompt-file` variant does not match `claude --help`; trust the binary.
+- [CLI reference](https://code.claude.com/docs/en/cli-reference) — `--append-system-prompt`, `--setting-sources`, `--strict-mcp-config`, `--permission-mode`.  The page's `--append-system-prompt-file` variant is real, and `claude --help` does not list it: the page was right and the help text was wrong, which is the reverse of the usual failure.
 - [claude-code LICENSE.md](https://github.com/anthropics/claude-code/blob/main/LICENSE.md) and [.devcontainer/](https://github.com/anthropics/claude-code/tree/main/.devcontainer) — all rights reserved, and Anthropic's own public containerization recipe
 - [Log out of all active sessions](https://support.claude.com/en/articles/10310342-how-do-i-log-out-of-all-active-sessions) — and why it doesn't cover Claude Code tokens
 - [Compromised API key](https://support.claude.com/en/articles/8384961-what-should-i-do-if-i-suspect-my-api-key-has-been-compromised)

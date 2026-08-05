@@ -40,6 +40,19 @@ env:
   # deliberately; the Dockerfile default matches.
   QWEN_VERSION: "0.19.4"
   WORKBENCH_IMAGE: ghcr.io/jeffbstewart/cloister-workbench
+  # The jailed-claude variant (docs/JAILED_CLAUDE.md).  THIS PACKAGE MUST
+  # STAY PRIVATE: claude-code is "all rights reserved", so publishing an
+  # image containing it is redistribution.  The RECIPE
+  # (docker/workbench-claude/Dockerfile) is public and that is fine —
+  # naming a package someone installs themselves under their own licence
+  # has never been distribution, and Anthropic publishes its own
+  # containerization recipe in that same public repo.  GHCR packages are
+  # created private; do not promote this one.
+  WORKBENCH_CLAUDE_IMAGE: ghcr.io/jeffbstewart/cloister-workbench-claude
+  # Pins the Claude Code CLI inside that variant.  The Dockerfile default
+  # matches.  Findings in docs/JAILED_CLAUDE.md are VERSION-SCOPED — re-run
+  # lifecycle/probe-claude-harness.sh when this moves.
+  CLAUDE_VERSION: "2.1.222"
   # The retired cloister-agent and cloister-builder-jvm images are no
   # longer published (the grange cutover, docs/grange.md): the workbench
   # replaced both.  Their contexts leave the tree with the corpse
@@ -141,6 +154,54 @@ jobs:
           build-args: |
             QWEN_CLI_VERSION=${{ env.QWEN_VERSION }}
           tags: ${{ steps.tags.outputs.workbench }}
+
+      # --- the jailed-claude variant (docs/JAILED_CLAUDE.md) ---------------
+      # A thin layer on the image just pushed, so both CLIs share one set of
+      # toolchains, one git proxy, and above all ONE environment prompt.
+      # That sharing is the hedge: the qwen path cannot rot unnoticed if it
+      # is the same path.
+      #
+      # The CA certificate is what makes the cell's trust store hold exactly
+      # one issuer, and it is operator-specific — so it comes from a repo
+      # VARIABLE rather than the tree.  A variable, not a secret: it is a
+      # public certificate, and putting it in `vars` keeps it out of a public
+      # tree without pretending it is confidential.  The CA PRIVATE key is
+      # never here, and never in any image; see "The CA" in the design.
+      - name: Materialize the cloister CA certificate
+        id: ca
+        env:
+          CLOISTER_CA_PEM: ${{ vars.CLOISTER_CA_PEM }}
+        run: |
+          if [ -z "${CLOISTER_CA_PEM}" ]; then
+            echo "::notice::vars.CLOISTER_CA_PEM is unset — skipping the claude variant."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          printf '%s\n' "${CLOISTER_CA_PEM}" > docker/workbench-claude/cloister-ca.crt
+          # Fail here rather than produce an image whose trust store is
+          # quietly wrong: the Dockerfile's own count check would catch an
+          # empty file, but a malformed one that happens to contain the
+          # marker string would slip through to a confusing TLS failure in
+          # the cell.
+          openssl x509 -in docker/workbench-claude/cloister-ca.crt -noout -subject
+          echo "present=true" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push the claude workbench variant
+        if: steps.ca.outputs.present == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: docker/workbench-claude
+          push: true
+          platforms: linux/amd64
+          build-args: |
+            WORKBENCH_IMAGE=${{ env.WORKBENCH_IMAGE }}:${{ env.QWEN_VERSION }}-${{ steps.ver.outputs.version }}
+            CLAUDE_CLI_VERSION=${{ env.CLAUDE_VERSION }}
+          # The tag leads with the CLAUDE version, mirroring how the stock
+          # workbench leads with qwen's.  No rolling :latest — this image
+          # carries a proprietary CLI whose version scopes every finding in
+          # docs/JAILED_CLAUDE.md, so a pull must never be ambiguous about
+          # which one it got.
+          tags: ${{ env.WORKBENCH_CLAUDE_IMAGE }}:${{ env.CLAUDE_VERSION }}-${{ steps.ver.outputs.version }}
 
       # Tags get a GitHub Release carrying the static binary, so a cell can
       # run the sidecar without pulling an image at all.
