@@ -37,6 +37,13 @@ docker/toolchains/*/cloister-worker
 docker/workbench/cloister-workbench
 docker/workbench/cloister-git-proxy
 
+# The cloister CA certificate, written into the claude variant's build
+# context from a repo variable (.github/workflows/images.yml).  A public
+# certificate, so this is tidiness rather than secrecy — it is
+# operator-specific, and the tree it would land in is public.  The CA PRIVATE
+# key never comes near a build context at all (docs/JAILED_CLAUDE.md).
+docker/workbench-claude/cloister-ca.crt
+
 # Python bytecode from models/ build+eval tooling (qualify.py).
 __pycache__/
 *.pyc

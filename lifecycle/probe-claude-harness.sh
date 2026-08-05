@@ -14,10 +14,16 @@
 # limitations under the License.
 
 # probe-claude-harness.sh — settle the verify-before-building claims in
-# docs/JAILED_CLAUDE.md against the CLAUDE BINARY, not the documentation.
+# docs/JAILED_CLAUDE.md against the CLAUDE BINARY, not the documentation and
+# not its help text.
 #
-# The one claim already settled taught the lesson: the docs page references
-# an `--append-system-prompt-file` flag that `claude --help` does not have.
+# That last clause was paid for.  An earlier version of this comment said the
+# lesson was "the docs mention a flag `claude --help` does not have" — and the
+# flag turned out to EXIST, working fine, merely unlisted (step 5).  So the
+# scoreboard is one control the documentation overstated (`permissions.deny`,
+# step 1) and one capability the help text understated.  Neither error is
+# reachable by reading; both fall out of running the thing.
+#
 # Every check here therefore observes BEHAVIOUR, and where it can it observes
 # a filesystem side effect rather than model prose — a marker file either
 # exists or it does not, and no amount of paraphrasing changes that.
@@ -32,6 +38,7 @@
 #   bash lifecycle/probe-claude-harness.sh 2     # managed CLAUDE.md vs /compact
 #   bash lifecycle/probe-claude-harness.sh 3     # --setting-sources user
 #   bash lifecycle/probe-claude-harness.sh 4     # rate-limit header names
+#   bash lifecycle/probe-claude-harness.sh 5     # --append-system-prompt-file
 #
 # On a Windows operator box, invoke Git Bash by full path from PowerShell:
 #   & "C:\Program Files\Git\bin\bash.exe" lifecycle/probe-claude-harness.sh 1
@@ -399,11 +406,102 @@ probe_4() {
   echo "  path, and delete it yourself afterwards."
 }
 
+# ── 5 ── does --append-system-prompt-file exist, and does it take effect? ───
+# The cell's launcher hands the environment prompt to the agent through this
+# flag.  If it does not exist, the fallback is reading the file and passing
+# ~11 KB of markdown as an argv string — which works, but reintroduces the
+# 128 KiB MAX_ARG_STRLEN ceiling and puts the whole prompt in `ps` output.
+#
+# THE POINT OF THIS STEP IS THAT GREPPING --help GAVE THE WRONG ANSWER.  The
+# flag is absent from the flag list and present in the parser, so the only
+# check that settles it is invocation.  Two of them, because "the parser
+# accepts it" and "the contents reach the model" are different claims and
+# only the second one matters.
+probe_5() {
+  hdr "STEP 5 — does --append-system-prompt-file exist AND take effect?"
+
+  echo "listed by --help?  (informational — NOT the answer)"
+  if claude --help 2>&1 | grep -qE -- '--append-system-prompt-file'; then
+    echo "  yes, it appears in --help"
+  else
+    echo "  NO — absent from --help.  This is why the step continues rather"
+    echo "  than stopping here; --help has been wrong about this flag."
+  fi
+
+  # [1/3] Does the parser take it at all?  A missing FILE is the healthy
+  # answer: it means the flag was recognized and the path was used.  An
+  # "unknown option" is the flag genuinely not existing.
+  echo
+  echo "[1/3] parser: offer a path that does not exist and read the error."
+  local parse
+  # `|| true` is load-bearing: this invocation is EXPECTED to fail (the
+  # point is to read which error it gives), and the script runs under
+  # `set -e` with `pipefail`, so without it the probe kills itself before
+  # printing a word of evidence.
+  parse="$(claude --append-system-prompt-file "$SCRATCH/absent.md" -p x 2>&1 | head -3 || true)"
+  local accepted=no
+  case "$parse" in
+    *"nknown option"*|*"nrecognized"*) accepted=no ;;
+    *) accepted=yes ;;
+  esac
+
+  # [2/3] and [3/3] are a matched pair.  The canary must be asked in a
+  # session that has never seen it, and the control is what proves the model
+  # is not simply guessing or reading it off disk — same discipline as step 3.
+  local sp="$SCRATCH/system-prompt.md"
+  local canary="XYZZY-7734-PLUGH"
+  printf '%s\n' "The cloister probe phrase is $canary." > "$sp"
+  local ask="What is the cloister probe phrase?  Answer in five words or fewer."
+
+  echo "[2/3] control: no flag — the phrase must NOT come back."
+  local without
+  without="$(cd "$SCRATCH" && claude -p "$ask" 2>&1 || true)"
+
+  echo "[3/3] probe:   with the flag — the phrase must come back."
+  local with
+  with="$(cd "$SCRATCH" && claude --append-system-prompt-file "$sp" -p "$ask" 2>&1 || true)"
+
+  local in_control=no in_probe=no
+  case "$without" in *"$canary"*) in_control=yes ;; esac
+  case "$with"    in *"$canary"*) in_probe=yes ;; esac
+
+  rule
+  echo "EVIDENCE"
+  printf '  %-34s %s\n' "parser accepted the flag" "$accepted"
+  printf '  %-34s %s\n' "canary WITHOUT the flag"  "$in_control"
+  printf '  %-34s %s\n' "canary WITH the flag"     "$in_probe"
+  rule
+  echo "VERDICT"
+  if [[ "$accepted" == no ]]; then
+    echo "  ABSENT.  The parser rejects it, so the launcher must read the file"
+    echo "  and pass its contents to --append-system-prompt as argv.  Restore"
+    echo "  the MAX_ARG_STRLEN ceiling note in docs/JAILED_CLAUDE.md."
+  elif [[ "$in_control" == yes ]]; then
+    echo "  INCONCLUSIVE — the canary came back even WITHOUT the flag, so this"
+    echo "  run proves nothing about delivery.  Most likely the agent read the"
+    echo "  file off disk; re-run with the prompt file outside the working"
+    echo "  directory before concluding anything."
+  elif [[ "$in_probe" == no ]]; then
+    echo "  ACCEPTED BUT INERT — the parser takes the flag and the contents do"
+    echo "  not reach the model.  That is the worst outcome of the three: it"
+    echo "  looks like it works.  Use --append-system-prompt with contents."
+  else
+    echo "  PRESENT AND EFFECTIVE.  The flag is honoured and the file's"
+    echo "  contents reach the model; the control rules out disk reads and"
+    echo "  guessing.  The launcher passes a PATH, the 128 KiB MAX_ARG_STRLEN"
+    echo "  ceiling is not a constraint, and the prompt stays out of argv."
+    echo
+    echo "  Note it is NOT in --help's flag list.  Do not let a future grep"
+    echo "  re-derive the wrong answer: this step is the record."
+  fi
+}
+
 case "$step" in
   0) probe_0 ;;
   1) probe_1 ;;
   2) probe_2 ;;
   3) probe_3 ;;
   4) probe_4 ;;
-  *) echo "Unknown step '$step'.  Expected 0, 1, 2, 3, or 4." >&2; exit 2 ;;
+  5) probe_5 ;;
+  *) echo "Unknown step '$step'.  Expected 0, 1, 2, 3, 4, or 5." >&2; exit 2 ;;
 esac

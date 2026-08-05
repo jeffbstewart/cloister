@@ -86,6 +86,21 @@ type service struct {
 	// CapAdd re-grants a capability cap_drop: [ALL] removed.  Every entry is
 	// a deliberate hole and belongs in a checked list.
 	CapAdd []string `yaml:"cap_add"`
+	// Tmpfs is how a read-only rootfs gets a writable path — and, where the
+	// path would otherwise land on a named volume, how state is made to die
+	// with the container instead of outliving the workspace.
+	Tmpfs []string `yaml:"tmpfs"`
+}
+
+// hasTmpfsAt reports whether the service mounts a tmpfs at exactly the given
+// path.  Compose writes these as "path" or "path:opt=val,...".
+func (s service) hasTmpfsAt(path string) bool {
+	for _, t := range s.Tmpfs {
+		if mount, _, _ := strings.Cut(t, ":"); mount == path {
+			return true
+		}
+	}
+	return false
 }
 
 // env returns the value of the named environment entry (list form, "K=V")

@@ -115,6 +115,7 @@ func run(args []string) error {
 		now:   time.Now,
 		start: startSession,
 	}
+	m.resetHome = m.resetHomeAfterDispose
 	return m.loop(ctx)
 }
 
@@ -129,14 +130,19 @@ type lifecycle interface {
 }
 
 // manager holds the session manager's collaborators.  start is a field
-// so tests can drive the menus without a tmux to run.
+// so tests can drive the menus without a tmux to run; resetHome is one
+// for a blunter reason — it deletes $HOME recursively, and a test that
+// reached the real implementation would delete the developer's or the CI
+// runner's home directory.  The implementation has its own image-marker
+// guard as well; this seam means the tests never even ask.
 type manager struct {
-	arc   lifecycle
-	o     options
-	in    *bufio.Reader
-	out   io.Writer
-	now   func() time.Time
-	start func(o options, cmd string) (bool, error)
+	arc       lifecycle
+	o         options
+	in        *bufio.Reader
+	out       io.Writer
+	now       func() time.Time
+	start     func(o options, cmd string) (bool, error)
+	resetHome func()
 }
 
 func (m *manager) printf(format string, a ...any) { fmt.Fprintf(m.out, format, a...) }
@@ -343,6 +349,10 @@ func (m *manager) dispose(ctx context.Context) (bool, error) {
 			m.println("the workspace was already empty")
 		} else {
 			m.printf("disposed %s — the workspace is empty\n", res.Repo)
+			// The task is over, so the agent's HOME goes with the
+			// workspace.  Not on AlreadyEmpty: nothing ended, so there is
+			// no task boundary to clear at.
+			m.resetHome()
 		}
 		return false, nil
 	}
@@ -376,6 +386,7 @@ func (m *manager) dispose(ctx context.Context) (bool, error) {
 		return true, err
 	}
 	m.printf("discarded %s — the workspace is empty\n", res.Repo)
+	m.resetHome()
 	return false, nil
 }
 

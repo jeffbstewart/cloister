@@ -114,6 +114,13 @@ func rig(t *testing.T, arc *fakeArchivist, keys string) (*manager, *bytes.Buffer
 			started = append(started, cmd)
 			return true, nil // "detached" — ends the invocation
 		},
+		// Stubbed, and deliberately NOT defaulted to the real thing behind a
+		// nil check.  resetHomeAfterDispose deletes $HOME recursively; a nil
+		// guard in production code would let a missing wire-up degrade to
+		// "the cleaner silently never runs", which is the failure mode
+		// hardest to notice.  A test that forgets this panics immediately
+		// instead, which is the signal we want.
+		resetHome: func() {},
 	}
 	return m, &out, &started
 }
