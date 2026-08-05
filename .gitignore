@@ -51,6 +51,14 @@ __pycache__/
 # entry that gets added after the leak is the one that was needed before it.
 *.pcap
 *.pcapng
+# ...and the ring buffer's segments.  `tcpdump -C -W` appends an index to the
+# name it was given (claudeplain.pcap0, .pcap1, ...), which the two patterns
+# above do NOT match — so every file the tap actually produces would have
+# been committable.  The capture is segmented precisely so an overnight run
+# does not become one unopenable multi-gigabyte file, which means the indexed
+# names are the normal case, not the exception.
+*.pcap[0-9]*
+*.pcapng[0-9]*
 *.har
 *.flow
 *.flows

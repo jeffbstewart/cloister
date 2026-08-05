@@ -55,6 +55,16 @@ type compose struct {
 	Networks map[string]networkDef `yaml:"networks"`
 }
 
+// parse decodes a compose document, wrapping the error the way every
+// Check* entry point reports it.
+func parse(data []byte) (compose, error) {
+	var c compose
+	if err := yaml.Unmarshal(data, &c); err != nil {
+		return compose{}, fmt.Errorf("parse compose: %w", err)
+	}
+	return c, nil
+}
+
 type service struct {
 	Image       string       `yaml:"image"`
 	Entrypoint  []string     `yaml:"entrypoint"`
@@ -64,6 +74,45 @@ type service struct {
 	Environment []string     `yaml:"environment"`
 	User        string       `yaml:"user"`
 	DNS         stringOrList `yaml:"dns"`
+	// NetworkMode is the sidecar form: `network_mode: "service:x"` puts the
+	// container INSIDE x's network namespace instead of giving it networks
+	// of its own.  Load-bearing for the packet tap — docker networks are
+	// switched bridges, so a sniffer merely attached to a network sees none
+	// of the unicast traffic on it.
+	NetworkMode string `yaml:"network_mode"`
+	// Profiles gates a service out of the default `up`: a diagnostic that
+	// runs only when the operator asks for it, rather than continuously.
+	Profiles []string `yaml:"profiles"`
+	// CapAdd re-grants a capability cap_drop: [ALL] removed.  Every entry is
+	// a deliberate hole and belongs in a checked list.
+	CapAdd []string `yaml:"cap_add"`
+}
+
+// env returns the value of the named environment entry (list form, "K=V")
+// and whether the service declares it at all.
+func (s service) env(key string) (string, bool) {
+	for _, e := range s.Environment {
+		if name, val, ok := strings.Cut(e, "="); ok && name == key {
+			return val, true
+		}
+	}
+	return "", false
+}
+
+// mountsInto reports whether any of the service's volumes lands on the given
+// container path, and whether every such mount is read-only.
+func (s service) mountsInto(containerPath string) (mounted, readOnly bool) {
+	readOnly = true
+	for _, vol := range s.Volumes {
+		if !strings.Contains(vol, ":"+containerPath) {
+			continue
+		}
+		mounted = true
+		if !strings.HasSuffix(vol, ":ro") {
+			readOnly = false
+		}
+	}
+	return mounted, readOnly
 }
 
 // networkRef is one entry of a service's `networks`: the network's name,
@@ -168,17 +217,29 @@ func wantsRoleEntrypoint(c compose, serviceName, role string) []string {
 type networkDef struct {
 	Internal bool `yaml:"internal"`
 	External bool `yaml:"external"`
+	// Name is compose's stable-name escape from project-scoped prefixing.
+	// It is what makes a network joinable across stacks: the abbey publishes
+	// `name: claudenet`, a cell joins `external: true, name: claudenet`, and
+	// the two are the same wire.  Unset, they would not be.
+	Name string `yaml:"name"`
 }
 
 // egressCapableNetworks are the networks with a path out of their stack:
 // `egress` is the internet, `frontend` publishes to the host, `kagiegress`
 // leads to the kagi-relay (and through it to kagi.com), `gitegress` leads
 // to the git relays (and through them to the forges), `lanegress` is the
-// deepthink-relay's LAN path, and `infernet_big` leads to that relay (and
-// through it to the deep-think node).  Every no-egress assertion checks
-// membership against this one list, naming any legitimate exception
-// explicitly.
-var egressCapableNetworks = []string{"egress", "frontend", "kagiegress", "gitegress", "lanegress", "infernet_big"}
+// deepthink-relay's LAN path, `infernet_big` leads to that relay (and
+// through it to the deep-think node), and the two claude nets lead to the
+// jailed-claude door (and through it to api.anthropic.com).  Every
+// no-egress assertion checks membership against this one list, naming any
+// legitimate exception explicitly.
+//
+// `internal: true` is NOT the test.  Every one of these is internal; what
+// makes them egress-capable is the thing waiting on the other end.
+var egressCapableNetworks = []string{
+	"egress", "frontend", "kagiegress", "gitegress", "lanegress",
+	"infernet_big", "claudenet", "claudeplain",
+}
 
 func (s service) hasNet(n string) bool {
 	for _, x := range s.Networks {

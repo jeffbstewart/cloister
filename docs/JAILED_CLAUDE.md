@@ -1,10 +1,19 @@
 # Jailed Claude
 
-*Status: **design only — nothing built.**  Decisions from the 2026-08-04
-investigation.  This is a deliberate, scoped relaxation of the cell's
-network containment, taken to answer a question the current topology
-cannot answer.  Read [What this costs](#what-this-costs) before building
-any of it.*
+*Status: **M1 topology built; the image and the launcher are not.**
+Decisions from the 2026-08-04 investigation.  This is a deliberate, scoped
+relaxation of the cell's network containment, taken to answer a question
+the current topology cannot answer.  Read
+[What this costs](#what-this-costs) before deploying any of it.*
+
+*Built: the door itself — `docker/abbey-claude.yaml`,
+`docker/cell-claude.yaml`, the request-gate addon
+(`docker/claude-door/proxy/cloister_door.py`), the injecting hop
+(`docker/claude-door/egress/`), and compose-lint's invariant set for both
+overlays.  Not yet built: the CA and its leaf certificate, the
+`cloister-workbench-claude` image variant, workbench's Claude launcher
+arm, and the archivist's [disclosure gate](#the-disclosure-gate).  Nothing
+here can run a session until those land.*
 
 ## Why
 
@@ -90,16 +99,16 @@ Measured against the security invariants in [CLAUDE.md](../CLAUDE.md):
 
 | Invariant | Under jailed-claude |
 |---|---|
-| All inference rides through the agency (the sole inference door) | **Broken.**  A second inference door exists.  compose-lint's rule that every consumer dials `agency:11434` needs an explicit, variant-scoped exception — and once there are two doors, "sole" is a claim the topology no longer makes. |
+| All inference rides through the agency (the sole inference door) | **Broken — but only for a host that opts in.**  A second inference door exists in `docker/abbey-claude.yaml`.  Because that is an overlay rather than an edit, compose-lint's rule still holds absolutely on `docker/abbey.yaml` and `docker/cell.yaml`; "sole inference door" remains a true claim about the base topology and a false one about a merged one.  The overlays carry their own invariant set instead of weakening that rule. |
 | The cell holds no route to the internet | **Broken by design.**  The agent gains a mediated, single-host, inspected route out.  It is narrower than a host-run Claude Code by a wide margin, and it is not zero. |
 | Research answers grounded in retrieved results, structurally | **Broken.**  Claude Code's `WebSearch` executes server-side on Anthropic's infrastructure; results arrive inside the model response.  No relay, proxy, or capture can see the fetch, and the scholar cannot mediate it.  `permissions.deny` on `WebSearch` is **not** a usable mitigation: it is verifiably inert under `bypassPermissions` (see [Verified against the binary](#verified-against-the-binary)), which is the mode this design exists to enable.  The only real control is a structural refusal at the proxy. |
 | Source confidentiality (implicit) | **Broken by design.**  The repo's contents leave the machine and go to Anthropic.  Under a Pro/Max consumer account that carries a 5-year retention window if the training toggle is on.  Acceptable for this repo, which is public; a per-cell decision for anything that is not. |
-| The scholar holds no `egress` network | Intact — but the abbey gains a **fourth** internet holder (`claude-egress`), and the "three internet holders" comment in `docker/abbey.yaml` becomes wrong. |
+| The scholar holds no `egress` network | Intact.  A merged abbey gains a **fourth** internet holder (`claude-egress`) — but it arrives in the overlay, so `docker/abbey.yaml`'s "three internet holders" comment stays true of the file it is written in, and the overlay's own lint pins the addition at exactly one. |
 | Builds run offline; no package-registry route | Intact.  Claude Code is installed at image build; `DISABLE_AUTOUPDATER=1` keeps it from reaching for one at runtime. |
 | Agent bytes reach the canonical tree only via a human-reviewed PR | Intact.  The archivist, the forge ruleset, and the bot-credential split are untouched.  This is the guarantee the whole exercise is meant to *test*, not to relax. |
 | The operator's host tree never enters a cell | Intact.  The grange remains the only workspace. |
 | The audit trail is one-way glass | Intact, and arguably strengthened: the proxy capture is a second append-only record.  But note the Claude session's own reasoning and tool calls are not in the state service, exactly as qwen's are not. |
-| No secrets or home/LAN IPs in the repo | **At risk.**  Captures must live on a volume that is not the tree, and `**/*.pcap*`, `**/*.keylog`, and the capture volume path belong in `.gitignore` before the first capture is taken. |
+| No secrets or home/LAN IPs in the repo | **Intact, and closed before the first capture existed.**  Captures land on the `abbey_claude_captures` volume, never the tree, and `.gitignore` covers pcap, pcapng, har, flow, and keylog.  One thing the original wording would have missed: `tcpdump -C -W` appends a segment index (`claudeplain.pcap0`), which `*.pcap` does not match — so every file the tap actually produces would have stayed committable.  `*.pcap[0-9]*` covers it. |
 
 ### Two risks with no invariant to name
 
@@ -221,6 +230,43 @@ one it cannot route around.  CLAUDE.md's insistence that invariants live
 in topology and tests rather than prompt text is exactly this
 distinction, and the grounding invariant is the case that proves it: a
 config flag looked like enforcement until it was measured.
+
+**As built the refusal is broader than `web_search`, and deliberately a
+denylist.**  It covers `web_fetch`, the code-execution tool family, and
+`mcp_servers` — the server-side MCP connector, which is the same hole in
+a different shape — because all of them execute on Anthropic's side of
+our last hop, where no capture and no relay can follow.  An *allowlist*
+would be stronger and is the M2 move; it is not the M1 move, because we
+do not yet know which tool types Claude Code declares.  Some
+Anthropic-defined types are server-*defined* but client-*executed* (the
+text-editor and bash tool schemas) and are perfectly safe; refusing those
+would break the harness for nothing.  So M1 refuses what it knows and
+**logs the rest**, which is exactly the observation that lets M2 tighten
+against data rather than against a guess.
+
+### The one stand-down, and why it is not a hole
+
+The refusal above assumes the scholar is reachable.  In a cell it always
+is, which is what makes refusing `WebSearch` a *redirection* rather than
+an amputation.  **On-host evaluation runs of this proxy have no
+scholar** — it is an abbey service, and a host-run Claude Code cannot
+dial it — so refusing there would leave the session with no research path
+at all, friction bought for nothing, on a harness that was not jailed to
+begin with.
+
+So `CLOISTER_DOOR_ALLOW_SERVER_TOOLS=1` stands down the server-side-tool
+refusal, and *only* that one.  The host pin and the path allowlist hold
+unconditionally; they are what makes the door a door.
+
+It is safe for the same structural reason the git-passthrough escape
+hatch is: **the model cannot reach the place the switch lives.**
+`claude-proxy` is an abbey container with no agent in it and no
+filesystem any cell shares, so its environment is the operator's alone —
+this is a topology property, not a permission one.  compose-lint refuses
+an overlay whose default is anything but `0`, the addon announces the
+stand-down once at startup, and every waiver is logged by name: a control
+that is off should say so in a log the operator is already reading,
+rather than wait to be discovered by its absence.
 
 ### The spend cap
 
@@ -355,14 +401,62 @@ Three caveats:
   needs TLS breaks outright.  Swap it last, and expect to revisit this
   the first time a build wants a network.
 
-The CA private key is a fleet-wide MITM key.  It lives in the abbey, in
-`claude-proxy`, and only the public certificate is mounted into the
-cell.  Mint it for this purpose alone — a CA that is also installed in
-the operator's workstation trust store turns an abbey compromise into a
-browsing compromise.  Other toolchains in the image keep their own
-stores (the JVM's `cacerts` is separate from `/etc/ssl/certs` and needs
-a `keytool` import); builds are offline so this is mostly moot, and it
-will still bite the first time something in a build wants TLS.
+**The CA private key does not have to live anywhere in the stack, and
+does not.**  The design said it lives in `claude-proxy`, which follows
+from mitmproxy's usual job: minting a certificate per host it is asked to
+impersonate needs the signing key on hand.  This door impersonates
+exactly *one* host, forever.  So `claude-proxy` gets `--certs
+api.anthropic.com=<leaf.pem>` — a single pre-minted leaf, its private
+key, and the issuing chain — and there is nothing left for it to sign.
+
+That is worth more than it sounds.  A leaf key compromise forges one
+hostname that the topology already routes to us; a CA key compromise
+forges *every* hostname, against a trust store that trusts only that CA,
+in every cell on the machine.  Keeping the fleet-wide MITM key entirely
+out of the running stack costs one offline minting step.
+
+The CA key still exists, of course, and is still the thing to guard —
+just on the operator's side of the boundary, alongside whatever mints the
+leaf.  Which CA that should be is the next section, and the answer is not
+the one this design originally assumed.
+
+Other toolchains in the image keep their own stores (the JVM's `cacerts`
+is separate from `/etc/ssl/certs` and needs a `keytool` import); builds
+are offline so this is mostly moot, and it will still bite the first time
+something in a build wants TLS.
+
+### Use the operator's existing CA; do not stand up a new one
+
+The operator already runs a private CA on the firewall.  **Use it.**
+Standing up a second CA for this is ceremony, and the advice above to
+"mint it for this purpose alone" was written on the assumption the CA
+*private key* would live in `claude-proxy` — which, since the door serves
+one hostname and needs only a pre-minted leaf, it does not.  Remove that
+assumption and most of the argument for a dedicated CA goes with it.
+
+The distinction that does the work here is between an **issuing CA** and
+a **TLS-inspecting CA**, and it is worth stating because conflating them
+gets the answer backwards.  An inspection appliance re-signs every site
+it proxies, so its root vouches for the whole internet; putting *that* in
+the cell's single-certificate store would gut the second guarantee, since
+every reachable host would then validate cleanly.  A plain issuing CA
+vouches for exactly what it has been asked to sign.  The cell trusting it
+means the cell trusts that small, known set — and holds no route to any
+of it regardless.
+
+Two consequences to accept deliberately, neither of them blocking:
+
+- **The cell trusts everything that CA has signed,** not just our leaf.
+  Enumerate that set once.  If it is internal LAN services the cell has
+  no route to, this is moot; if it ever includes something a cell *can*
+  reach, the store has stopped being a second opinion.
+- **A leak of the leaf key forges `api.anthropic.com` to anything
+  trusting that CA** — including the dev host, whose own Claude Code
+  talks to that name.  Bounded to one hostname, and rotation is
+  reissuing one leaf from a CA that is already there, which is a better
+  rotation story than the "no lifecycle" gap noted below.  It is the
+  reason the *CA* key stays out of the stack while the *leaf* key goes
+  in.
 
 ## Packet capture
 
@@ -591,11 +685,23 @@ cheap because they fire once.
 
 ### What blocks the build
 
-- **compose-lint.**  It pins every internal network's membership and
-  enforces the single-inference-door rule.  A new `claudenet`, a new
-  internet holder, and a second inference door all have to be taught to
-  it explicitly — the point of that lint is that this design cannot land
-  by accident.
+- ~~**compose-lint.**~~  **Settled, and the answer changed the shape of
+  the build.**  The rules this design breaks are all *exact-membership*
+  rules — three egress holders, three agent networks, one inference door
+  — so relaxing them in place would have meant every cell on every host
+  carrying the loosened rule whether or not it ran jailed-claude.
+  Instead the door lands as two **overlay files**,
+  `docker/abbey-claude.yaml` and `docker/cell-claude.yaml`, merged with
+  `-f`.  The base files are untouched and their invariants stay absolute;
+  merging an overlay is the act that trades them away, which is the
+  property "variant-scoped exception" was reaching for.
+
+  The overlays are not unlinted.  They carry their own set — stricter
+  about the *delta* than the base rules are absolute about the whole:
+  exactly one new internet holder, exactly one new agent edge, the
+  credential in exactly one container, the request-gate addon loaded, the
+  tap profile-gated, and a placeholder token in the cell.  See
+  `internal/composelint/claudedoor.go`.
 - **Licensing.**  See [Publishing the recipe](#publishing-the-recipe).
 
 ## Teaching Claude its environment
@@ -1030,16 +1136,27 @@ descriptions, which is where such a thing leaks months later.
 
 ## Staging
 
-1. **M1 — observe only.**  No mutation addon.  Attended session, cell
-   credential (placement A), plaintext-hop capture — **plus the path
-   allowlist**, which is not deferrable: it is what makes "one pinned
-   host" mean anything, and it costs a few lines.  Answers the
-   diagnostic question and tells us what the harness actually reaches
-   for.
-2. **M2 — injection, mutation, and the cap.**  Move to placement B; add
-   the mutation addon and the spend tally.  Now the pcaps are
-   credential-free, responses can be rewritten for fault injection, and
-   there is a budget the run cannot exceed.
+1. **M1 — observe only.**  No mutation addon.  Attended session,
+   plaintext-hop capture — **plus the path allowlist**, which is not
+   deferrable: it is what makes "one pinned host" mean anything, and it
+   costs a few lines.  Answers the diagnostic question and tells us what
+   the harness actually reaches for.
+
+   **Placement B was pulled forward into M1.**  The staging originally
+   put the real credential in the cell here (placement A) on the grounds
+   that M1 is attended and injection is M2's work.  Building the nginx
+   hop at all is most of that work, and the remainder is one
+   `proxy_set_header` — so the trade was five lines against every M1
+   pcap being a credential disclosure if it escaped, with `.gitignore`
+   as the only guard.  The design's own answer to the credential risk is
+   that the capture should be credential-free *by construction, not by
+   redaction discipline*; deferring the construction and relying on the
+   discipline in the interim is the position that argument rejects.
+   The cell now carries only `ANTHROPIC_AUTH_TOKEN=placeholder`, and
+   compose-lint refuses a cell overlay whose token is anything else.
+2. **M2 — mutation and the cap.**  Add the mutation addon and the spend
+   tally: responses can be rewritten for fault injection, and there is a
+   budget the run cannot exceed.
 3. **M3 — overnight YOLO.**  `--dangerously-skip-permissions`, a
    long-running task, and the whole point of the exercise.  Gated on:
    a **working `web_search` refusal at the proxy**, since

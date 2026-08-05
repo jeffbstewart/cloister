@@ -85,10 +85,16 @@ jobs:
           git diff "origin/${{ github.base_ref }}...HEAD" | ./scripts/presubmit-check.sh
 
       # The committed topology must satisfy the containment invariants on
-      # every PR: the cell's scholar/read-path rules and the inference
-      # stack's agency-fronts-infer rules.
-      - name: Compose lint (cell + inference containment)
-        run: go run ./cmd/compose-lint docker/cell.yaml docker/abbey.yaml
+      # every PR: the cell's scholar/read-path rules, the inference stack's
+      # agency-fronts-infer rules, and the jailed-claude overlays' own set
+      # (docs/JAILED_CLAUDE.md) — which is stricter about the delta than the
+      # base files are absolute, because an overlay is where an invariant
+      # gets traded away.
+      - name: Compose lint (cell + inference + claude-door containment)
+        run: >
+          go run ./cmd/compose-lint
+          docker/cell.yaml docker/abbey.yaml
+          docker/cell-claude.yaml docker/abbey-claude.yaml
 
       # The forge's own merge-path protections (docs/grange.md R1-R8):
       # rulesets, CODEOWNERS, namespace confinement.  The workflow token

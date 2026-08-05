@@ -1,0 +1,100 @@
+# Copyright 2026 Jeffrey B. Stewart
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# ── The cell's edge onto the jailed-claude door: an OVERLAY on cell.yaml ────
+# (docs/JAILED_CLAUDE.md, milestone M1)  One new edge and a handful of
+# environment variables.  Everything else about the cell is unchanged, and
+# that is the point: the archivist still owns version control, the bot
+# credential still exists only there, the PR gate is untouched, and the
+# grange is still the only workspace.
+#
+#   docker compose -f docker/cell.yaml -f docker/cell-claude.yaml up -d
+#
+# Requires the abbey's claude door to be deployed first — the agent joins
+# `claudenet` by name, and only docker/abbey-claude.yaml publishes it.
+# WORKBENCH_IMAGE must name the CLAUDE variant of the workbench: the stock
+# image carries no Claude Code (it is proprietary and that image's GHCR
+# package is public), and its trust store is not the single-certificate one
+# this door depends on.
+#
+# WHAT THIS TRADES AWAY.  The cell gains a mediated, single-host, inspected,
+# path-pinned route to the internet, and source from the workspace goes to
+# Anthropic.  Read "What this costs" in docs/JAILED_CLAUDE.md before
+# merging this file — and note the acknowledgment gate the archivist's
+# provision enforces per repository, which is what stops that decision from
+# being made once and then inherited silently by every later cell.
+#
+# ONE EDGE, and it is narrow by construction:
+#   agent ── claudenet ──> claude-proxy (the abbey's door)
+# claudenet is internal, so it grants no route out by itself; the only
+# thing reachable on it is a proxy that allows exactly api.anthropic.com
+# and exactly /v1/messages, and refuses anything that would execute on
+# Anthropic's side of the last hop.
+
+services:
+  agent:
+    environment:
+      # Trust exactly one issuer: the cloister CA, and nothing else.  The
+      # claude-variant image ships a system trust store containing that one
+      # certificate — not merely ADDING our root but removing every other.
+      # Belt and suspenders: the topology means no route exists to anything
+      # but the proxy, and the trust store means no issuer is trusted but
+      # ours, so an agent that somehow found a path to a real internet host
+      # would fail validation against a perfectly legitimate public
+      # certificate, loudly, in a log we read.
+      #
+      # NEVER NODE_TLS_REJECT_UNAUTHORIZED=0.  It disables validation
+      # globally and throws the second guarantee away to save a config line.
+      - CLAUDE_CODE_CERT_STORE=system
+      # A PLACEHOLDER, and it must stay one.  claude-egress strips this
+      # header and sets the real credential, downstream of the packet
+      # capture — so no capture can contain a credential and no container
+      # the model controls ever holds one.  The same property as the
+      # archivist's GITHUB_TOKEN_FILE.
+      #
+      # Setting it at all is what stops the harness from opening a browser
+      # login flow that could not possibly complete inside a jail: Claude
+      # Code never validates the credential locally, it just sends it.
+      - ANTHROPIC_AUTH_TOKEN=placeholder-the-door-replaces-this
+      # No route to a registry exists here, so an autoupdater can only fail
+      # slowly and confusingly.  The CLI version is the image's pin.
+      - DISABLE_AUTOUPDATER=1
+      # Everything the harness would send that is not the inference call
+      # itself.  Each of these would be refused by the path allowlist
+      # anyway; turning them off means the proxy log records what the agent
+      # MEANT to do rather than a stream of housekeeping 403s.
+      - CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+      - DISABLE_FEEDBACK_COMMAND=1
+      - CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1
+      - ENABLE_CLAUDEAI_MCP_SERVERS=false
+      - CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1
+    # Restated, not inherited.  cell.yaml already pins it, and compose would
+    # carry it through — but this is the file that adds a network, and the
+    # dead-DNS pin is exactly what keeps that addition from turning name
+    # resolution into an exfiltration channel (CVE-2024-29018).  A rule
+    # worth restating at the site that could break it.
+    dns: 127.0.0.1
+    networks:
+      # Merged with cell.yaml's three, giving the agent four edges.  Note
+      # there is NO ANTHROPIC_BASE_URL: claude-proxy carries the
+      # api.anthropic.com alias on this network, so the harness dials its
+      # real endpoint and even the calls that ignore a base URL — the
+      # fast-mode availability check, the WebFetch domain-safety preflight —
+      # arrive at the door instead of silently failing.
+      - claudenet
+
+networks:
+  claudenet:
+    external: true                       # the abbey's claude door (docker/abbey-claude.yaml)
+    name: claudenet
