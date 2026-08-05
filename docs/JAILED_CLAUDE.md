@@ -538,6 +538,57 @@ The image entrypoint's stock-prompt materialization needs a Claude arm
 (`~/.claude/CLAUDE.md` alongside `~/.qwen/QWEN.md`); the Dockerfile
 already anticipates this ("future agent variants add theirs").
 
+### The disclosure gate
+
+Source from the workspace goes to Anthropic.  That is not a defect and
+for most trees it is not even interesting — but it is a decision, and a
+decision made once and then inherited silently by every later cell is
+not a decision.  The gate exists to make the operator touch it **per
+repository**.
+
+**A boolean is the wrong shape.**  `DISCLOSURE_ACK=1` survives a
+copy-paste of a working cell's environment into a new one, which is
+precisely the case worth catching: not a careless operator, but a
+careful one reusing a config that already worked.  A flag that is
+already set cannot ask a question.
+
+So both the variable's **name** and its **value** are derived from the
+repository:
+
+```
+CLOISTER_DISCLOSURE_JEFFBSTEWART_EXAMPLEREPO=
+    "source from jeffbstewart/examplerepo is sent to anthropic"
+```
+
+The name carries a slug of the repo (`owner/name`, uppercased,
+non-alphanumerics to `_`).  The value is a sentence naming the same
+repo.  Copying a working stanza to a new cell therefore fails twice
+over: the required variable is absent entirely, and the inherited one
+names the wrong repository.  There is no value that satisfies the gate
+for two different trees, which is the property a boolean cannot have.
+
+**Enforced by the archivist's provision gate**, which is the only place
+that authoritatively knows the repository — it is the thing doing the
+clone — and provision is the once-per-workspace moment.  It already
+re-verifies the forge ruleset there; this is the same shape of check.
+A compose `${VAR:?message}` guard cannot do it, because compose has no
+nested interpolation and so cannot construct a variable name from
+`${PROJECT}`.
+
+**On what the failure message should print.**  Naming the expected
+*variable* is necessary or the gate is merely obstructive.  Printing the
+expected *value* verbatim is more arguable: it makes the acknowledgment
+satisfiable by copying from the error, which is most of the deliberation
+gone.  The recommendation is to print the variable name and describe the
+required sentence — "the value must state that source from
+`<owner>/<name>` is sent to Anthropic" — leaving the operator to compose
+it.  Marginally more friction, meaningfully more read.
+
+This is the same idea as the git-passthrough escape hatch: a control
+whose safety comes from being deliberately awkward to satisfy, in a
+tree that otherwise optimizes for the operator's convenience.  Both are
+cheap because they fire once.
+
 ### What blocks the build
 
 - **compose-lint.**  It pins every internal network's membership and
@@ -849,24 +900,23 @@ carefully*, *decide `autoMemoryDirectory` deliberately*, *captures are
 not documentation*, and *acknowledge that source from this tree goes to
 Anthropic*.
 
-That last one deserves a real gate in the house style — a
-`${VAR:?message}` guard refusing to provision until the operator has
-stated it explicitly, once, per cell.  Cheap, and it converts a sentence
-into a control.
+That last one is now **designed but unbuilt** — see
+[The disclosure gate](#the-disclosure-gate), which specifies a
+per-repository acknowledgment the archivist's provision gate enforces.
+Two earlier shapes were considered and rejected, both worth recording
+because they are the obvious ones:
 
-**But not the gate an earlier draft proposed.**  That version keyed on
-repository visibility: refuse unless the target repo is public.  That is
-the wrong axis.  Private does not imply sensitive — a repo can be
-private for reasons of *public attention* rather than confidentiality,
-its contents perfectly fine to send to a vendor.  Nor does public imply
-safe.  Keying on the GitHub flag would block legitimate work while
-catching nothing that matters.
+- **Keyed on repository visibility** — refuse unless the target repo is
+  public.  Wrong axis.  Private does not imply sensitive; a repo can be
+  private to avoid *public attention* rather than to protect
+  confidentiality, its contents perfectly fine to send to a vendor.  Nor
+  does public imply safe.  Keying on the GitHub flag blocks legitimate
+  work while catching nothing.
+- **A boolean acknowledgment** — `DISCLOSURE_ACK=1`.  Survives being
+  copy-pasted into the next cell, which is exactly the case that
+  matters.  A flag already set cannot ask a question.
 
-The judgment belongs to the operator, who knows which trees are
-sensitive and why; the mechanism's job is to make sure the judgment is
-made deliberately rather than by default.  So: an explicit per-cell
-acknowledgment, with no inference from repository visibility.  A
-separate, unrelated hygiene item — the consumer-plan training toggle
+A separate, unrelated hygiene item — the consumer-plan training toggle
 governs 5-year versus 30-day retention — is worth checking once and is
 not what this gate is for.
 
