@@ -53,6 +53,11 @@ import (
 type compose struct {
 	Services map[string]service    `yaml:"services"`
 	Networks map[string]networkDef `yaml:"networks"`
+	// Marker is the `x-cloister-stack` extension field, by which an OVERLAY
+	// declares which invariant set governs it.  Compose ignores `x-` keys
+	// entirely, so this costs the deploy nothing.  See Identify for why the
+	// overlays declare rather than are inferred.
+	Marker string `yaml:"x-cloister-stack"`
 }
 
 // parse decodes a compose document, wrapping the error the way every

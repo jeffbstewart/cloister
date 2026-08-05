@@ -20,10 +20,12 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"time"
 
 	"github.com/jeffbstewart/cloister/internal/archive"
 	"github.com/jeffbstewart/cloister/internal/archivist"
+	"github.com/jeffbstewart/cloister/internal/disclosure"
 	"github.com/jeffbstewart/cloister/internal/egress/wire"
 	"github.com/jeffbstewart/cloister/internal/endpoint"
 	"github.com/jeffbstewart/cloister/internal/forge"
@@ -79,9 +81,19 @@ func runArchivist(o archivistOptions) {
 	// the archivist no longer opens one here.  Identity, credentials, and
 	// the allowlist all derive from the table.
 	grange, err := archive.NewGrange(archive.GrangeConfig{
-		Root:          o.GrangeRoot,
-		Table:         table,
-		Gate:          provisionGate(),
+		Root:  o.GrangeRoot,
+		Table: table,
+		Gate:  provisionGate(),
+		// The per-repository disclosure acknowledgment
+		// (docs/JAILED_CLAUDE.md).  Inert unless the cell is armed —
+		// CLOISTER_DISCLOSURE_REQUIRED names where source would go, and
+		// only docker/cell-claude.yaml sets it.  The archivist is where
+		// this belongs because it is the one component that
+		// authoritatively knows the repository (it does the clone), and
+		// provision is the once-per-workspace moment.
+		Disclosure: func(repo string) error {
+			return disclosure.Check(repo, os.LookupEnv)
+		},
 		OpenForge:     func(ep endpoint.Endpoint) (forge.Client, error) { return buildForge(&ep) },
 		DefaultBranch: o.DefaultBranch,
 	})

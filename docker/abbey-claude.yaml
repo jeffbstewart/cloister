@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Declares which invariant set compose-lint applies to this file (see
+# internal/composelint.Identify).  Compose ignores `x-` keys.
+x-cloister-stack: infra-claude
+
 # ── The jailed-claude door: an OVERLAY on the abbey ─────────────────────────
 # (docs/JAILED_CLAUDE.md, milestone M1)  An inspected, single-host, path-
 # pinned route from a cell to api.anthropic.com.  This is a deliberate,

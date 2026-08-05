@@ -271,9 +271,10 @@ func CheckCellClaude(data []byte) ([]string, error) {
 	}
 	var v []string
 
-	if got := serviceNames(c); !slices.Equal(got, []string{"agent"}) {
-		v = append(v, fmt.Sprintf("this overlay may touch the `agent` alone — the archivist, the workspace, and the PR gate are what the experiment TESTS, not what it changes; services = %v", got))
+	if got := serviceNames(c); !slices.Equal(got, []string{"agent", "archivist"}) {
+		v = append(v, fmt.Sprintf("this overlay may touch the `agent` and the `archivist` alone — the workspace and the PR gate are what the experiment TESTS, not what it changes; services = %v", got))
 	}
+	v = append(v, claudeDisclosureViolations(c)...)
 	if def, ok := c.Networks["claudenet"]; !ok {
 		v = append(v, "network `claudenet` is not declared — a cell joins the abbey's door by name")
 	} else {
@@ -305,6 +306,55 @@ func CheckCellClaude(data []byte) ([]string, error) {
 	v = append(v, claudeSessionStateViolations(agent)...)
 	v = append(v, dnsPinViolations(c)...)
 	return v, nil
+}
+
+// claudeDisclosureViolations enforces the pairing that keeps the disclosure
+// gate from being fail-open in practice.
+//
+// The gate is armed by an environment variable on the archivist, and an
+// archivist whose cell sends source to Anthropic without it would simply
+// never ask.  Nothing at runtime could notice: the archivist has no route
+// to the claude door and cannot tell whether one exists.  So the check
+// lives here, on the file that grants the agent its edge — you cannot merge
+// the overlay that sends source to Anthropic without also merging the line
+// that demands it be acknowledged.
+//
+// The archivist stanza is held to exactly that, and nothing else.  This
+// overlay has no business touching the component that owns version control,
+// the bot credential, and the PR gate — those are the guarantees the whole
+// experiment exists to TEST, not to modify.
+func claudeDisclosureViolations(c compose) []string {
+	arc, ok := c.Services["archivist"]
+	if !ok {
+		return []string{"the overlay does not arm the disclosure gate — an `archivist` stanza setting CLOISTER_DISCLOSURE_REQUIRED is what makes provision ask, per repository, before this cell's source goes to Anthropic (docs/JAILED_CLAUDE.md)"}
+	}
+	var v []string
+	if to, set := arc.env("CLOISTER_DISCLOSURE_REQUIRED"); !set || strings.TrimSpace(to) == "" {
+		v = append(v, "archivist must set CLOISTER_DISCLOSURE_REQUIRED to where source would go (e.g. `anthropic`) — unset, the gate is inert and provision never asks")
+	}
+	// Everything else about the archivist is off-limits here.  A network, a
+	// volume, or an image swapped in this file would change the jailed
+	// owner of version control in a document about a proxy.
+	if len(arc.Networks) != 0 {
+		v = append(v, fmt.Sprintf("the overlay gives the archivist networks (%v) — its three edges are cell.yaml's, where they are linted; this file grants the AGENT one edge and nothing else", arc.Networks.names()))
+	}
+	if len(arc.Volumes) != 0 {
+		v = append(v, fmt.Sprintf("the overlay gives the archivist volumes (%v) — the grange and the bot credential are cell.yaml's business", arc.Volumes))
+	}
+	if arc.Image != "" || len(arc.Entrypoint) != 0 || len(arc.Command) != 0 {
+		v = append(v, "the overlay changes what the archivist RUNS — it may arm the disclosure gate and nothing more")
+	}
+	// The acknowledgment itself must not be committed.  Its whole purpose is
+	// that an operator typed it for THIS repository; a value in the tree is
+	// one inherited by every cell that ever deploys this file, which is the
+	// boolean failure mode wearing a different name.
+	for _, e := range arc.Environment {
+		name, _, _ := strings.Cut(e, "=")
+		if strings.HasPrefix(name, "CLOISTER_DISCLOSURE_") && name != "CLOISTER_DISCLOSURE_REQUIRED" {
+			v = append(v, fmt.Sprintf("%s is committed to the tree — the acknowledgment is the operator's, set per repository on the stack; a committed one is inherited by every cell that deploys this file, which is exactly the copy-paste failure the per-repository naming exists to catch", name))
+		}
+	}
+	return v
 }
 
 // claudeSessionStateViolations keeps the harness's state off the per-project
