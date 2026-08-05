@@ -82,7 +82,7 @@ Measured against the security invariants in [CLAUDE.md](../CLAUDE.md):
 |---|---|
 | All inference rides through the agency (the sole inference door) | **Broken.**  A second inference door exists.  compose-lint's rule that every consumer dials `agency:11434` needs an explicit, variant-scoped exception — and once there are two doors, "sole" is a claim the topology no longer makes. |
 | The cell holds no route to the internet | **Broken by design.**  The agent gains a mediated, single-host, inspected route out.  It is narrower than a host-run Claude Code by a wide margin, and it is not zero. |
-| Research answers grounded in retrieved results, structurally | **Broken.**  Claude Code's `WebSearch` executes server-side on Anthropic's infrastructure; results arrive inside the model response.  No relay, proxy, or capture can see the fetch, and the scholar cannot mediate it.  `permissions.deny` on `WebSearch` is the mitigation, and it is a *prompt/config-level* rule — precisely the kind of control CLAUDE.md says an invariant must not rest on. |
+| Research answers grounded in retrieved results, structurally | **Broken.**  Claude Code's `WebSearch` executes server-side on Anthropic's infrastructure; results arrive inside the model response.  No relay, proxy, or capture can see the fetch, and the scholar cannot mediate it.  `permissions.deny` on `WebSearch` is **not** a usable mitigation: it is verifiably inert under `bypassPermissions` (see [Verified against the binary](#verified-against-the-binary)), which is the mode this design exists to enable.  The only real control is a structural refusal at the proxy. |
 | Source confidentiality (implicit) | **Broken by design.**  The repo's contents leave the machine and go to Anthropic.  Under a Pro/Max consumer account that carries a 5-year retention window if the training toggle is on.  Acceptable for this repo, which is public; a per-cell decision for anything that is not. |
 | The scholar holds no `egress` network | Intact — but the abbey gains a **fourth** internet holder (`claude-egress`), and the "three internet holders" comment in `docker/abbey.yaml` becomes wrong. |
 | Builds run offline; no package-registry route | Intact.  Claude Code is installed at image build; `DISABLE_AUTOUPDATER=1` keeps it from reaching for one at runtime. |
@@ -189,6 +189,28 @@ key has the **full** API surface and depends entirely on the allowlist
 holding.  Neither substitutes for the other — the allowlist is
 mandatory regardless, and the credential choice decides whether there is
 anything behind it.  See [Which credential](#which-credential).
+
+### The `web_search` refusal
+
+`WebSearch` runs server-side on Anthropic's infrastructure, so the
+scholar cannot mediate it and no capture can see the fetch.  The
+config-level answer — `permissions.deny` on `WebSearch(*)` — is
+**measured to be inert** in the mode this design exists to enable (see
+[Verified against the binary](#verified-against-the-binary)).  There is
+no in-cell control here.
+
+So the proxy refuses it, in the same request hook as the path allowlist:
+inspect the JSON body of each `/v1/messages` call and reject any that
+declares a server-side `web_search` tool.  The tool declaration is in
+the request body in plain sight on the plaintext hop — this is a body
+inspection, not a heuristic, and it holds regardless of what the harness
+or the model would prefer.
+
+This is the difference between a rule the agent is asked to follow and
+one it cannot route around.  CLAUDE.md's insistence that invariants live
+in topology and tests rather than prompt text is exactly this
+distinction, and the grounding invariant is the case that proves it: a
+config flag looked like enforcement until it was measured.
 
 ### The spend cap
 
@@ -474,6 +496,14 @@ CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1
 plugins, `autoMemoryDirectory` pointed per the decision above, and
 `cleanupPeriodDays` set deliberately rather than left at 30.
 
+**Treat those deny rules as documentation of intent, not as a control.**
+They are measured to be inert under `bypassPermissions` — the mode M3
+runs in — so they express what the agent is supposed to do and enforce
+nothing.  The enforcement lives at the proxy.  Keeping them costs
+nothing and they do bite in attended M1 sessions that run without the
+bypass flag; relying on them anywhere else is a mistake this document
+made once already.
+
 **Launch with `--setting-sources user`.**  This is the load-bearing
 line, and it is easy to miss.  Without it, settings and hooks in the
 *checkout* — `.claude/settings.json`, `.claude/settings.local.json`,
@@ -519,7 +549,7 @@ the instructions land, and whether the agent can edit them, is.
 
 | Mechanism | Lands in | Agent can alter it? | Survives `/compact`? |
 |---|---|---|---|
-| **`--append-system-prompt-file <path>`** | the actual system prompt | No — the file is a read-only mount, the flag is workbench's | **Yes** — the system prompt always does |
+| **`--append-system-prompt <prompt>`** | the actual system prompt | No — workbench reads a read-only mount and sets the flag; the agent controls neither | **Yes** — the system prompt always does |
 | **Managed policy `/etc/claude-code/CLAUDE.md`** | a user message *after* the system prompt | No — root-owned read-only mount, and `claudeMdExcludes` explicitly cannot exclude managed policy | Undocumented; assume no |
 | `~/.claude/CLAUDE.md` (user scope) | same | **Yes** — the home volume is uid-1000-owned | Undocumented |
 
@@ -531,9 +561,31 @@ for instructions you want at the system-prompt level you use
 must be passed every invocation, so it's better suited to scripts and
 automation than interactive use" — does not apply here.  **Cloister has
 a launcher.**  `workbench` already passes `--append-system-prompt` to
-qwen and prints the prompt size; Claude Code takes the same flag plus a
-`--append-system-prompt-file` variant, which is a straight improvement:
-the prompt becomes a mounted file instead of an argv payload.
+qwen and prints the prompt size, and Claude Code takes the same flag with
+the same signature — `--append-system-prompt <prompt>`, a string.
+
+**There is no `--append-system-prompt-file`.**  Confirmed against
+`claude --help`; an earlier documentation reference to a file variant was
+secondhand and wrong.  So workbench reads the mounted file and passes its
+contents as argv, exactly as it does for qwen — one launcher arm, no new
+mechanism.  The containment property is unchanged: the file is a
+root-owned read-only mount the agent cannot edit, and the flag is set by
+a launcher the agent cannot name.
+
+Two consequences of it being argv rather than a path:
+
+- **Build the argv in Go, never through a shell.**  `cmd/workbench` uses
+  `exec.Command`, which passes arguments directly — a multi-kilobyte
+  markdown blob with quotes, backticks, and `$` in it is inert.  The same
+  content through `bash -c` is a quoting minefield and an injection
+  surface pointed straight at the system prompt.
+- **There is a ceiling.**  Linux caps a single argument at 128 KiB
+  (`MAX_ARG_STRLEN`), with total argv plus environment bounded by
+  `ARG_MAX`.  128 KiB is roughly 30k tokens, so this is not a near-term
+  constraint — but the section below argues for pushing *more* content
+  into the system prompt, and that advice does have a hard stop.  Have
+  workbench check the size and fail loudly rather than let `exec` return
+  `E2BIG` at launch.
 
 **The third row is disqualified for anything load-bearing.**
 `~/.claude/CLAUDE.md` sits on a volume the agent owns, so an agent that
@@ -554,21 +606,31 @@ environment description — the grange lifecycle, the MCP surface, the PR
 gate — goes in the managed-policy CLAUDE.md, which is root-owned,
 unexcludable, and cheap in a large window.
 
-**Bias the split toward the system prompt, though.**  Only *project-root*
-CLAUDE.md is documented to be re-read and re-injected after `/compact`;
-managed-policy content is not, and should be assumed not to survive.
-Over a run that compacts twenty times, that means the environment
-description is present for the first segment and absent for the rest.
-This partly undercuts the "large window, so say more" premise: the
-window is a **per-segment** resource, and compaction — not window size —
-is the real constraint.  Anything that must hold for the whole run
-belongs in the appended system prompt, even when it is long enough to
-feel like it belongs in the memory file.
+**Bias the split toward the system prompt anyway.**  Managed policy was
+measured to survive a compaction — the canary came back with no tool
+call, so the content was in context rather than fetched on demand.  That
+is better than the documentation implies, and it is *not* the same as a
+guarantee.
 
-*(Verify `--append-system-prompt-file` exists before building the mount
-around it — the documentation reference is secondhand.  The fallback is
-`--append-system-prompt` with the file read in the launcher, which is
-what workbench already does for qwen.)*
+Two mechanisms produce that observation and the probe cannot tell them
+apart: the managed file being re-injected, or the compaction summary
+carrying the content forward.  Re-injection would hold indefinitely;
+summary-carryover is lossy and decays across repeated compactions.  An
+overnight run compacts many times, so the difference is exactly the case
+we care about and exactly the case that was not measured.
+
+The residual ambiguity does not change the decision, which is why it is
+recorded rather than chased: under either mechanism, one compaction is
+proven and twenty are not.  So the window remains a **per-segment**
+resource, compaction rather than window size remains the real
+constraint, and anything that must hold for the whole run belongs in the
+appended system prompt — even when it is long enough to feel like it
+belongs in the memory file.  The environment *description* can live in
+managed policy, where losing it late in a run degrades quality rather
+than breaking an invariant.
+
+The prompt is still a mounted file — workbench is just the thing that
+reads it:
 
 ```yaml
 volumes:
@@ -671,6 +733,66 @@ Three things to keep an eye on, none of them blocking:
   for `**/*.pcap*`, `**/*.keylog`, and the captures volume path go in
   before the first capture is taken, not after.
 
+## Verified against the binary
+
+Claims here are checked against `claude --help` and observed behaviour,
+not against the documentation.  That distinction earned itself: the docs
+page references an `--append-system-prompt-file` flag the binary does not
+have.  **Trust the binary.**
+
+Findings are **version-scoped** — reproduce them with
+`lifecycle/probe-claude-harness.sh` after any Claude Code upgrade that
+lands before the cell is built.
+
+Tested against **Claude Code 2.1.221**.
+
+| Claim | Result | Consequence |
+|---|---|---|
+| `--append-system-prompt-file <path>` exists | **No.**  The flag is `--append-system-prompt <prompt>`, a string. | Workbench reads the mounted file and passes contents as argv — one launcher arm, no new mechanism.  Containment property unchanged. |
+| `permissions.deny` applies under `bypassPermissions` | **No.**  Verifiably inert. | The grounding mitigation moves from config to a structural refusal at the proxy.  Deny rules stay as documentation of intent. |
+| Rate-limit header names readable from `--debug` | **No.**  The debug log is produced but carries no rate-limit or retry headers. | Deferred to the Phase 1 host proxy, which sees every header in cleartext by construction. |
+| Managed-policy `CLAUDE.md` survives `/compact` | **Yes, at least once.**  Post-compaction the canary was recalled directly, with no observed tool call — so the content was in context, not fetched on demand.  Whether it got there by re-injection or by the compaction summary carrying it is **unresolved**. | The split stands — but managed policy is *best-effort*, not guaranteed.  Anything that must hold for a whole overnight run still belongs in the appended system prompt. |
+| `--setting-sources user` excludes project-tree rules | **Yes.**  A project rule that fires under default sources does not fire with the flag — same rule file, same prompt, one flag added. | The cell's lever against agent-authored config in the checkout is real.  Launch with it. |
+
+### How the deny result was established
+
+Worth recording, because the obvious experiment gives a false positive.
+
+Denying `Bash(*)` and watching a `touch` succeed does **not** prove the
+rule was ignored — it is equally consistent with `--settings` never
+being applied at all.  The obvious control (the same rule *without*
+`--dangerously-skip-permissions`) does not separate those either:
+headless mode will not run Bash without that flag under any settings, so
+the marker is absent for an unrelated reason.
+
+The discriminator is an **observable sibling in the same settings
+object** — an `env` canary next to the deny rule:
+
+```
+--settings '{"env":{"PROBE_VAR":"CANARY_9Z"},
+             "permissions":{"deny":["Bash(*)"]}}'
+```
+
+One call then answers both questions at once.  The canary came back, so
+the object was read and applied; the command ran anyway, so the deny
+rule inside that same honoured object was not enforced.  There is no
+remaining hypothesis in which the rule held.
+
+The general lesson is worth more than the specific finding: a
+config-level control that has never been *observed failing closed* should
+be assumed not to be a control.  This one looked like enforcement in the
+documentation, in the settings schema, and in this document — until it
+was measured.
+
+The lesson cuts both ways, which is why it is a lesson about *measuring*
+rather than about distrusting configuration.  Two config-level
+mechanisms this design leans on were tested the same way and came back
+opposite: `permissions.deny` is inert under bypass, while
+`--setting-sources user` genuinely does shut the tree-authored config
+channel.  Neither result was predictable from the documentation.  Assume
+nothing in either direction; the probe script is cheap and the cell is
+not.
+
 ## Known gaps
 
 From an adversarial pass over this document.  The path allowlist, the
@@ -680,14 +802,11 @@ follows is what remains.
 
 ### Blocking M3
 
-- **Does `permissions.deny` survive `bypassPermissions`?**  Unverified,
-  and the design leans on `deny` for `WebSearch(*)` as the only
-  mitigation for the broken grounding invariant — in exactly the mode
-  M3 is built around.  If deny rules do not apply under
-  `--dangerously-skip-permissions`, that mitigation is fiction.  The
-  structural fallback is to refuse at the proxy: reject requests whose
-  body declares the server-side `web_search` tool.  **Verify before the
-  first unattended run, not after.**
+- ~~Does `permissions.deny` survive `bypassPermissions`?~~
+  **Answered: no.**  It does not, and the design changed as a result —
+  see [Verified against the binary](#verified-against-the-binary) and
+  [The `web_search` refusal](#the-web_search-refusal).  What remains is
+  the work: the refusal has to be built, and until it is, M3 stays shut.
 - **A kill switch, a healthcheck, and a notification.**  The archivist
   has a healthcheck; `claude-proxy` and `claude-egress` have none.
   Nothing stops the run at 3am, and nothing says the door died at 2am —
@@ -759,7 +878,8 @@ is set.  Cheap, and it converts a sentence into a control.
    there is a budget the run cannot exceed.
 3. **M3 — overnight YOLO.**  `--dangerously-skip-permissions`, a
    long-running task, and the whole point of the exercise.  Gated on:
-   the `permissions.deny`-under-`bypassPermissions` verification;
+   a **working `web_search` refusal at the proxy**, since
+   `permissions.deny` is measured inert in this mode;
    healthchecks, a kill switch, and a failure notification; a rehearsed
    credential rotation; a `.gitignore` covering captures; and a
    deliberate answer to the session-memory question.
@@ -771,7 +891,7 @@ is set.  Cheap, and it converts a sentence into a control.
 - [Data usage](https://code.claude.com/docs/en/data-usage) — telemetry opt-outs, WebFetch domain safety check, retention
 - [Web search tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool) — server-side execution
 - [Memory](https://code.claude.com/docs/en/memory) — CLAUDE.md precedence, the managed-policy path, `claudeMdExcludes`, auto memory, `/context`
-- [CLI reference](https://code.claude.com/docs/en/cli-reference) — `--append-system-prompt-file`, `--setting-sources`, `--strict-mcp-config`, `--permission-mode`
+- [CLI reference](https://code.claude.com/docs/en/cli-reference) — `--append-system-prompt`, `--setting-sources`, `--strict-mcp-config`, `--permission-mode`.  Note the page's reference to a `--append-system-prompt-file` variant does not match `claude --help`; trust the binary.
 - [claude-code LICENSE.md](https://github.com/anthropics/claude-code/blob/main/LICENSE.md) and [.devcontainer/](https://github.com/anthropics/claude-code/tree/main/.devcontainer) — all rights reserved, and Anthropic's own public containerization recipe
 - [Log out of all active sessions](https://support.claude.com/en/articles/10310342-how-do-i-log-out-of-all-active-sessions) — and why it doesn't cover Claude Code tokens
 - [Compromised API key](https://support.claude.com/en/articles/8384961-what-should-i-do-if-i-suspect-my-api-key-has-been-compromised)

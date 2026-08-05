@@ -28,7 +28,14 @@ boundary that keeps `main` clean is the forge's human-reviewed PR gate
 
 ## Build & verify (from repo root)
 Run the full gate set with **`bash lifecycle/verify.sh`** (stops at the first
-failure).  It runs, in order:
+failure).  On a Windows operator box, invoke Git Bash by full path — a bare
+`bash` there resolves to `C:\Windows\System32\bash.exe`, the WSL launcher,
+which has a different filesystem view and fails outright without an installed
+distro:
+
+    & "C:\Program Files\Git\bin\bash.exe" lifecycle/verify.sh
+
+It runs, in order:
     go build ./...
     GOOS=linux go build ./...   # the deploy target; catches build-tag splits a Windows build misses
     go test ./...
