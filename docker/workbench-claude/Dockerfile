@@ -24,8 +24,13 @@
 # installable package that whoever runs the build fetches themselves under
 # their own license.  Anthropic publishes its own containerization recipe,
 # init-firewall.sh and all, in that same public repository; this is the same
-# category of artifact.  So: this file is public, the built image goes to a
-# PRIVATE GHCR package (.github/workflows/images.yml).
+# category of artifact.  So: this file is public, and the built image is not
+# published ANYWHERE — it is built on the host that runs it (see
+# docs/JAILED_CLAUDE.md, "Deploying M1").  DO-NOT-PUBLISH.md beside this file
+# is what makes that a build gate rather than a hope: cmd/publish-lint fails
+# CI on any workflow step that would push this context.  An earlier version
+# of this comment said the image went to a private GHCR package, and acting
+# on it published one publicly.
 #
 # It is a thin layer on the stock workbench rather than a fork of it.  That
 # is the hedge doing its job — qwen and Claude get the SAME toolchains, the
@@ -39,9 +44,11 @@ FROM ${WORKBENCH_IMAGE}
 USER root
 
 # --- the CLI ---------------------------------------------------------------
-# Version pins ride the build pipeline (images.yml); the default exists so a
-# bare local build produces something sensible.  DISABLE_AUTOUPDATER in the
-# cell keeps this pin honest at runtime — there is no route to a registry
+# THE DEFAULT BELOW IS THE PIN OF RECORD.  No pipeline builds this image, so
+# there is nowhere else for the version to live — and every finding in
+# docs/JAILED_CLAUDE.md is VERSION-SCOPED, so re-run
+# lifecycle/probe-claude-harness.sh when this moves.  DISABLE_AUTOUPDATER in
+# the cell keeps the pin honest at runtime — there is no route to a registry
 # from a cell anyway, so an autoupdater could only fail slowly.
 ARG CLAUDE_CLI_VERSION=2.1.222
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CLI_VERSION} \

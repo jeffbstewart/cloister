@@ -96,6 +96,13 @@ jobs:
           docker/cell.yaml docker/abbey.yaml
           docker/cell-claude.yaml docker/abbey-claude.yaml
 
+      # Licensing: no workflow may publish an image whose build context
+      # carries DO-NOT-PUBLISH.md.  This was a comment until a comment let a
+      # proprietary CLI reach a world-readable package
+      # (docker/workbench-claude/DO-NOT-PUBLISH.md).
+      - name: Publish lint (nothing unpublishable reaches a registry)
+        run: go run ./cmd/publish-lint
+
       # The forge's own merge-path protections (docs/grange.md R1-R8):
       # rulesets, CODEOWNERS, namespace confinement.  The workflow token
       # cannot read collaborator roles or Actions secrets, so those report
