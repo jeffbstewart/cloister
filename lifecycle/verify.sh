@@ -58,6 +58,7 @@ run go vet ./...
 run go-licenses check ./... # deny copyleft
 run go run ./cmd/compose-lint docker/cell.yaml docker/abbey.yaml \
 	docker/cell-claude.yaml docker/abbey-claude.yaml
+run go run ./cmd/publish-lint  # no workflow publishes a DO-NOT-PUBLISH context
 run go run ./cmd/copyright-lint # headers present + year current
 
 echo ""

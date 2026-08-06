@@ -932,13 +932,43 @@ that same public repository.  A public cloister Dockerfile is the same
 category of artifact.
 
 So: **the Dockerfile, the compose stanzas, this document, the proxy
-configuration, and the CA setup all live in the public tree.  Only the
-built image goes to a private registry.**  Concretely, `images.yml`
-grows a `cloister-workbench-claude` variant whose build definition is
-public and whose push target is a private GHCR package; operators who
-want it build or pull it themselves.  Nothing about the design has to be
-held back, which matters — a containment design that cannot be reviewed
-is not much of a containment design.
+configuration, and the CA setup all live in the public tree.  The built
+image is not published at all.**  Nothing about the design has to be held
+back, which matters — a containment design that cannot be reviewed is not
+much of a containment design.
+
+**That used to say "only the built image goes to a private registry," and
+acting on it published the image publicly.**  The plan had `images.yml`
+push the variant to a private GHCR package, resting on the belief that
+GHCR packages are created private.  They are not, in the case that
+mattered: a package published from Actions via `GITHUB_TOKEN` and linked
+to a public repository **inherits that repository's visibility**.  The
+first successful run made an image containing Claude Code world-readable.
+A human reading the workflow asked whether the licensing added up, and it
+was deleted within minutes — but it should never have depended on being
+noticed.
+
+Two corrections, and the second is the one that matters:
+
+- **CI does not build this image at all.**  It is built on the host that
+  runs it, where it never touches a registry — which is what "operators
+  who want it build or pull it themselves" always implied.  A private
+  registry was solving a problem we do not have: there is one host.  This
+  also retires the `CLOISTER_CA_PEM` repository variable, since the CA
+  now stays on the machine that uses it.
+- **The rule is a build gate, not a comment.**  A build context declares
+  itself unpublishable with a `DO-NOT-PUBLISH.md`, and `cmd/publish-lint`
+  fails CI on any step that would push one — including a raw
+  `docker push`, which would otherwise route around the check.  The
+  regression test reconstructs the exact step that shipped.
+
+The general lesson is the one recorded below, arriving for the third time
+and from a new direction: `permissions.deny` looked like enforcement and
+was inert, `--append-system-prompt-file` looked absent and worked, and
+"GHCR packages are created private" looked like a safe default and was
+not.  **A control never observed failing closed should be assumed not to
+be a control** — and that applies to defaults quite as much as to
+configuration.
 
 Three things to keep an eye on, none of them blocking:
 
