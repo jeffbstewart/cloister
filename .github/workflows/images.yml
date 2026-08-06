@@ -29,6 +29,15 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+  # Manual runs, because some inputs to this pipeline are NOT in the tree.
+  # The claude variant's trust store comes from the CLOISTER_CA_PEM
+  # repository variable, so setting or rotating that CA changes what the
+  # image must contain while changing no file — and without this the only
+  # way to rebuild is an empty commit, which is a lie in the history about
+  # what happened and why.
+  #
+  #   gh workflow run images.yml --ref main
+  workflow_dispatch:
 
 permissions:
   contents: write # attach the release binary (tags only)
@@ -183,7 +192,18 @@ jobs:
           # empty file, but a malformed one that happens to contain the
           # marker string would slip through to a confusing TLS failure in
           # the cell.
-          openssl x509 -in docker/workbench-claude/cloister-ca.crt -noout -subject
+          #
+          # FINGERPRINT, NEVER THE SUBJECT.  This log is PUBLIC — the repo
+          # is — and a private CA's subject carries whatever the operator's
+          # PKI puts in a DN: organization, locality, often a personal
+          # domain.  That is the same category as the home/LAN addresses
+          # the presubmit scanner refuses in the tree, and a CI log is no
+          # better a place for it.  A SHA-256 fingerprint identifies WHICH
+          # certificate was baked in — which is the operationally useful
+          # question, and the one to check against the cell when a trust
+          # failure needs diagnosing — while disclosing nothing.
+          openssl x509 -in docker/workbench-claude/cloister-ca.crt \
+            -noout -fingerprint -sha256
           echo "present=true" >> "$GITHUB_OUTPUT"
 
       - name: Build and push the claude workbench variant
