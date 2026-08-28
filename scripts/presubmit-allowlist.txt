@@ -74,3 +74,6 @@ ANTHROPIC_TOKEN_FILE=/srv/cloister/anthropic-token
 # rule under test is "the value must say placeholder", and dressing the
 # fixture up as a real credential would add nothing but a scanner hit.
 ANTHROPIC_AUTH_TOKEN=a-real-credential-would-go-here
+
+# Public image digest pins (docker/workbench/Dockerfile), not secrets.
+e8c859f5632dcfde7b32d2012b4351728f6437930887c2f6a91ea242459e5514

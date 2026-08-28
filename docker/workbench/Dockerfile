@@ -28,7 +28,8 @@
 # glibc-compatible with the bookworm base (bookworm-family donors, plus
 # corretto's AL2023 whose glibc 2.34 predates bookworm's 2.36), so the
 # binaries run without repackaging and each donor tag is the version pin.
-ARG GO_IMAGE=golang:1.25-bookworm
+# golang:1.26-bookworm, pinned by digest (resolved 2026-08-27).
+ARG GO_IMAGE=golang:1.26-bookworm@sha256:e8c859f5632dcfde7b32d2012b4351728f6437930887c2f6a91ea242459e5514
 ARG RUST_IMAGE=rust:1-slim-bookworm
 ARG JDK_IMAGE=amazoncorretto:25
 ARG NODE_IMAGE=node:22-bookworm-slim
@@ -365,7 +366,7 @@ RUN git --cloister-proxy-version > /dev/null \
     && /usr/lib/cloister/libexec/gx init -q -b main . \
     && /usr/lib/cloister/libexec/gx config user.email smoke@cloister.invalid \
     && /usr/lib/cloister/libexec/gx config user.name smoke \
-    && printf 'module smoke\n\ngo 1.25\n' > go.mod \
+    && printf 'module smoke\n\ngo 1.26\n' > go.mod \
     && printf 'package main\nfunc main() {}\n' > main.go \
     && /usr/lib/cloister/libexec/gx add -A \
     && /usr/lib/cloister/libexec/gx commit -qm smoke \
