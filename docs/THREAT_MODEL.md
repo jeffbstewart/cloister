@@ -48,6 +48,19 @@ How it gets compromised (vectors into the context window):
   scripts, and the code the model reads when it studies a library.
 - **The model weights.** Untrusted; assumed capable of behaving as if
   injected without any injection.
+- **Anything an agent reads, including the tooling built to watch
+  agents.** Anthropic's cross-product containment write-up puts it
+  plainly: "In a world where agents read everything, the investigation
+  tooling is also an attack surface" ([How we contain Claude across
+  products](https://www.anthropic.com/engineering/how-we-contain-claude),
+  2026-05). Cloister's audit trail is one-way glass against the agent
+  that wrote it; it is not glass against the *next* reader. A corrector,
+  a risk assessor, an operator's agent asked to "look at what happened
+  in cell X", or a human pasting a log line into a prompt all carry
+  agent-authored text — commit messages, branch names, PR bodies,
+  recorded tool output — into a fresh context. The audit trail is
+  therefore both an asset (A6) and a vector, and anything that reads
+  it must treat its contents as untrusted input.
 
 What the compromised agent can do (capabilities, by construction):
 
@@ -85,7 +98,7 @@ tooling, and able to read anything that is world-readable — including
 | A3 | **Forge credential** | Push access is egress. Whoever holds it can write to wherever the remote is readable. |
 | A4 | **Operator's host and home directory** | The agent's bytes must not land on the operator's machine unreviewed; the operator's credentials must never be reachable from a cell. |
 | A5 | **Network and registries** | Every route out is an exfiltration channel; a registry is "an exfiltration oracle even read-only" (grange.md). |
-| A6 | **Audit trail** | The record of what the agent did must be unreadable and unalterable by the agent. |
+| A6 | **Audit trail** | The record of what the agent did must be unreadable and unalterable by the agent. It is also the most complete transcript of a cell's activity that exists anywhere, so its *readers* are part of the model: see section 4.3. |
 | A7 | **Other cells** | Project A's agent must not read, poison, or signal project B's. |
 | A8 | **Inference host and weights** | The model server must not phone home; weights are served read-only. |
 | A9 | **Authenticity of human approval** | "A human decided this" must be a fact about the world, not a claim a process can make (abbey.md; WebAuthn planned). |
@@ -113,7 +126,7 @@ bytes). Anything not in one of those four states is a finding.
 | **`git push` to `agent/**`** | **disclosed** | Archivist is the only pusher; remote fixed at build time; refuses default-branch and force-push | **On a public remote, `agent/**` is world-readable: exfiltration is one push away and the push is a legitimate operation.** See 4.1. |
 | PR title, body, comments; commit messages; branch names | disclosed | Same channel as above via the API relay | Same as above: free text to a readable place |
 | Inference requests to the agency | pinned | `infer` on `modelnet` only; local weights; Mac node cannot phone home | The jailed-Claude overlay sends the request — source included — to Anthropic: **broken by design**, declared per repo by the disclosure gate (JAILED_CLAUDE.md) |
-| Audit/state API | absent (as a read path) | Append-only, token-gated; the agent has no route to `state` | Appended text is operator-readable only; the operator is not the attacker |
+| Audit/state API | absent (as a read path from the agent) | Append-only, token-gated; the agent has no route to `state` | The *read* endpoint is reachable from the LAN without credentials: see 4.3 |
 | Shared caches between cells | pinned (interim) | Per-user cache binds; fixed names forbidden | The per-user cache is still read-write: a poisoning or signaling channel between concurrent tasks of one project (grange.md M4) |
 | Build artifacts, images, logs | absent | Nothing leaves the cell but through the paths above | Operator-run fetches are reviewed |
 | Operator's terminal / clipboard | human-read | The operator reads agent output | Social engineering: "paste this into X." Out of scope: a human is in the loop by construction |
@@ -171,6 +184,43 @@ byte that will become canonical is in it) but not for confidentiality
 (the bytes have already left). Anything an LLM summarizes for the human
 is advice; it does not make the channel human-read.
 
+### 4.3 The audit trail has readers
+
+One-way glass is stated from the agent's side: subsystems append, never
+read, and the agent that wrote an entry cannot reach it. That is a
+statement about one reader. It says nothing about the others, and the
+design has so far assumed there are none worth modelling. There are
+two, and both matter.
+
+**An adversary reads it.** The state service's read endpoint is
+reachable from the LAN and is, today, unauthenticated. The write path
+is token-gated; the read path is not. The audit trail is the most
+complete transcript of a cell's activity that exists — tool calls, file
+paths, command lines, recorded output — and for a cell working on
+sensitive source it is a second copy of much of what section 4 is
+trying to keep in. Any LAN client can read it, so this document assumes
+one eventually will: a compromised device on the home network, a guest,
+a misconfigured container with a LAN route. In the table of section 4
+this is a path whose *write* side is absent for the agent but whose
+*read* side is **disclosed to the LAN**, which is weaker than the
+grange itself (never leaves the cell) and weaker than the forge (the
+operator chooses its readership). The mitigation is credentials and
+some form of RBAC on the read endpoint. The design has resisted both —
+a token on the read side is one more secret to hold, and the one-way
+glass argument was easier to state without readers — but the asymmetry
+(authenticated writes, anonymous reads) is backwards for an artifact
+whose confidentiality matters more than its integrity, and this section
+records that it should change.
+
+**The next agent reads it.** Per the vector in section 2: anything that
+consumes audit entries — a corrector, a risk assessor, an operator's
+own agent, a human pasting a line into a prompt — is reading
+agent-authored text into a fresh context. The glass is one-way for the
+writer; for the reader it is a window with the injection on the other
+side. Any tooling that reads the audit trail is subject to the same
+rule as the scholar's answer: its output is advice, never a gate, and
+its input is untrusted.
+
 ## 5. Enforcement principle
 
 One rule (DESIGN.md): *contained means enforced at a boundary the model
@@ -227,6 +277,8 @@ duplicated here.
 | Risk | Status |
 |---|---|
 | Push-channel disclosure on readable remotes (4.1) | **Open.** Policy, not a control; the disclosure gate makes it explicit per repo. Jailed Gitea is the mitigation. |
+| Audit read endpoint unauthenticated on the LAN (4.3) | **Open.** Authenticated writes, anonymous reads is backwards for this artifact. Credentials and RBAC on the read side are the fix; resisted so far, should change. |
+| Audit consumers as an injection surface (4.3) | Accepted with a rule: anything reading audit entries treats them as untrusted input and produces advice, never a gate. |
 | Scholar query as a low-bandwidth leak | Accepted. Attenuated by human review of the whole query; not eliminated. |
 | Read-write per-user cache between concurrent cells of one project | Accepted, interim (grange.md M4). Read-only content-addressed stores are the fix. |
 | One bot credential across all cells | Accepted. Attribution by branch name and audit record, not by credential. |
@@ -252,3 +304,8 @@ duplicated here.
 5. The heretic bench and refusal-as-fault (heretic.md): state explicitly
    that this is a reliability position about a model with no reach, and
    where it stops applying.
+6. Audit read access (4.3): what is the smallest credential and role
+   model that closes the anonymous LAN read without reintroducing a
+   secret the agent could reach? Candidates: a read token held only by
+   the workbench and the operator; mTLS on `statenet`; moving the read
+   endpoint off the LAN entirely and reaching it only from the host.
