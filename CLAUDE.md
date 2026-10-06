@@ -81,6 +81,9 @@ sequence 3+ times, add it to `lifecycle/`.
   the model's weights.
 - The audit trail is one-way glass: subsystems append, never read.
 - No secrets, API keys, or home/LAN IPs in the repo — the presubmit enforces it.
+- The adversary these defend against, the assets, and the enumeration of
+  every byte path out of a cell: docs/THREAT_MODEL.md.  A new route out of a
+  cell is a change to that document first.
 
 ## Working here
 Changes land via PR; CI must be green before merge.

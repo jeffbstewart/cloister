@@ -16,7 +16,9 @@ model cannot reach — internal-only Docker networks, a disposable workspace,
 pinned blind egress relays, a bot-untouchable default branch, token-gated
 append-only history — and treats prompt text as advice, never as
 enforcement.  The full rationale is in [docs/DESIGN.md](docs/DESIGN.md) and
-[docs/grange.md](docs/grange.md).
+[docs/grange.md](docs/grange.md); the adversary, the assets, and every byte
+path out of a cell are enumerated in
+[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
 ## The cell
 

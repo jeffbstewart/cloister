@@ -77,7 +77,7 @@ rather than discovered later:
   Agents listen on nothing, so agent-to-agent reach is not a surface.
   Archivist-to-archivist reach exists on `statenet` (both are MCP
   servers) — accepted, because the archivist is deterministic Go with
-  no model driving it ([jail threat model](grange.md)): the jail there
+  no model driving it ([THREAT_MODEL.md](THREAT_MODEL.md), section 6): the jail there
   is thoroughness, not model containment.  A cell's agent still cannot
   reach another cell's archivist — that edge is the per-cell
   `archivistnet`, and it never leaves the cell.

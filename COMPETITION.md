@@ -79,7 +79,7 @@ escalation fatigue is real; a compromised host is out of scope.
 | Dimension | IronCurtain v0.13.0 | Cloister |
 |---|---|---|
 | Problem | general personal-assistant + agent runtime | local AI *coding* environment |
-| Threat model | compromised LLM; enforce at tool boundary | same premise |
+| Threat model | compromised LLM; enforce at tool boundary | same premise ([docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)) |
 | Enforcement point | one trusted process (semantic MCP proxy + policy engine) | topology: compose networks, mounts, single-purpose workers; no semantic chokepoint |
 | Policy source | English constitution → LLM-compiled JSON rules | hand-written compose topology + Go worker gates; `compose-lint` + boot self-checks |
 | Policy failure mode | compiler misinterprets intent → unintended permission (mitigated by default-deny + invariants) | a human misdesigns the topology → caught in PR review; no runtime interpreter to fool |
@@ -299,5 +299,6 @@ phasing; keep native seatbelt + PF for inference; note Apple
 - Landscape: [Northflank sandbox comparison](https://northflank.com/blog/best-sandboxes-for-coding-agents) ·
   [coding-agent sandbox list (gist, 2026-05)](https://gist.github.com/wincent/2752d8d97727577050c043e4ff9e386e) ·
   [Ry Walker: AI agent sandboxes compared](https://rywalker.com/research/ai-agent-sandboxes)
-- Cloister internals: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
+- Cloister internals: [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md),
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
   [docs/deepthink.md](docs/deepthink.md)

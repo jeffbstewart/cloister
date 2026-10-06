@@ -197,6 +197,13 @@ disconnects afterward.
 
 ## Honest limits
 
+The limits below are the integrity half.  The confidentiality half — what
+a compromised agent can do with source it has in context, and which byte
+paths out of a cell are absent, pinned, human-read, or merely disclosed —
+is enumerated in [THREAT_MODEL.md](THREAT_MODEL.md); its finding is that
+the push channel's confidentiality is exactly the readability of the
+remote.
+
 - Prompt injection through the scholar is **attenuated, not eliminated**: a
   payload must survive the scholar's synthesis, fit the answer cap, pass the
   human answer gate, and still steer the agent.  The layering is the defense;
