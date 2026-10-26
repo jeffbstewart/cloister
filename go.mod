@@ -2,7 +2,7 @@ module github.com/jeffbstewart/cloister
 
 go 1.26
 
-toolchain go1.26.7
+toolchain go1.26.10
 
 // Dependency policy: stdlib + gopkg.in/yaml.v3 + the official MCP Go SDK
 // (github.com/modelcontextprotocol/go-sdk; its schema type

@@ -76,4 +76,4 @@ ANTHROPIC_TOKEN_FILE=/srv/cloister/anthropic-token
 ANTHROPIC_AUTH_TOKEN=a-real-credential-would-go-here
 
 # Public image digest pins (docker/workbench/Dockerfile), not secrets.
-e8c859f5632dcfde7b32d2012b4351728f6437930887c2f6a91ea242459e5514
+632dff7351799a5a9954a48dc06670ade72ee44e8c351cdc0e5a57af2fea21af

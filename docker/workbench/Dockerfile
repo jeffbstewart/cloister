@@ -28,8 +28,9 @@
 # glibc-compatible with the bookworm base (bookworm-family donors, plus
 # corretto's AL2023 whose glibc 2.34 predates bookworm's 2.36), so the
 # binaries run without repackaging and each donor tag is the version pin.
-# golang:1.26-bookworm, pinned by digest (resolved 2026-08-27).
-ARG GO_IMAGE=golang:1.26-bookworm@sha256:e8c859f5632dcfde7b32d2012b4351728f6437930887c2f6a91ea242459e5514
+# golang:1.26.10-bookworm, pinned by digest (resolved 2026-10-26, for the
+# 2026-10-21 Go security release).
+ARG GO_IMAGE=golang:1.26.10-bookworm@sha256:632dff7351799a5a9954a48dc06670ade72ee44e8c351cdc0e5a57af2fea21af
 ARG RUST_IMAGE=rust:1-slim-bookworm
 ARG JDK_IMAGE=amazoncorretto:25
 ARG NODE_IMAGE=node:22-bookworm-slim
