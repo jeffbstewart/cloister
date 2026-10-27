@@ -44,6 +44,9 @@ jobs:
             echo "no Go packages yet — skipping"
           fi
 
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
       - name: gofmt
         run: |
           dirty=$(gofmt -l .)
